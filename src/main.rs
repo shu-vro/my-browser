@@ -1,0 +1,1403 @@
+mod extwindow;
+mod internal;
+mod privacy;
+mod store;
+mod tab;
+
+use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use block2::{DynBlock, RcBlock};
+use objc2::rc::Retained;
+use objc2::runtime::{AnyClass, AnyObject, Bool, ProtocolObject, Sel};
+use objc2::{define_class, msg_send, sel, AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
+use objc2_app_kit::{
+    NSAlert, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSEvent, NSEventModifierFlags,
+    NSEventType, NSMenu, NSMenuItem, NSWindow, NSWindowOcclusionState, NSWindowOrderingMode,
+};
+use objc2_foundation::{
+    NSArray, NSData, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSString, NSTimer, NSURLResponse, NSUUID,
+    NSURL,
+};
+#[allow(deprecated)]
+use objc2_web_kit::WKProcessPool;
+use objc2_web_kit::{
+    WKAudiovisualMediaTypes, WKContentRuleList, WKContentWorld, WKDownload, WKDownloadDelegate, WKPreferences,
+    WKScriptMessage, WKScriptMessageHandlerWithReply, WKURLSchemeHandler, WKURLSchemeTask, WKUserContentController,
+    WKWebExtension, WKWebExtensionContext, WKWebExtensionContextPermissionStatus, WKWebExtensionController,
+    WKWebExtensionControllerConfiguration, WKWebExtensionControllerDelegate, WKWebExtensionTab,
+    WKWebExtensionTabChangedProperties, WKWebExtensionTabConfiguration, WKWebExtensionWindow, WKWebView,
+    WKWebViewConfiguration, WKWebsiteDataStore,
+};
+
+use extwindow::ExtWindow;
+use store::Store;
+use tab::{Tab, INTERNAL};
+
+#[derive(Default)]
+pub struct AppIvars {
+    store: OnceCell<Store>,
+    /// Persistent profile directory; None = throwaway (benchmarks and tests).
+    profile: OnceCell<Option<PathBuf>>,
+    /// Held for the app's lifetime: one running browser per profile.
+    _lock: OnceCell<Option<std::fs::File>>,
+    data_store: OnceCell<Retained<WKWebsiteDataStore>>,
+    /// Shared by every tab: tracker blocker and the settings-page bridge.
+    content: OnceCell<Retained<WKUserContentController>>,
+    prefs: OnceCell<Retained<WKPreferences>>,
+    #[allow(deprecated)]
+    pool: OnceCell<Option<Retained<WKProcessPool>>>,
+    extensions: OnceCell<Retained<WKWebExtensionController>>,
+    ext_contexts: RefCell<HashMap<i64, Retained<WKWebExtensionContext>>>,
+    /// Extension-facing window objects, one per native tab group (keyed by its pointer).
+    ext_windows: RefCell<HashMap<usize, Retained<ExtWindow>>>,
+    trackers: RefCell<Option<Retained<WKContentRuleList>>>,
+    tabs: RefCell<Vec<Retained<Tab>>>,
+    active: RefCell<Option<Retained<Tab>>>,
+    /// URLs of closed tabs, for Reopen Closed Tab.
+    closed: RefCell<Vec<String>>,
+    /// In-flight downloads: WKDownload pointer -> (downloads row, download).
+    downloads: RefCell<HashMap<usize, (i64, Retained<WKDownload>)>>,
+    bench: Cell<bool>,
+    on_top: Cell<bool>,
+    /// `TUNE ...` lines printed in bench mode.
+    report: RefCell<Vec<String>>,
+    timer: OnceCell<Retained<NSTimer>>,
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = AppIvars]
+    pub struct App;
+
+    unsafe impl NSObjectProtocol for App {}
+
+    unsafe impl NSApplicationDelegate for App {
+        #[unsafe(method(applicationDidFinishLaunching:))]
+        fn did_finish_launching(&self, _n: &NSNotification) {
+            self.start();
+        }
+
+        #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
+        fn should_terminate_after_last_window_closed(&self, _app: &NSApplication) -> bool {
+            true
+        }
+
+        #[unsafe(method(applicationWillTerminate:))]
+        fn will_terminate(&self, _n: &NSNotification) {
+            self.save_session();
+        }
+    }
+
+    /// Serves the browser's own pages (mybrowser://settings).
+    unsafe impl WKURLSchemeHandler for App {
+        #[unsafe(method(webView:startURLSchemeTask:))]
+        fn start_scheme_task(&self, _web: &WKWebView, task: &ProtocolObject<dyn WKURLSchemeTask>) {
+            internal::serve(task);
+        }
+
+        #[unsafe(method(webView:stopURLSchemeTask:))]
+        fn stop_scheme_task(&self, _web: &WKWebView, _task: &ProtocolObject<dyn WKURLSchemeTask>) {}
+    }
+
+    /// The settings page's bridge: `webkit.messageHandlers.browser.postMessage([op, ...args])`.
+    unsafe impl WKScriptMessageHandlerWithReply for App {
+        #[unsafe(method(userContentController:didReceiveScriptMessage:replyHandler:))]
+        fn did_receive_message(
+            &self,
+            _c: &WKUserContentController,
+            message: &WKScriptMessage,
+            reply: &DynBlock<dyn Fn(*mut AnyObject, *mut NSString)>,
+        ) {
+            let reply = reply.copy();
+            let respond = move |result: Result<String, String>| {
+                let (ok, err) = match result {
+                    Ok(json) => (Some(NSString::from_str(&json)), None),
+                    Err(e) => (None, Some(NSString::from_str(&e))),
+                };
+                let ptr = |s: &Option<Retained<NSString>>| {
+                    s.as_ref().map_or(std::ptr::null_mut(), |s| Retained::as_ptr(s) as *mut NSString)
+                };
+                reply.call((ptr(&ok) as *mut AnyObject, ptr(&err)));
+            };
+            // Web content can post to this handler too; only the browser's own
+            // top-level pages may use it.
+            if !internal::is_trusted(message) {
+                return respond(Err("not allowed".into()));
+            }
+            match internal::message_args(message) {
+                Some(args) => internal::handle(self, args, Box::new(respond)),
+                None => respond(Err("expected an array of strings".into())),
+            }
+        }
+    }
+
+    unsafe impl WKDownloadDelegate for App {
+        #[unsafe(method(download:decideDestinationUsingResponse:suggestedFilename:completionHandler:))]
+        fn decide_destination(
+            &self,
+            download: &WKDownload,
+            _response: &NSURLResponse,
+            suggested: &NSString,
+            done: &DynBlock<dyn Fn(*mut NSURL)>,
+        ) {
+            let dir = self.downloads_dir();
+            let path = unique_path(&dir, &sanitize_filename(&suggested.to_string()));
+            let url = unsafe { download.originalRequest() }
+                .and_then(|r| r.URL())
+                .and_then(|u| u.absoluteString())
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            let id = self.store().add_download(&url, &path.to_string_lossy());
+            if let Some(entry) = self.ivars().downloads.borrow_mut().get_mut(&key(download)) {
+                entry.0 = id;
+            }
+            let dest = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+            done.call((Retained::as_ptr(&dest) as *mut NSURL,));
+        }
+
+        #[unsafe(method(downloadDidFinish:))]
+        fn download_did_finish(&self, download: &WKDownload) {
+            self.end_download(download, "done");
+        }
+
+        #[unsafe(method(download:didFailWithError:resumeData:))]
+        fn download_did_fail(&self, download: &WKDownload, error: &NSError, _resume: Option<&NSData>) {
+            // -999 is NSURLErrorCancelled.
+            self.end_download(download, if error.code() == -999 { "cancelled" } else { "failed" });
+        }
+    }
+
+    /// Lets extensions list windows and open tabs (`windows` / `tabs` APIs).
+    unsafe impl WKWebExtensionControllerDelegate for App {
+        #[unsafe(method(webExtensionController:openWindowsForExtensionContext:))]
+        fn ext_open_windows(
+            &self,
+            _c: &WKWebExtensionController,
+            _ctx: &WKWebExtensionContext,
+        ) -> *mut NSArray<ProtocolObject<dyn WKWebExtensionWindow>> {
+            let tabs = self.ivars().tabs.borrow().clone();
+            let mut windows: Vec<Retained<ProtocolObject<dyn WKWebExtensionWindow>>> = Vec::new();
+            let mut seen = Vec::new();
+            for t in tabs {
+                if let Some(w) = self.ext_window_for(&t) {
+                    let p = Retained::as_ptr(&w) as usize;
+                    if !seen.contains(&p) {
+                        seen.push(p);
+                        windows.push(ProtocolObject::from_retained(w));
+                    }
+                }
+            }
+            Retained::autorelease_return(NSArray::from_retained_slice(&windows))
+        }
+
+        #[unsafe(method(webExtensionController:focusedWindowForExtensionContext:))]
+        fn ext_focused_window(
+            &self,
+            _c: &WKWebExtensionController,
+            _ctx: &WKWebExtensionContext,
+        ) -> *mut ProtocolObject<dyn WKWebExtensionWindow> {
+            let w = self.active().and_then(|t| self.ext_window_for(&t));
+            w.map_or(std::ptr::null_mut(), |w| Retained::autorelease_return(ProtocolObject::from_retained(w)))
+        }
+
+        #[unsafe(method(webExtensionController:openNewTabUsingConfiguration:forExtensionContext:completionHandler:))]
+        fn ext_open_tab(
+            &self,
+            _c: &WKWebExtensionController,
+            config: &WKWebExtensionTabConfiguration,
+            _ctx: &WKWebExtensionContext,
+            done: &DynBlock<dyn Fn(*mut ProtocolObject<dyn WKWebExtensionTab>, *mut NSError)>,
+        ) {
+            let url = unsafe { config.url() }.and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default();
+            let tab = self.open_tab(&url, !unsafe { config.shouldBeActive() });
+            let tab: Retained<ProtocolObject<dyn WKWebExtensionTab>> = ProtocolObject::from_retained(tab);
+            done.call((Retained::as_ptr(&tab) as *mut _, std::ptr::null_mut()));
+        }
+    }
+
+    impl App {
+        /// Bench command from stdin, bounced to the main thread.
+        #[unsafe(method(command:))]
+        fn command_action(&self, cmd: &NSString) {
+            self.command(&cmd.to_string());
+        }
+
+        // Menu actions. Tab-level ones go to the active tab explicitly rather
+        // than through the responder chain, so they also work when the app
+        // isn't frontmost.
+
+        #[unsafe(method(newTab:))]
+        fn new_tab_action(&self, _s: Option<&AnyObject>) {
+            self.new_tab();
+        }
+
+        /// The "+" button in the native tab bar.
+        #[unsafe(method(newWindowForTab:))]
+        fn new_window_for_tab(&self, _s: Option<&AnyObject>) {
+            self.new_tab();
+        }
+
+        #[unsafe(method(newWindow:))]
+        fn new_window_action(&self, _s: Option<&AnyObject>) {
+            let tab = Tab::create(self, None, "", "", false);
+            self.add_tab(&tab, None, true);
+            tab.focus_address_bar();
+        }
+
+        #[unsafe(method(reopenClosedTab:))]
+        fn reopen_closed_tab_action(&self, _s: Option<&AnyObject>) {
+            let last = self.ivars().closed.borrow_mut().pop();
+            if let Some(url) = last {
+                self.open_tab(&url, false);
+            }
+        }
+
+        #[unsafe(method(closeTab:))]
+        fn close_tab_action(&self, _s: Option<&AnyObject>) {
+            if let Some(t) = self.active() {
+                t.window().performClose(None);
+            }
+        }
+
+        #[unsafe(method(openSettings:))]
+        fn open_settings_action(&self, _s: Option<&AnyObject>) {
+            self.open_internal("settings");
+        }
+
+        #[unsafe(method(showHistory:))]
+        fn show_history_action(&self, _s: Option<&AnyObject>) {
+            self.open_internal("settings#history");
+        }
+
+        #[unsafe(method(showDownloads:))]
+        fn show_downloads_action(&self, _s: Option<&AnyObject>) {
+            self.open_internal("settings#downloads");
+        }
+
+        #[unsafe(method(goBack:))]
+        fn go_back_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.go_back());
+        }
+
+        #[unsafe(method(goForward:))]
+        fn go_forward_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.go_forward());
+        }
+
+        #[unsafe(method(reload:))]
+        fn reload_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.reload());
+        }
+
+        #[unsafe(method(stop:))]
+        fn stop_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.stop());
+        }
+
+        #[unsafe(method(zoomIn:))]
+        fn zoom_in_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.zoom(Some(1.1)));
+        }
+
+        #[unsafe(method(zoomOut:))]
+        fn zoom_out_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.zoom(Some(1.0 / 1.1)));
+        }
+
+        #[unsafe(method(actualSize:))]
+        fn actual_size_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.zoom(None));
+        }
+
+        #[unsafe(method(focusAddressBar:))]
+        fn focus_address_bar_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.focus_address_bar());
+        }
+
+        #[unsafe(method(minimizeWindow:))]
+        fn minimize_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.window().miniaturize(None));
+        }
+
+        #[unsafe(method(zoomWindow:))]
+        fn zoom_window_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.window().zoom(None));
+        }
+
+        #[unsafe(method(nextTab:))]
+        fn next_tab_action(&self, _s: Option<&AnyObject>) {
+            self.select_relative(1);
+        }
+
+        #[unsafe(method(previousTab:))]
+        fn previous_tab_action(&self, _s: Option<&AnyObject>) {
+            self.select_relative(-1);
+        }
+
+        /// Cmd+1..8 select that tab, Cmd+9 the last one (menu item tag).
+        #[unsafe(method(selectTabByNumber:))]
+        fn select_tab_by_number(&self, sender: Option<&NSMenuItem>) {
+            let n = sender.map_or(1, |s| s.tag());
+            let count = self.ordered_tabs().len() as isize;
+            if count > 0 {
+                self.select_index(if n == 9 { count - 1 } else { (n - 1).min(count - 1) } as usize);
+            }
+        }
+    }
+);
+
+impl App {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(AppIvars::default());
+        unsafe { msg_send![super(this), init] }
+    }
+
+    pub fn store(&self) -> &Store {
+        self.ivars().store.get().unwrap()
+    }
+
+    pub fn is_bench(&self) -> bool {
+        self.ivars().bench.get()
+    }
+
+    pub fn is_on_top(&self) -> bool {
+        self.ivars().on_top.get()
+    }
+
+    pub fn profile_dir(&self) -> Option<&Path> {
+        self.ivars().profile.get().and_then(|p| p.as_deref())
+    }
+
+    fn active(&self) -> Option<Retained<Tab>> {
+        self.ivars().active.borrow().clone()
+    }
+
+    fn with_active(&self, f: impl FnOnce(&Tab)) {
+        if let Some(t) = self.active() {
+            f(&t);
+        }
+    }
+
+    pub fn is_active(&self, tab: &Tab) -> bool {
+        self.ivars().active.borrow().as_deref().is_some_and(|a| std::ptr::eq(a, tab))
+    }
+
+    /// Open the profile, set up the shared engine pieces, then open tabs once
+    /// the tracker blocker is ready (so no page loads unprotected).
+    fn start(&self) {
+        let mtm = self.mtm();
+        let profile = match arg_value("--profile") {
+            Some(dir) => Some(PathBuf::from(dir)),
+            None if self.is_bench() => None,
+            None => std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/my-browser")),
+        };
+        let lock = match &profile {
+            Some(dir) => Some(lock_profile(dir).unwrap_or_else(|e| fatal(mtm, &e))),
+            None => None,
+        };
+        let db = profile.as_ref().map(|d| d.join("browser.db"));
+        let store = Store::open(db.as_deref()).unwrap_or_else(|e| fatal(mtm, &format!("Can't open the profile: {e}")));
+        store.fail_stale_downloads();
+        let _ = self.ivars()._lock.set(lock);
+        let _ = self.ivars().profile.set(profile.clone());
+        let _ = self.ivars().store.set(store);
+
+        // Cookies and site data: WebKit's store for this profile, or memory only.
+        let data_store = match &profile {
+            Some(_) => unsafe { WKWebsiteDataStore::dataStoreForIdentifier(&self.profile_uuid(), mtm) },
+            None => unsafe { WKWebsiteDataStore::nonPersistentDataStore(mtm) },
+        };
+        let line = |name: &str, value: bool, ok: bool| format!("TUNE {name}={} {}", value as u8, if ok { "ok" } else { "missing" });
+        let mut report: Vec<String> =
+            privacy::harden_data_store(&data_store).into_iter().map(|(n, ok)| line(n, true, ok)).collect();
+        let prefs = unsafe { WKPreferences::new(mtm) };
+        for (n, ok) in privacy::harden_preferences(&prefs, self.store().flag("safe_browsing")) {
+            report.push(line(n, true, ok));
+        }
+        let (pool, tuning) = engine_tuning(&prefs, self.store().flag("jit"), mtm);
+        report.extend(tuning.into_iter().map(|(n, v, ok)| line(n, v, ok)));
+
+        let content = unsafe { WKUserContentController::new(mtm) };
+        unsafe {
+            content.addScriptMessageHandlerWithReply_contentWorld_name(
+                ProtocolObject::from_ref(self),
+                &WKContentWorld::pageWorld(mtm),
+                &NSString::from_str("browser"),
+            )
+        };
+        let ext_config = match &profile {
+            Some(_) => unsafe {
+                WKWebExtensionControllerConfiguration::configurationWithIdentifier(&self.profile_uuid(), mtm)
+            },
+            None => unsafe { WKWebExtensionControllerConfiguration::nonPersistentConfiguration(mtm) },
+        };
+        let extensions =
+            unsafe { WKWebExtensionController::initWithConfiguration(WKWebExtensionController::alloc(mtm), &ext_config) };
+        unsafe { extensions.setDelegate(Some(ProtocolObject::from_ref(self))) };
+        let _ = self.ivars().data_store.set(data_store);
+        let _ = self.ivars().prefs.set(prefs);
+        let _ = self.ivars().pool.set(pool);
+        let _ = self.ivars().content.set(content);
+        let _ = self.ivars().extensions.set(extensions);
+        self.ivars().report.replace(report);
+
+        for ext in self.store().extensions().into_iter().filter(|e| e.enabled) {
+            self.load_extension(ext.id, &ext.path, Box::new(|_| {}));
+        }
+
+        let this = self.retain();
+        privacy::load_tracker_rules(mtm, move |list| {
+            let ok = list.is_some();
+            this.ivars().trackers.replace(list);
+            this.apply_trackers();
+            this.ivars().report.borrow_mut().push(line("trackers", true, ok));
+            this.ready();
+        });
+        self.start_timer();
+    }
+
+    /// Startup finished: restore the session, open the first tab.
+    fn ready(&self) {
+        let restore = self.profile_dir().is_some() && self.store().flag("restore_session");
+        let session = if restore { self.store().session() } else { Vec::new() };
+        let urls = url_args();
+        // Restored tabs open asleep: no page process until clicked.
+        let mut prev: Option<Retained<Tab>> = None;
+        for (url, title) in &session {
+            let tab = Tab::create(self, None, url, title, true);
+            self.add_tab(&tab, prev.as_deref(), false);
+            prev = Some(tab);
+        }
+        for u in &urls {
+            let url = self.normalize(u);
+            self.open_tab(&url, false);
+        }
+        if session.is_empty() && urls.is_empty() {
+            self.new_tab();
+        } else if urls.is_empty() {
+            // Back to the tab that was open; only it wakes.
+            let i: usize = self.store().get("session_active").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let tabs = self.ivars().tabs.borrow().clone();
+            if let Some(t) = tabs.get(i).or(tabs.first()) {
+                self.select(t);
+            }
+        }
+        if self.is_bench() {
+            for line in self.ivars().report.borrow().iter() {
+                println!("{line}");
+            }
+            self.read_commands();
+            println!("READY");
+        }
+    }
+
+    fn profile_uuid(&self) -> Retained<NSUUID> {
+        let store = self.store();
+        let existing =
+            store.get("profile_id").and_then(|s| NSUUID::initWithUUIDString(NSUUID::alloc(), &NSString::from_str(&s)));
+        existing.unwrap_or_else(|| {
+            let id = NSUUID::UUID();
+            store.put("profile_id", &id.UUIDString().to_string());
+            id
+        })
+    }
+
+    /// A configuration for a new web view, sharing the profile's engine pieces.
+    pub fn make_config(&self) -> Retained<WKWebViewConfiguration> {
+        let iv = self.ivars();
+        let config = unsafe { WKWebViewConfiguration::new(self.mtm()) };
+        unsafe {
+            config.setWebsiteDataStore(iv.data_store.get().unwrap());
+            config.setUserContentController(iv.content.get().unwrap());
+            config.setPreferences(iv.prefs.get().unwrap());
+            // No autoplay: media only plays after a click.
+            config.setMediaTypesRequiringUserActionForPlayback(WKAudiovisualMediaTypes::All);
+            config.setURLSchemeHandler_forURLScheme(Some(ProtocolObject::from_ref(self)), &NSString::from_str(INTERNAL));
+            config.setWebExtensionController(Some(iv.extensions.get().unwrap()));
+            if let Some(pool) = iv.pool.get().unwrap() {
+                #[allow(deprecated)]
+                config.setProcessPool(pool);
+            }
+        }
+        config
+    }
+
+    /// Add or remove the tracker blocker on every tab (it's shared).
+    pub fn apply_trackers(&self) {
+        let content = self.ivars().content.get().unwrap();
+        if let Some(list) = self.ivars().trackers.borrow().as_ref() {
+            unsafe {
+                content.removeContentRuleList(list);
+                if self.store().flag("block_trackers") {
+                    content.addContentRuleList(list);
+                }
+            }
+        }
+    }
+
+    pub fn apply_safe_browsing(&self) {
+        let prefs = self.ivars().prefs.get().unwrap();
+        unsafe { prefs.setFraudulentWebsiteWarningEnabled(self.store().flag("safe_browsing")) };
+    }
+
+    pub fn data_store(&self) -> &WKWebsiteDataStore {
+        self.ivars().data_store.get().unwrap()
+    }
+
+    // ---- tabs
+
+    fn new_tab(&self) {
+        let home = self.store().setting("homepage");
+        let tab = self.open_tab(&home, false);
+        if home.is_empty() {
+            tab.focus_address_bar();
+        }
+    }
+
+    /// Open `url` in a new tab next to the active one.
+    pub fn open_tab(&self, url: &str, background: bool) -> Retained<Tab> {
+        let tab = Tab::create(self, None, url, "", false);
+        self.add_tab(&tab, self.active().as_deref(), !background);
+        tab
+    }
+
+    pub fn open_tab_with_config(&self, config: &WKWebViewConfiguration) -> Retained<Tab> {
+        let tab = Tab::create(self, Some(config), "", "", false);
+        self.add_tab(&tab, self.active().as_deref(), true);
+        tab
+    }
+
+    fn add_tab(&self, tab: &Retained<Tab>, next_to: Option<&Tab>, select: bool) {
+        self.ivars().tabs.borrow_mut().push(tab.clone());
+        let window = tab.window();
+        match next_to {
+            Some(other) => other.window().addTabbedWindow_ordered(window, NSWindowOrderingMode::Above),
+            None => window.center(),
+        }
+        unsafe { self.extensions().didOpenTab(ProtocolObject::from_ref(&**tab)) };
+        if select {
+            self.select(tab);
+        } else {
+            tab.ivars().last_active.set(Some(Instant::now()));
+        }
+    }
+
+    /// Bring a tab to front and make it the target of menu actions.
+    pub fn select(&self, tab: &Tab) {
+        let window = tab.window();
+        if let Some(group) = window.tabGroup() {
+            group.setSelectedWindow(Some(window));
+        }
+        if self.is_on_top() {
+            // Shown, but never key: the user's keystrokes must stay in whatever
+            // app they're using, not land in a benchmark window.
+            window.orderFrontRegardless();
+        } else {
+            window.makeKeyAndOrderFront(None);
+        }
+        self.set_active(tab);
+    }
+
+    pub fn set_active(&self, tab: &Tab) {
+        if self.is_active(tab) {
+            return;
+        }
+        let prev = self.active();
+        if let Some(prev) = &prev {
+            prev.ivars().last_active.set(Some(Instant::now()));
+        }
+        self.ivars().active.replace(Some(tab.retain()));
+        tab.wake();
+        let ext = self.extensions();
+        unsafe { ext.didActivateTab_previousActiveTab(ProtocolObject::from_ref(tab), prev.as_deref().map(ProtocolObject::from_ref)) };
+        let window = self.ext_window_for(tab);
+        let prev_window = prev.as_deref().and_then(|p| self.ext_window_for(p));
+        if window.as_ref().map(|w| Retained::as_ptr(w)) != prev_window.as_ref().map(|w| Retained::as_ptr(w)) {
+            unsafe { ext.didFocusWindow(window.as_deref().map(ProtocolObject::from_ref)) };
+        }
+    }
+
+    pub fn tab_closed(&self, tab: &Tab) {
+        let url = tab.url();
+        if !url.is_empty() && !url.starts_with(&format!("{INTERNAL}:")) {
+            self.ivars().closed.borrow_mut().push(url);
+        }
+        // macOS picks the next selected tab in the group; follow it, since
+        // "became key" isn't sent when the app isn't frontmost.
+        let next = tab
+            .window()
+            .tabGroup()
+            .map(|g| g.windows())
+            .and_then(|ws| ws.iter().find(|w| !std::ptr::eq(&**w, tab.window())))
+            .and_then(|w| self.tab_for_window(&w));
+        // Tell extensions; the window closes with its last tab.
+        let ext_window = self.ext_window_for(tab);
+        let window_closing = next.is_none();
+        unsafe { self.extensions().didCloseTab_windowIsClosing(ProtocolObject::from_ref(tab), window_closing) };
+        if let (true, Some(w)) = (window_closing, ext_window) {
+            unsafe { self.extensions().didCloseWindow(ProtocolObject::from_ref(&*w)) };
+            self.ivars().ext_windows.borrow_mut().retain(|_, v| Retained::as_ptr(v) != Retained::as_ptr(&w));
+        }
+        self.ivars().tabs.borrow_mut().retain(|t| !std::ptr::eq(&**t, tab));
+        if self.is_active(tab) {
+            self.ivars().active.replace(None);
+            if let Some(next) = next.or_else(|| self.ivars().tabs.borrow().last().cloned()) {
+                self.select(&next);
+            }
+        }
+    }
+
+    fn extensions(&self) -> &WKWebExtensionController {
+        self.ivars().extensions.get().unwrap()
+    }
+
+    /// The extension-facing window holding `tab` (its native tab group).
+    // ponytail: a tab dragged into another window isn't reported as moved
+    // (tabs.onDetached/onAttached); extensions see it in the new window on next query.
+    pub fn ext_window_for(&self, tab: &Tab) -> Option<Retained<ExtWindow>> {
+        let group = tab.window().tabGroup()?;
+        let key = Retained::as_ptr(&group) as usize;
+        if let Some(w) = self.ivars().ext_windows.borrow().get(&key) {
+            return Some(w.clone());
+        }
+        let w = ExtWindow::new(self, &group);
+        self.ivars().ext_windows.borrow_mut().insert(key, w.clone());
+        unsafe { self.extensions().didOpenWindow(ProtocolObject::from_ref(&*w)) };
+        Some(w)
+    }
+
+    pub fn ext_tab_changed(&self, tab: &Tab, changed: WKWebExtensionTabChangedProperties) {
+        unsafe { self.extensions().didChangeTabProperties_forTab(changed, ProtocolObject::from_ref(tab)) };
+    }
+
+    pub fn tab_for_window(&self, window: &NSWindow) -> Option<Retained<Tab>> {
+        self.ivars().tabs.borrow().iter().find(|t| std::ptr::eq(t.window(), window)).cloned()
+    }
+
+    /// Tabs of the active window, in tab-bar order.
+    pub fn ordered_tabs(&self) -> Vec<Retained<Tab>> {
+        let Some(active) = self.active() else { return self.ivars().tabs.borrow().clone() };
+        match active.window().tabbedWindows() {
+            Some(windows) => windows.iter().filter_map(|w| self.tab_for_window(&w)).collect(),
+            None => vec![active],
+        }
+    }
+
+    fn select_index(&self, i: usize) {
+        if let Some(t) = self.ordered_tabs().get(i) {
+            self.select(t);
+        }
+    }
+
+    fn select_relative(&self, delta: isize) {
+        let tabs = self.ordered_tabs();
+        let Some(pos) = tabs.iter().position(|t| self.is_active(t)) else { return };
+        let n = tabs.len() as isize;
+        self.select_index((pos as isize + delta).rem_euclid(n) as usize);
+    }
+
+    fn open_internal(&self, page: &str) {
+        let url = format!("{INTERNAL}://{page}");
+        // Reuse an open settings tab.
+        let prefix = format!("{INTERNAL}://settings");
+        let existing = self.ivars().tabs.borrow().iter().find(|t| t.url().starts_with(&prefix)).cloned();
+        match existing {
+            Some(t) => {
+                self.select(&t);
+                t.load(&url);
+            }
+            None => {
+                self.open_tab(&url, false);
+            }
+        }
+    }
+
+    /// Put background tabs to sleep: idle ones after the configured minutes,
+    /// all of them when `all` (memory pressure).
+    fn sleep_background_tabs(&self, all: bool) {
+        let minutes: u64 = self.store().setting("tab_sleep_minutes").parse().unwrap_or(0);
+        let idle = Duration::from_secs(minutes * 60);
+        for tab in self.ivars().tabs.borrow().clone() {
+            let since = tab.ivars().last_active.get().map_or(Duration::ZERO, |t| t.elapsed());
+            if !self.is_active(&tab) && (all || (minutes > 0 && since >= idle)) {
+                tab.sleep();
+            }
+        }
+    }
+
+    fn start_timer(&self) {
+        let ptr = self as *const Self;
+        let block = RcBlock::new(move |_t: std::ptr::NonNull<NSTimer>| {
+            // The app delegate lives until the process exits.
+            let app = unsafe { &*ptr };
+            app.sleep_background_tabs(memory_pressure());
+            app.save_session();
+        });
+        let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(30.0, true, &block) };
+        // Let macOS batch this with other wakeups.
+        timer.setTolerance(10.0);
+        let _ = self.ivars().timer.set(timer);
+    }
+
+    fn save_session(&self) {
+        if self.profile_dir().is_none() || self.ivars().store.get().is_none() {
+            return;
+        }
+        let tabs: Vec<(String, String)> = self
+            .ordered_tabs()
+            .iter()
+            .map(|t| (t.url(), t.title()))
+            .filter(|(u, _)| !u.is_empty() && !u.starts_with(&format!("{INTERNAL}:")))
+            .collect();
+        self.store().save_session(&tabs);
+        let active = self.ordered_tabs().iter().filter(|t| !t.url().starts_with(&format!("{INTERNAL}:"))).position(|t| self.is_active(t));
+        self.store().put("session_active", &active.unwrap_or(0).to_string());
+    }
+
+    /// Address-bar input to URL, using the chosen search engine.
+    pub fn normalize(&self, input: &str) -> String {
+        normalize(input, &self.store().setting("search"))
+    }
+
+    // ---- downloads
+
+    pub fn start_download(&self, download: &WKDownload) {
+        unsafe { download.setDelegate(Some(ProtocolObject::from_ref(self))) };
+        self.ivars().downloads.borrow_mut().insert(key(download), (0, download.retain()));
+    }
+
+    fn end_download(&self, download: &WKDownload, status: &str) {
+        let Some((id, _)) = self.ivars().downloads.borrow_mut().remove(&key(download)) else { return };
+        let path = self.store().download(id).map(|d| d.path).unwrap_or_default();
+        let bytes = std::fs::metadata(&path).map_or(0, |m| m.len() as i64);
+        self.store().finish_download(id, status, bytes);
+        if self.is_bench() {
+            println!("DOWNLOAD {status} {path}");
+        }
+    }
+
+    /// (downloads row, completed bytes, total bytes) for downloads in flight.
+    pub fn download_progress(&self) -> Vec<(i64, i64, i64)> {
+        self.ivars()
+            .downloads
+            .borrow()
+            .values()
+            .map(|(id, d)| {
+                // WKDownload.progress (NSProgress), via msg_send: the binding needs an extra feature.
+                let p: Retained<AnyObject> = unsafe { msg_send![&**d, progress] };
+                let done: i64 = unsafe { msg_send![&*p, completedUnitCount] };
+                let total: i64 = unsafe { msg_send![&*p, totalUnitCount] };
+                (*id, done, total)
+            })
+            .collect()
+    }
+
+    pub fn cancel_download(&self, id: i64) {
+        let found = self.ivars().downloads.borrow().values().find(|(i, _)| *i == id).map(|(_, d)| d.clone());
+        if let Some(d) = found {
+            unsafe { d.cancel(None) };
+        }
+    }
+
+    fn downloads_dir(&self) -> PathBuf {
+        let custom = self.store().setting("downloads_dir");
+        if custom.is_empty() { PathBuf::from(self.default_downloads_dir()) } else { PathBuf::from(custom) }
+    }
+
+    pub fn default_downloads_dir(&self) -> String {
+        std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join("Downloads").to_string_lossy().into_owned())
+            .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned())
+    }
+
+    // ---- extensions
+
+    /// Load an unpacked extension and grant what its manifest asks for (the
+    /// user chose to install it). `done` gets its name or an error.
+    pub fn load_extension(&self, id: i64, path: &str, done: Box<dyn FnOnce(Result<String, String>)>) {
+        let mtm = self.mtm();
+        let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(path), true);
+        let this = self.retain();
+        let done = RefCell::new(Some(done));
+        let block = RcBlock::new(move |ext: *mut WKWebExtension, err: *mut NSError| {
+            let Some(done) = done.take() else { return };
+            let Some(ext) = (unsafe { Retained::retain(ext) }) else {
+                let msg = unsafe { err.as_ref() }
+                    .map_or("Couldn't read the extension.".into(), |e| e.localizedDescription().to_string());
+                return done(Err(msg));
+            };
+            let granted = WKWebExtensionContextPermissionStatus::GrantedExplicitly;
+            let ctx = unsafe { WKWebExtensionContext::contextForExtension(&ext) };
+            unsafe {
+                // Stable id: the extension keeps its storage across launches.
+                ctx.setUniqueIdentifier(&NSString::from_str(&format!("ext-{id}")));
+                for p in ext.requestedPermissions().iter() {
+                    ctx.setPermissionStatus_forPermission(granted, &p);
+                }
+                for m in ext.allRequestedMatchPatterns().iter() {
+                    ctx.setPermissionStatus_forMatchPattern(granted, &m);
+                }
+            }
+            let controller = this.ivars().extensions.get().unwrap();
+            match unsafe { controller.loadExtensionContext_error(&ctx) } {
+                Ok(()) => {
+                    let name = unsafe { ext.displayName() }.map(|n| n.to_string()).unwrap_or_else(|| "Extension".into());
+                    this.ivars().ext_contexts.borrow_mut().insert(id, ctx);
+                    done(Ok(name));
+                }
+                Err(e) => done(Err(e.localizedDescription().to_string())),
+            }
+        });
+        unsafe { WKWebExtension::extensionWithResourceBaseURL_completionHandler(&url, &block, mtm) };
+    }
+
+    pub fn unload_extension(&self, id: i64) {
+        if let Some(ctx) = self.ivars().ext_contexts.borrow_mut().remove(&id) {
+            let _ = unsafe { self.ivars().extensions.get().unwrap().unloadExtensionContext_error(&ctx) };
+        }
+    }
+
+    pub fn extension_context(&self, id: i64) -> Option<Retained<WKWebExtensionContext>> {
+        self.ivars().ext_contexts.borrow().get(&id).cloned()
+    }
+
+    // ---- bench protocol (benchmark/bench.rs, tests/e2e.rs)
+
+    /// Forward stdin lines to `command:` on the main thread. EOF (harness gone) quits.
+    fn read_commands(&self) {
+        // The delegate lives until the process exits, so the pointer stays valid.
+        let ptr = self as *const Self as usize;
+        std::thread::spawn(move || {
+            let lines = std::io::stdin().lines().map_while(Result::ok);
+            for line in lines.chain(std::iter::once("quit".to_string())) {
+                let obj = unsafe { &*(ptr as *const AnyObject) };
+                let line = NSString::from_str(&line);
+                let _: () = unsafe {
+                    msg_send![obj, performSelectorOnMainThread: sel!(command:), withObject: &*line, waitUntilDone: false]
+                };
+            }
+        });
+    }
+
+    fn command(&self, cmd: &str) {
+        let (name, arg) = cmd.split_once(' ').unwrap_or((cmd, ""));
+        let start = |t: &Tab| t.ivars().nav_start.set(Some(Instant::now()));
+        match (name, self.active()) {
+            ("go", Some(t)) => {
+                start(&t);
+                t.load(arg);
+            }
+            ("back", Some(t)) => {
+                start(&t);
+                t.go_back();
+            }
+            ("forward", Some(t)) => {
+                start(&t);
+                t.go_forward();
+            }
+            ("reload", Some(t)) => {
+                start(&t);
+                t.reload();
+            }
+            ("state", Some(t)) => println!("{}", t.state()),
+            ("visible", Some(t)) => {
+                let visible = t.window().occlusionState().contains(NSWindowOcclusionState::Visible);
+                println!("VISIBLE {}", visible as u8);
+            }
+            ("window", Some(t)) => {
+                let app_active = NSApplication::sharedApplication(self.mtm()).isActive();
+                println!(
+                    "WINDOW minimized={} key={} app_active={}",
+                    t.window().isMiniaturized() as u8,
+                    t.window().isKeyWindow() as u8,
+                    app_active as u8
+                );
+            }
+            ("newtab", _) => {
+                let t = self.open_tab("", false);
+                if arg.is_empty() {
+                    println!("{}", self.tabs_line());
+                } else {
+                    start(&t);
+                    t.load(arg);
+                }
+            }
+            ("switch", _) => {
+                let i: usize = arg.parse().unwrap_or(0);
+                match self.ordered_tabs().get(i).cloned() {
+                    // Waking reloads the page: report that load.
+                    Some(t) if t.is_asleep() => {
+                        start(&t);
+                        self.select(&t);
+                    }
+                    Some(t) => {
+                        self.select(&t);
+                        println!("{}", self.tabs_line());
+                    }
+                    None => println!("ERR no tab {i}"),
+                }
+            }
+            ("tabs", _) => println!("{}", self.tabs_line()),
+            ("sleep", _) => {
+                self.sleep_background_tabs(true);
+                println!("{}", self.tabs_line());
+            }
+            ("key", _) => println!("KEY {}", if self.press(arg) { "ok" } else { "none" }),
+            ("bridge", _) => internal::handle(
+                self,
+                arg.split('\t').map(str::to_string).collect(),
+                Box::new(|r| match r {
+                    Ok(json) => println!("BRIDGE ok {json}"),
+                    Err(e) => println!("BRIDGE err {e}"),
+                }),
+            ),
+            ("quit", _) => NSApplication::sharedApplication(self.mtm()).terminate(None),
+            _ => println!("ERR unknown command: {cmd}"),
+        }
+    }
+
+    fn tabs_line(&self) -> String {
+        let tabs = self.ordered_tabs();
+        let active = tabs.iter().position(|t| self.is_active(t)).map_or(-1, |i| i as i64);
+        let all = self.ivars().tabs.borrow();
+        let asleep = all.iter().filter(|t| t.is_asleep()).count();
+        let mut groups: Vec<usize> = Vec::new();
+        for t in all.iter() {
+            let first = t.window().tabbedWindows().and_then(|ws| ws.firstObject());
+            let id = first.map_or(t.window() as *const NSWindow as usize, |w| Retained::as_ptr(&w) as usize);
+            if !groups.contains(&id) {
+                groups.push(id);
+            }
+        }
+        format!("TABS count={} active={active} asleep={asleep} windows={}", tabs.len(), groups.len())
+    }
+
+    /// Simulate a key press like `cmd+shift+t` through the menu bar's real
+    /// shortcut matching. True if a menu item took it.
+    fn press(&self, combo: &str) -> bool {
+        let parts: Vec<&str> = combo.split('+').collect();
+        let Some((key, mods)) = parts.split_last() else { return false };
+        let mut flags = NSEventModifierFlags::empty();
+        for m in mods {
+            flags |= match *m {
+                "cmd" => NSEventModifierFlags::Command,
+                "shift" => NSEventModifierFlags::Shift,
+                "alt" => NSEventModifierFlags::Option,
+                "ctrl" => NSEventModifierFlags::Control,
+                _ => return false,
+            };
+        }
+        let key = if *key == "tab" { "\t".to_string() } else { key.to_string() };
+        // What a US keyboard produces with Shift held.
+        let chars = if flags.contains(NSEventModifierFlags::Shift) {
+            match key.as_str() {
+                "[" => "{".to_string(),
+                "]" => "}".to_string(),
+                "=" => "+".to_string(),
+                k => k.to_uppercase(),
+            }
+        } else {
+            key
+        };
+        let chars = NSString::from_str(&chars);
+        let window_number = self.active().map_or(0, |t| t.window().windowNumber());
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                NSEventType::KeyDown,
+                NSPoint::new(0.0, 0.0),
+                flags,
+                0.0,
+                window_number,
+                None,
+                &chars,
+                &chars,
+                false,
+                0,
+            );
+        let app = NSApplication::sharedApplication(self.mtm());
+        match (event, app.mainMenu()) {
+            (Some(e), Some(menu)) => menu.performKeyEquivalent(&e),
+            _ => false,
+        }
+    }
+}
+
+fn key(download: &WKDownload) -> usize {
+    download as *const WKDownload as usize
+}
+
+/// Value after a `--flag`.
+fn arg_value(flag: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
+}
+
+/// URLs to open from the command line: bare arguments that aren't a flag's value.
+fn url_args() -> Vec<String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut out = Vec::new();
+    let mut skip = false;
+    for a in args {
+        if std::mem::take(&mut skip) {
+            continue;
+        }
+        if a == "--profile" {
+            skip = true;
+        } else if !a.starts_with("--") {
+            out.push(a);
+        }
+    }
+    out
+}
+
+/// Keep only a plain file name: no directories, no hidden-file tricks.
+fn sanitize_filename(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let clean: String = base.chars().map(|c| if c == ':' || c.is_control() { '_' } else { c }).collect();
+    let clean = clean.trim().trim_start_matches('.').to_string();
+    if clean.is_empty() { "download".into() } else { clean }
+}
+
+/// `dir/name`, or `dir/name (2).ext` etc. if taken.
+fn unique_path(dir: &Path, name: &str) -> PathBuf {
+    let candidate = dir.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.to_string(), String::new()),
+    };
+    (2..).map(|n| dir.join(format!("{stem} ({n}){ext}"))).find(|p| !p.exists()).unwrap()
+}
+
+/// One running browser per profile: two would write the same cookie and
+/// history files and corrupt them.
+fn lock_profile(dir: &Path) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("Can't create the profile folder {}: {e}", dir.display()))?;
+    let file = std::fs::File::create(dir.join("lock")).map_err(|e| format!("Can't lock the profile: {e}"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(_) => Err("my-browser is already running with this profile.".into()),
+    }
+}
+
+fn fatal(mtm: MainThreadMarker, message: &str) -> ! {
+    eprintln!("{message}");
+    if !std::env::args().any(|a| a == "--bench") {
+        let alert = NSAlert::new(mtm);
+        alert.setMessageText(&NSString::from_str(message));
+        alert.runModal();
+    }
+    std::process::exit(1);
+}
+
+fn memory_pressure() -> bool {
+    unsafe extern "C" {
+        fn sysctlbyname(
+            name: *const i8,
+            old: *mut std::ffi::c_void,
+            oldlen: *mut usize,
+            new: *mut std::ffi::c_void,
+            newlen: usize,
+        ) -> i32;
+    }
+    let mut level: i32 = 1;
+    let mut len = std::mem::size_of::<i32>();
+    let name = c"kern.memorystatus_vm_pressure_level";
+    unsafe { sysctlbyname(name.as_ptr(), (&raw mut level).cast(), &mut len, std::ptr::null_mut(), 0) };
+    level > 1
+}
+
+/// Turn address-bar input into a URL: keep explicit schemes, add https:// to
+/// things that look like hosts, send everything else to the search engine.
+fn normalize(input: &str, search: &str) -> String {
+    let s = input.trim();
+    if s.contains("://") || s.starts_with("about:") || s.starts_with("data:") {
+        s.to_string()
+    } else if !s.contains(' ') && (s.contains('.') || s.starts_with("localhost")) {
+        format!("https://{s}")
+    } else {
+        let base = match search {
+            "brave" => "https://search.brave.com/search?q=",
+            "startpage" => "https://www.startpage.com/do/search?q=",
+            "google" => "https://www.google.com/search?q=",
+            _ => "https://duckduckgo.com/?q=",
+        };
+        format!("{base}{}", encode_query(s))
+    }
+}
+
+fn encode_query(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
+            b' ' => "+".to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// Read `name` from a `MYB_TUNE`-style spec (`name=0|1,...`), else `default`.
+fn tune_value(spec: Option<&str>, name: &str, default: bool) -> bool {
+    spec.and_then(|spec| {
+        spec.split(',').find_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            (k.trim() == name).then(|| v.trim() == "1")
+        })
+    })
+    .unwrap_or(default)
+}
+
+fn responds(obj: &AnyObject, sel: Sel) -> bool {
+    unsafe { msg_send![obj, respondsToSelector: sel] }
+}
+
+/// Engine settings that trade unused features for memory. Defaults are the
+/// benchmarked winners (benchmark/README.md); `MYB_TUNE=name=0|1,...` overrides
+/// them for experiments. These are private WebKit APIs: each one is skipped if
+/// this macOS doesn't have it. Returns the process pool to use and
+/// (name, value, applied) for each setting.
+#[allow(deprecated)] // WKProcessPool: the only way to pass the private pool configuration.
+fn engine_tuning(
+    prefs: &WKPreferences,
+    jit_default: bool,
+    mtm: MainThreadMarker,
+) -> (Option<Retained<WKProcessPool>>, Vec<(&'static str, bool, bool)>) {
+    let spec = std::env::var("MYB_TUNE").ok();
+    let tune = |name, default| tune_value(spec.as_deref(), name, default);
+    let mut report = Vec::new();
+
+    // Back/forward cache: keeps whole pages alive after you leave them. Off:
+    // session peak 1816 -> 299 MB in the cross-site bench session.
+    let pagecache = tune("pagecache", false);
+    let ok = responds(prefs, sel!(_setUsesPageCache:));
+    if ok {
+        let _: () = unsafe { msg_send![prefs, _setUsesPageCache: Bool::new(pagecache)] };
+    }
+    report.push(("pagecache", pagecache, ok));
+
+    let proccache = tune("proccache", true);
+    // Off: one fewer process and ~9 MB less at idle.
+    let prewarm = tune("prewarm", false);
+    let suspend = tune("suspend", false);
+    let jit = tune("jit", jit_default);
+    let cls = AnyClass::get(c"_WKProcessPoolConfiguration");
+    let pool_ok = cls.is_some() && WKProcessPool::class().responds_to(sel!(_initWithConfiguration:));
+    let cfg: Option<Retained<AnyObject>> = pool_ok.then(|| unsafe { msg_send![cls.unwrap(), new] });
+    let mut set = |name, setter: Sel, value: bool| {
+        let ok = cfg.as_deref().is_some_and(|c| responds(c, setter));
+        if let (true, Some(c)) = (ok, cfg.as_deref()) {
+            // Every setter here takes one BOOL.
+            let _: () = unsafe { objc2::runtime::MessageReceiver::send_message(c, setter, (Bool::new(value),)) };
+        }
+        report.push((name, value, ok));
+    };
+    // Keeps exited pages' processes around for reuse.
+    set("proccache", sel!(setUsesWebProcessCache:), proccache);
+    // Starts a spare page process ahead of time.
+    set("prewarm", sel!(setPrewarmsProcessesAutomatically:), prewarm);
+    // Suspends background page processes when memory runs short.
+    set("suspend", sel!(setSuspendsWebProcessesAggressivelyOnMemoryPressure:), suspend);
+    // JavaScript JIT: faster JS, more memory.
+    set("jit", sel!(setJITEnabled:), jit);
+    let pool = cfg.map(|cfg| unsafe { msg_send![WKProcessPool::alloc(mtm), _initWithConfiguration: &*cfg] });
+    (pool, report)
+}
+
+fn menu_item(mtm: MainThreadMarker, title: &str, action: Sel, key: &str, mods: NSEventModifierFlags) -> Retained<NSMenuItem> {
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(title),
+            Some(action),
+            &NSString::from_str(key),
+        )
+    };
+    item.setKeyEquivalentModifierMask(mods);
+    item
+}
+
+/// The menu bar holds every keyboard shortcut. Items marked `true` go to the
+/// app delegate; `false` ones go to the first responder (text editing, quit).
+fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
+    let cmd = NSEventModifierFlags::Command;
+    let cmd_alt = cmd | NSEventModifierFlags::Option;
+    let ctrl = NSEventModifierFlags::Control;
+    let ctrl_shift = ctrl | NSEventModifierFlags::Shift;
+    let none = NSEventModifierFlags::empty();
+    // An uppercase key or a shifted symbol ("{") implies Shift.
+    type Item = (&'static str, Sel, &'static str, NSEventModifierFlags, bool);
+    let submenus: Vec<(&str, Vec<Item>)> = vec![
+        (
+            "my-browser",
+            vec![
+                ("Settings…", sel!(openSettings:), ",", cmd, true),
+                ("Quit my-browser", sel!(terminate:), "q", cmd, false),
+            ],
+        ),
+        (
+            "File",
+            vec![
+                ("New Tab", sel!(newTab:), "t", cmd, true),
+                ("New Window", sel!(newWindow:), "n", cmd, true),
+                ("Reopen Closed Tab", sel!(reopenClosedTab:), "T", cmd, true),
+                ("Open Location", sel!(focusAddressBar:), "l", cmd, true),
+                ("Close Tab", sel!(closeTab:), "w", cmd, true),
+            ],
+        ),
+        (
+            "Edit",
+            vec![
+                ("Undo", sel!(undo:), "z", cmd, false),
+                ("Redo", sel!(redo:), "Z", cmd, false),
+                ("Cut", sel!(cut:), "x", cmd, false),
+                ("Copy", sel!(copy:), "c", cmd, false),
+                ("Paste", sel!(paste:), "v", cmd, false),
+                ("Select All", sel!(selectAll:), "a", cmd, false),
+            ],
+        ),
+        (
+            "View",
+            vec![
+                ("Reload Page", sel!(reload:), "r", cmd, true),
+                ("Stop", sel!(stop:), ".", cmd, true),
+                ("Zoom In", sel!(zoomIn:), "+", cmd, true),
+                ("Zoom In", sel!(zoomIn:), "=", cmd, true),
+                ("Zoom Out", sel!(zoomOut:), "-", cmd, true),
+                ("Actual Size", sel!(actualSize:), "0", cmd, true),
+            ],
+        ),
+        (
+            "History",
+            vec![
+                ("Back", sel!(goBack:), "[", cmd, true),
+                ("Forward", sel!(goForward:), "]", cmd, true),
+                ("Show History", sel!(showHistory:), "y", cmd, true),
+                ("Downloads", sel!(showDownloads:), "l", cmd_alt, true),
+            ],
+        ),
+        (
+            "Window",
+            vec![
+                ("Minimize", sel!(minimizeWindow:), "m", cmd, true),
+                ("Zoom", sel!(zoomWindow:), "", none, true),
+                ("Show Previous Tab", sel!(previousTab:), "{", cmd, true),
+                ("Show Next Tab", sel!(nextTab:), "}", cmd, true),
+                ("Next Tab", sel!(nextTab:), "\t", ctrl, true),
+                ("Previous Tab", sel!(previousTab:), "\t", ctrl_shift, true),
+            ],
+        ),
+    ];
+    let main = NSMenu::new(mtm);
+    for (title, items) in submenus {
+        let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(title));
+        for (t, action, key, mods, to_app) in items {
+            let item = menu_item(mtm, t, action, key, mods);
+            if to_app {
+                unsafe { item.setTarget(Some(delegate)) };
+            }
+            menu.addItem(&item);
+        }
+        if title == "Window" {
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
+            for n in 1..=9isize {
+                let name = if n == 9 { "Last Tab".to_string() } else { format!("Tab {n}") };
+                let item = menu_item(mtm, &name, sel!(selectTabByNumber:), &n.to_string(), cmd);
+                item.setTag(n);
+                unsafe { item.setTarget(Some(delegate)) };
+                menu.addItem(&item);
+            }
+        }
+        let holder = NSMenuItem::new(mtm);
+        holder.setSubmenu(Some(&menu));
+        main.addItem(&holder);
+        if title == "Window" {
+            // Lets AppKit list open windows and handle Window-menu conventions.
+            app.setWindowsMenu(Some(&menu));
+        }
+    }
+    app.setMainMenu(Some(&main));
+}
+
+fn main() {
+    let mtm = MainThreadMarker::new().expect("must run on main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    let bench = std::env::args().any(|a| a == "--bench");
+    let on_top = std::env::args().any(|a| a == "--on-top");
+    // Floating over other apps' full-screen Spaces is only allowed for accessory
+    // (no Dock icon) apps. Such windows can't be minimized.
+    app.setActivationPolicy(if on_top {
+        NSApplicationActivationPolicy::Accessory
+    } else {
+        NSApplicationActivationPolicy::Regular
+    });
+    let delegate = App::new(mtm);
+    delegate.ivars().bench.set(bench);
+    delegate.ivars().on_top.set(on_top);
+    build_menu(&app, &delegate, mtm);
+    app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+    if !on_top {
+        #[allow(deprecated)]
+        app.activateIgnoringOtherApps(true);
+    }
+    app.run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_address_bar_input() {
+        assert_eq!(normalize("example.com", "duckduckgo"), "https://example.com");
+        assert_eq!(normalize(" http://a.b/c ", "duckduckgo"), "http://a.b/c");
+        assert_eq!(normalize("localhost:8080", "duckduckgo"), "https://localhost:8080");
+        assert_eq!(normalize("about:blank", "duckduckgo"), "about:blank");
+        assert_eq!(normalize("rust lang & c", "duckduckgo"), "https://duckduckgo.com/?q=rust+lang+%26+c");
+        assert_eq!(normalize("rust", "brave"), "https://search.brave.com/search?q=rust");
+        assert_eq!(normalize("rust", "google"), "https://www.google.com/search?q=rust");
+        assert_eq!(normalize("rust", "startpage"), "https://www.startpage.com/do/search?q=rust");
+    }
+
+    #[test]
+    fn parses_tune_spec() {
+        assert!(tune_value(None, "jit", true));
+        assert!(!tune_value(Some("jit=0"), "jit", true));
+        assert!(tune_value(Some("prewarm=0, jit = 1"), "jit", false));
+        assert!(!tune_value(Some("pagecache=0"), "page", false));
+        assert!(tune_value(Some("garbage"), "jit", true));
+    }
+
+    #[test]
+    fn download_names_are_safe_and_unique() {
+        assert_eq!(sanitize_filename("../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_filename("..\\x.exe"), "x.exe");
+        assert_eq!(sanitize_filename(".hidden"), "hidden");
+        assert_eq!(sanitize_filename("a:b\u{7}.txt"), "a_b_.txt");
+        assert_eq!(sanitize_filename("   "), "download");
+        let dir = std::env::temp_dir().join(format!("mybrowser-dl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(unique_path(&dir, "f.zip"), dir.join("f.zip"));
+        std::fs::write(dir.join("f.zip"), b"").unwrap();
+        assert_eq!(unique_path(&dir, "f.zip"), dir.join("f (2).zip"));
+        std::fs::write(dir.join("f (2).zip"), b"").unwrap();
+        assert_eq!(unique_path(&dir, "f.zip"), dir.join("f (3).zip"));
+        std::fs::write(dir.join("README"), b"").unwrap();
+        assert_eq!(unique_path(&dir, "README"), dir.join("README (2)"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn profile_lock_is_exclusive() {
+        let dir = std::env::temp_dir().join(format!("mybrowser-lock-{}", std::process::id()));
+        let first = lock_profile(&dir).unwrap();
+        assert!(lock_profile(&dir).is_err(), "second lock must fail");
+        drop(first);
+        assert!(lock_profile(&dir).is_ok(), "lock is released with the file");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
