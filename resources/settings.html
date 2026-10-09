@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Nothing loads from the network; only this page's own inline code runs. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:">
+<title>Settings</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f6f7; --text: #1d1d1f; --muted: #6e6e73; --line: #e3e3e6;
+    --accent: #0a66d8; --danger: #c62828; --ok: #1f7a3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1c1c1e; --panel: #2a2a2d; --text: #f2f2f4; --muted: #a1a1a6; --line: #3a3a3d;
+            --accent: #4d9bff; --danger: #ff6b6b; --ok: #5cd27c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--text); display: flex; min-height: 100vh; }
+  nav { width: 190px; padding: 24px 12px; border-right: 1px solid var(--line); flex-shrink: 0; }
+  nav a { display: block; padding: 7px 12px; border-radius: 7px; color: var(--text); text-decoration: none; margin-bottom: 2px; }
+  nav a.on { background: var(--accent); color: #fff; }
+  main { flex: 1; padding: 28px 36px; max-width: 860px; }
+  h1 { font-size: 22px; margin: 0 0 18px; }
+  h2 { font-size: 15px; margin: 26px 0 10px; }
+  section { display: none; } section.on { display: block; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .row .hint { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  input[type=text], input[type=search], input[type=number], select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  input[type=search] { width: 100%; margin-bottom: 12px; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); }
+  .list { list-style: none; margin: 0; padding: 0; }
+  .list li { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .list .main { flex: 1; min-width: 0; }
+  .list .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list .sub { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list .time { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .empty { color: var(--muted); padding: 18px 0; }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
+  .note { color: var(--muted); font-size: 12.5px; }
+  #toast { position: fixed; bottom: 18px; right: 18px; background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.show { opacity: .92; }
+  progress { width: 120px; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="#general">General</a>
+  <a href="#privacy">Privacy</a>
+  <a href="#history">History</a>
+  <a href="#downloads">Downloads</a>
+  <a href="#extensions">Extensions</a>
+</nav>
+<main>
+  <section id="general">
+    <h1>General</h1>
+    <div class="row"><div><div>Search engine</div><div class="hint">Used for anything you type that isn't an address.</div></div>
+      <select data-setting="search">
+        <option value="duckduckgo">DuckDuckGo</option><option value="brave">Brave Search</option>
+        <option value="startpage">Startpage</option><option value="google">Google</option>
+      </select></div>
+    <div class="row"><div><div>New tab page</div><div class="hint">An http(s) address, or leave empty for a blank page.</div></div>
+      <input type="text" data-setting="homepage" placeholder="Blank page" size="32"></div>
+    <div class="row"><div><div>Put background tabs to sleep after</div><div class="hint">A sleeping tab frees its memory and reloads when you click it. 0 = never. All background tabs sleep at once when macOS runs low on memory.</div></div>
+      <span><input type="number" min="0" max="1440" data-setting="tab_sleep_minutes" style="width:70px"> minutes</span></div>
+    <div class="row"><div><div>Reopen tabs from last time</div><div class="hint">They come back asleep, so they cost almost nothing until clicked.</div></div>
+      <input type="checkbox" data-setting="restore_session"></div>
+    <div class="row"><div><div>Downloads folder</div><div class="hint" id="dl-default"></div></div>
+      <input type="text" data-setting="downloads_dir" placeholder="Default" size="32"></div>
+    <div class="row"><div><div>Fast JavaScript (JIT)</div><div class="hint">Off saves a lot of memory on heavy sites but makes JavaScript about 2–3× slower. Takes effect after restarting the browser.</div></div>
+      <input type="checkbox" data-setting="jit"></div>
+    <p class="note" id="profile"></p>
+  </section>
+
+  <section id="privacy">
+    <h1>Privacy</h1>
+    <p class="note">This browser sends nothing about you anywhere: no telemetry, no crash reports, no sync. History stays on this Mac.</p>
+    <div class="row"><div><div>Block trackers</div><div class="hint">Blocks advertising, analytics, social and fingerprinting trackers (Disconnect's list, also used by Firefox) when they're loaded by other sites.</div></div>
+      <input type="checkbox" data-setting="block_trackers"></div>
+    <div class="row"><div><div>Always on</div><div class="hint">Third-party cookies are blocked, WebKit's Intelligent Tracking Prevention is on, and ad-click attribution is off.</div></div>
+      <span class="tag">on</span></div>
+    <div class="row"><div><div>Fraudulent website warnings</div><div class="hint">Warns about known phishing sites, by sending shortened URL fingerprints to Apple's Safe Browsing service. Off keeps every visit private.</div></div>
+      <input type="checkbox" data-setting="safe_browsing"></div>
+    <div class="row"><div><div>Clear cookies and site data</div><div class="hint">Signs you out of every site and deletes caches and site storage.</div></div>
+      <button class="danger" id="clear-data">Clear…</button></div>
+  </section>
+
+  <section id="history">
+    <h1>History</h1>
+    <input type="search" id="history-q" placeholder="Search history">
+    <ul class="list" id="history-list"></ul>
+    <p><button class="danger" id="clear-history">Clear all history…</button></p>
+  </section>
+
+  <section id="downloads">
+    <h1>Downloads</h1>
+    <ul class="list" id="downloads-list"></ul>
+  </section>
+
+  <section id="extensions">
+    <h1>Extensions</h1>
+    <p class="note">Install a Safari/Chrome-style web extension from its unpacked folder (the one containing manifest.json). Installing grants it the permissions it lists.</p>
+    <p><button class="primary" id="install-ext">Install extension…</button></p>
+    <ul class="list" id="ext-list"></ul>
+  </section>
+</main>
+<div id="toast"></div>
+<script>
+"use strict";
+const call = (...args) => window.webkit.messageHandlers.browser.postMessage(args.map(String)).then(r => JSON.parse(r));
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const when = s => new Date(s * 1000).toLocaleString();
+const size = b => b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFixed(0) + " KB" : (b / 1048576).toFixed(1) + " MB";
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 2200); }
+function fail(e) { toast(String(e && e.message || e)); }
+
+// ---- sections
+const loaders = {};
+function show() {
+  const name = (location.hash || "#general").slice(1);
+  document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === name));
+  document.querySelectorAll("nav a").forEach(a => a.classList.toggle("on", a.hash === "#" + name));
+  document.title = name === "general" ? "Settings" : name[0].toUpperCase() + name.slice(1);
+  if (loaders[name]) loaders[name]();
+}
+addEventListener("hashchange", show);
+
+// ---- settings
+async function loadSettings() {
+  const s = await call("settings.get");
+  document.querySelectorAll("[data-setting]").forEach(input => {
+    const v = s[input.dataset.setting];
+    if (input.type === "checkbox") input.checked = v === "1"; else input.value = v;
+  });
+  $("dl-default").textContent = "Default: " + s.downloads_default;
+  $("profile").textContent = "Profile: " + s.profile;
+}
+document.querySelectorAll("[data-setting]").forEach(input => {
+  input.addEventListener("change", () => {
+    const v = input.type === "checkbox" ? (input.checked ? "1" : "0") : input.value.trim();
+    call("settings.set", input.dataset.setting, v).then(() => toast("Saved"), e => { fail(e); loadSettings(); });
+  });
+});
+loaders.general = loaders.privacy = loadSettings;
+$("clear-data").onclick = () => { if (confirm("Sign out of all sites and delete all cookies, caches and site data?")) call("data.clear").then(() => toast("Cleared"), fail); };
+
+// ---- history
+async function loadHistory() {
+  const rows = await call("history.list", $("history-q").value);
+  const list = $("history-list"); list.replaceChildren();
+  if (!rows.length) list.append(el("li", "empty", "No history."));
+  for (const r of rows) {
+    const li = el("li");
+    const main = el("div", "main");
+    const link = el("a", "title", r.title || r.url); link.href = "#"; link.onclick = e => { e.preventDefault(); call("open", r.url).catch(fail); };
+    main.append(link, el("div", "sub", r.url));
+    const del = el("button", null, "Delete"); del.onclick = () => call("history.delete", r.id).then(loadHistory, fail);
+    li.append(main, el("span", "time", when(r.at)), del);
+    list.append(li);
+  }
+}
+$("history-q").addEventListener("input", () => { clearTimeout(loadHistory.t); loadHistory.t = setTimeout(loadHistory, 150); });
+$("clear-history").onclick = () => { if (confirm("Delete all history?")) call("history.clear").then(loadHistory, fail); };
+loaders.history = loadHistory;
+
+// ---- downloads
+async function loadDownloads() {
+  const rows = await call("downloads.list");
+  const list = $("downloads-list"); list.replaceChildren();
+  if (!rows.length) list.append(el("li", "empty", "No downloads."));
+  let active = false;
+  for (const d of rows) {
+    const li = el("li");
+    const main = el("div", "main");
+    main.append(el("div", "title", d.path.split("/").pop()), el("div", "sub", d.url));
+    li.append(main);
+    if (d.status === "active") {
+      active = true;
+      const p = el("progress"); if (d.total > 0) { p.max = d.total; p.value = d.bytes; } li.append(p);
+      const c = el("button", null, "Cancel"); c.onclick = () => call("downloads.cancel", d.id).then(loadDownloads, fail); li.append(c);
+    } else {
+      li.append(el("span", "time", d.status === "done" ? size(d.bytes) : d.status));
+      if (d.status === "done" && d.exists) {
+        const o = el("button", null, "Open"); o.onclick = () => call("downloads.open", d.id).catch(fail);
+        const r = el("button", null, "Show in Finder"); r.onclick = () => call("downloads.reveal", d.id).catch(fail);
+        li.append(o, r);
+      }
+      const x = el("button", null, "Remove"); x.title = "Remove from list (keeps the file)"; x.onclick = () => call("downloads.remove", d.id).then(loadDownloads, fail);
+      li.append(x);
+    }
+    list.append(li);
+  }
+  clearTimeout(loadDownloads.t);
+  if (active && location.hash === "#downloads") loadDownloads.t = setTimeout(loadDownloads, 1000);
+}
+loaders.downloads = loadDownloads;
+
+// ---- extensions
+async function loadExtensions() {
+  const rows = await call("ext.list");
+  const list = $("ext-list"); list.replaceChildren();
+  if (!rows.length) list.append(el("li", "empty", "No extensions installed."));
+  for (const x of rows) {
+    const li = el("li");
+    const main = el("div", "main");
+    main.append(el("div", "title", (x.name || x.path.split("/").pop()) + (x.version ? "  " + x.version : "")));
+    if (x.description) main.append(el("div", "sub", x.description));
+    if (x.permissions.length) main.append(el("div", "sub", "Can access: " + x.permissions.join(", ")));
+    if (x.enabled && !x.loaded) main.append(el("div", "sub", "Failed to load"));
+    for (const e of x.errors) main.append(el("div", "sub", "⚠ " + e));
+    const toggle = el("input"); toggle.type = "checkbox"; toggle.checked = x.enabled; toggle.title = "Enabled";
+    toggle.onchange = () => call("ext.toggle", x.id, toggle.checked ? "1" : "0").then(loadExtensions, e => { fail(e); loadExtensions(); });
+    const rm = el("button", "danger", "Remove"); rm.onclick = () => { if (confirm("Remove " + (x.name || "this extension") + "?")) call("ext.remove", x.id).then(loadExtensions, fail); };
+    li.append(main, toggle, rm);
+    list.append(li);
+  }
+}
+$("install-ext").onclick = () => call("ext.install").then(r => { toast("Installed " + r.name); loadExtensions(); }, e => { if (String(e.message || e) !== "cancelled") fail(e); });
+loaders.extensions = loadExtensions;
+
+show();
+</script>
+</body>
+</html>
