@@ -219,8 +219,39 @@ The page inserts all data from websites (titles, URLs, file names) with
 `textContent`, never as HTML.
 
 Bridge ops: `settings.get/set`, `history.list/delete/clear`,
-`downloads.list/open/reveal/cancel/remove`, `ext.list/install/toggle/remove`,
-`data.clear`, `open` (http(s) only).
+`downloads.list/open/reveal/cancel/remove/clear`,
+`ext.list/install/toggle/remove`, `data.clear` (cookies and site data),
+`storage.get`, `storage.clear_cache`, `legacy.clear`, `open` (http(s) only).
+
+### Storage and leftover cleanup
+
+The Storage section shows what the browser keeps on disk, and clears it:
+- **Cookies and site data:** the profile's WebKit store, sized from its
+  folder.
+- **Cache:** disk, memory, fetch and offline caches only, so logins stay.
+- **History** and the **downloads list** (the files are kept).
+
+It also deletes **leftovers from older builds** (`internal::leftovers`):
+- WebKit's shared default store, from before profiles had their own,
+  under `WebKit/my-browser/WebsiteData`, `Caches/my-browser/WebKit` and
+  `HTTPStorages/my-browser.binarycookies*`,
+- the `dev.local.my-browser` test bundle's data.
+
+The list is fixed in code and resolved under `$HOME`. Nothing from the page
+chooses a path, and current profiles' stores
+(`WebKit/<app>/WebsiteDataStore/<id>`) are never in it. Sizes don't follow
+symlinks.
+
+## Find in page
+
+`Tab::show_find` adds a find row under the toolbar, built on first use, and
+shrinks the web view (`Tab::web_frame` accounts for it, including when a
+sleeping tab wakes). Searching uses WebKit's public
+`findString:withConfiguration:` with wrap-around, which continues from the
+current selection. A *new* term first clears the selection, through the
+browser's own script world (`defaultClientWorld`, invisible to the page), so
+it starts at the top. The field's delegate maps Enter, Shift+Enter and Esc;
+⌘G/⇧⌘G are menu items that open the bar if needed.
 
 ## Downloads
 
@@ -274,6 +305,7 @@ key press does.
 | ⌃Tab / ⌃⇧Tab / ⇧⌘] / ⇧⌘[ | Next / previous tab |
 | ⌘= ⌘+ / ⌘- / ⌘0 | Zoom in / out / actual size |
 | ⌘, / ⌘Y / ⌥⌘L | Settings / history / downloads |
+| ⌘F / ⌘G / ⇧⌘G | Find in page / next match / previous match (Enter and ⇧Enter in the field too, Esc closes) |
 | ⌘M | Minimize |
 | ⌘Z ⇧⌘Z ⌘X ⌘C ⌘V ⌘A | Text editing |
 
@@ -291,8 +323,12 @@ active tab.
 | `switch <i>` | `LOADED …` if the tab was asleep (it wakes), else a `TABS` line |
 | `tabs` / `sleep` | `TABS count=<n> active=<i> asleep=<k> windows=<w>` (`sleep` first puts background tabs to sleep) |
 | `state` | `STATE back=<0\|1> forward=<0\|1> url=<address bar> title=<window title>`, read from the real UI |
-| `visible` / `window` | `VISIBLE <0\|1>` / `WINDOW minimized=<0\|1>` |
+| `visible` | `VISIBLE <0\|1>` |
 | `key <combo>` | `KEY ok\|none` (whether a menu item took it) |
+| `find <text>`, `findnext`, `findprev` | `FIND found=<0\|1>` |
+| `findbar` / `findesc` | `FINDBAR open=<0\|1> text=<term> status=<label>` (`findesc` presses Esc in the field first) |
+| `selection` | `SELECTION <offset>`: where the current selection (find match) starts |
+| `window` | `WINDOW minimized=<0\|1> key=<0\|1> app_active=<0\|1>` |
 | `bridge <op>\t<arg>…` | `BRIDGE ok <json>` or `BRIDGE err <message>` |
 | `quit` or stdin EOF | exits |
 

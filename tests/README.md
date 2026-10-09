@@ -10,10 +10,10 @@ This runs four groups of tests:
 |---|---|---|
 | `src/main.rs` (unit tests) | Address-bar input becomes the right URL or search; `MYB_TUNE` settings are parsed correctly | No |
 | `benchmark/bench.rs` (unit tests) | Process measurement on itself, the C struct layout, event parsing, median and pass/fail logic, reading and writing the bars file, image generation, and the local page server (all pages, 404s) | No |
-| `src/store.rs`, `src/privacy.rs` (unit tests) | Settings validation (unknown keys and bad values refused), history search with literal `%`/`_`, downloads and extensions tables, persistence on disk, JSON escaping, tracker list unpacks and has the key rules (including the Messenger exemption) | No |
+| `src/store.rs`, `src/privacy.rs`, `src/internal.rs` (unit tests) | Settings validation (unknown keys and bad values refused), history search with literal `%`/`_`, downloads and extensions tables, persistence on disk, JSON escaping, tracker list unpacks and has the key rules (including the Messenger exemption), leftover cleanup only touches the known old paths, sizes don't follow symlinks | No |
 | `tests/e2e.rs` | Launches the real browser and drives it (see the list below) | Yes |
 
-The end-to-end tests (23) cover:
+The end-to-end tests (27) cover:
 
 - **Protocol and navigation:** loads report timing, failed loads, unknown commands, quitting, back/forward/reload with toolbar state, untitled pages
 - **Tabs and shortcuts:** ⌘T, ⌘W, ⇧⌘T, ⌘1/⌘9, ⌃Tab, ⇧⌘[ ], history and zoom keys, ⌘, ⌘Y ⌥⌘L open and reuse the settings tab, background tabs sleep and wake
@@ -21,6 +21,8 @@ The end-to-end tests (23) cover:
 - **Data:** history recorded, searchable and clearable, downloads land in the chosen folder without overwriting, clearing site data signs you out
 - **Settings page:** it loads and its bridge works, websites can't use the bridge or open or frame internal pages, unknown internal pages fail
 - **Extensions:** a content script runs, can be disabled and removed, and a folder without a manifest is refused
+- **Find in page:** ⌘F opens the bar, next/previous move the selection between matches and wrap both ways, a new term starts at the top, "No matches", Esc closes, ⌘G and ⇧⌘G reopen and search, and the bar survives navigation and a tab sleeping
+- **Storage:** sizes and counts are reported, clearing the cache keeps logins, the downloads list clears, and leftovers are deleted while profiles and other apps' files are kept (in a fake home folder)
 - **Engine and privacy:** every private WebKit setting exists on this macOS, and the tracker blocker compiles
 - **Benchmark window:** it's visible, and it never takes keyboard focus
 

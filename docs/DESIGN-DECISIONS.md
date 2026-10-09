@@ -256,6 +256,24 @@ So it keeps working if you move or delete the folder you installed from, and
 so removing it can delete exactly what the browser owns. Symlinks are skipped
 so an extension can't point outside itself.
 
+### How does find in page work, and why does a new term clear the selection?
+
+It uses WebKit's own public `findString` API, which highlights and scrolls to
+the match. That API searches onward from the current selection. Without
+clearing it, typing "ba" after "b" would skip a "ba" at the current spot. So
+a new term clears the selection first, using the browser's private script
+world, which pages can't see. The bar is built the first time you press ⌘F,
+so it costs nothing until then (idle memory measured the same with and
+without it).
+
+### Why is the leftover cleanup a fixed list of paths?
+
+Deleting files is irreversible, and the request comes from a web page (the
+settings page). So the page only says "delete leftovers"; the paths are fixed
+in code, resolved under `$HOME`, and shown with sizes before you confirm. The
+current profiles' stores aren't in the list, and a unit test checks that they
+and other apps' files survive.
+
 ---
 
 ## Measurement

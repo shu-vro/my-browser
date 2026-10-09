@@ -68,6 +68,16 @@ empty name becomes "download". The file always goes into the downloads folder,
 and an existing file is never overwritten (`unique_path`). Tests:
 `download_names_are_safe_and_unique`, `downloads_go_to_the_chosen_folder`.
 
+### Settings page → file system (storage cleanup)
+
+"Delete leftovers" can only remove a fixed list of old paths under `$HOME`
+(WebKit's shared default store from before profiles, and an old test bundle).
+The page never sends a path. Current profiles' stores aren't in the list.
+Sizes and deletion don't follow symlinks. Tests:
+`leftovers_are_only_the_known_old_paths`, and
+`leftover_data_is_listed_and_deleted_but_profiles_are_kept` (run in a fake home
+folder).
+
 ### Extensions
 
 - Installing is a user action: picking a folder in a native dialog.

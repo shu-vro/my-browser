@@ -29,10 +29,13 @@ worse is rejected.
   - popups open as tabs,
   - file upload,
   - JavaScript dialogs.
+- **Find in page** (⌘F, ⌘G, ⇧⌘G).
 - **Web extensions** (Safari/Chrome format, unpacked), managed from the
   settings page.
+- **Storage controls:** see and clear cookies, cache, history and the
+  downloads list, and delete data left behind by older builds.
 - **Settings** at `mybrowser://settings`, opened with ⌘, : search engine, tab
-  sleep, privacy, history, downloads and extensions.
+  sleep, privacy, history, downloads, storage and extensions.
 
 ## Requirements
 
@@ -64,7 +67,7 @@ Command-line flags:
 ## Test and measure
 
 ```sh
-cargo test --release                  # 43 tests, opens real browser windows briefly
+cargo test --release                  # 49 tests, opens real browser windows briefly
 ./target/release/bench                # benchmark against the recorded bars (~4 min)
 ```
 

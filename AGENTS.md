@@ -36,7 +36,7 @@ no devtools; extensions yes. Full vision and rules:
 
 ```sh
 cargo build --release                  # always test release builds
-cargo test --release                   # 43 tests, ~5 s, opens windows (needs GUI session)
+cargo test --release                   # 49 tests, ~5 s, opens windows (needs GUI session)
 ./target/release/bench --runs 1        # ~2 min quick benchmark (floating window)
 ./target/release/bench                 # ~4 min, compare against benchmark/bars.tsv
 BENCH_VERBOSE=1 ./target/release/bench # per-process footprint at every measurement
@@ -87,6 +87,14 @@ commands:
 - **The owner's shell aliases `ls`,** which can hang scripted commands. Use
   `/bin/ls`.
 - **Python from python.org lacks certificates.** Use `curl` for downloads.
+
+## Commits
+
+One commit per feature or fix, made when it's done and tested, with the
+code, tests and docs for it together. The subject line is imperative and
+says what changed for the user ("Add find in page (Cmd+F)"). The body says
+why, with the numbers if anything was measured. Commit only when the owner
+has asked for commits in this session.
 
 ## When you finish a session
 
