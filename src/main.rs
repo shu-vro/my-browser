@@ -318,6 +318,21 @@ define_class!(
             self.with_active(|t| t.focus_address_bar());
         }
 
+        #[unsafe(method(showFind:))]
+        fn show_find_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.show_find());
+        }
+
+        #[unsafe(method(findNext:))]
+        fn find_next_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| self.find_in(t, false));
+        }
+
+        #[unsafe(method(findPrevious:))]
+        fn find_previous_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| self.find_in(t, true));
+        }
+
         #[unsafe(method(minimizeWindow:))]
         fn minimize_action(&self, _s: Option<&AnyObject>) {
             self.with_active(|t| t.window().miniaturize(None));
@@ -947,6 +962,48 @@ impl App {
                 println!("{}", self.tabs_line());
             }
             ("key", _) => println!("KEY {}", if self.press(arg) { "ok" } else { "none" }),
+            ("find", Some(t)) => {
+                t.show_find();
+                t.set_find_text(arg);
+                t.ivars().find_report.set(true);
+                t.find(false);
+            }
+            ("findnext" | "findprev", Some(t)) => {
+                t.ivars().find_report.set(true);
+                self.find_in(&t, name == "findprev");
+            }
+            ("findbar", Some(t)) => println!("{}", t.find_state()),
+            // Where the selection (the current find match) starts in its text node.
+            ("selection", Some(t)) => match t.web() {
+                Some(web) => {
+                    let done = RcBlock::new(|r: *mut AnyObject, _e: *mut NSError| {
+                        let n = unsafe { r.as_ref() }
+                            .and_then(|o| o.downcast_ref::<objc2_foundation::NSNumber>())
+                            .map_or(-1, |n| n.integerValue());
+                        println!("SELECTION {n}");
+                    });
+                    unsafe {
+                        web.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+                            &NSString::from_str("(s => s.rangeCount ? s.getRangeAt(0).startOffset : -1)(getSelection())"),
+                            None,
+                            &WKContentWorld::defaultClientWorld(self.mtm()),
+                            Some(&done),
+                        )
+                    };
+                }
+                None => println!("SELECTION -1"),
+            },
+            // Esc in the find field, through the field's own key handling.
+            ("findesc", Some(t)) => {
+                let window = t.window();
+                match window.firstResponder().and_then(|r| r.downcast::<objc2_app_kit::NSTextView>().ok()) {
+                    Some(editor) => {
+                        let _: () = unsafe { msg_send![&*editor, doCommandBySelector: sel!(cancelOperation:)] };
+                    }
+                    None => t.hide_find(),
+                }
+                println!("{}", t.find_state());
+            }
             ("bridge", _) => internal::handle(
                 self,
                 arg.split('\t').map(str::to_string).collect(),
@@ -958,6 +1015,14 @@ impl App {
             ("quit", _) => NSApplication::sharedApplication(self.mtm()).terminate(None),
             _ => println!("ERR unknown command: {cmd}"),
         }
+    }
+
+    /// Cmd+G / Shift+Cmd+G: repeat the search, opening the bar if it's closed.
+    fn find_in(&self, tab: &Tab, backwards: bool) {
+        if !tab.is_find_open() {
+            tab.show_find();
+        }
+        tab.find(backwards);
     }
 
     fn tabs_line(&self) -> String {
@@ -1258,6 +1323,9 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Copy", sel!(copy:), "c", cmd, false),
                 ("Paste", sel!(paste:), "v", cmd, false),
                 ("Select All", sel!(selectAll:), "a", cmd, false),
+                ("Find…", sel!(showFind:), "f", cmd, true),
+                ("Find Next", sel!(findNext:), "g", cmd, true),
+                ("Find Previous", sel!(findPrevious:), "G", cmd, true),
             ],
         ),
         (

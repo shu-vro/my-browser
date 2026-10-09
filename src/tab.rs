@@ -13,7 +13,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{
-    NSAlert, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSEventModifierFlags, NSImage,
+    NSApplication, NSControl, NSControlTextEditingDelegate, NSSearchField, NSSearchFieldDelegate, NSTextFieldDelegate,
+    NSTextView, NSView, NSAlert, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSEventModifierFlags, NSImage,
     NSModalResponseOK, NSOpenPanel, NSTextField, NSWindow, NSWindowCollectionBehavior, NSWindowDelegate,
     NSWindowStyleMask, NSWindowTabbingMode, NSFloatingWindowLevel,
 };
@@ -22,6 +23,7 @@ use objc2_foundation::{
     NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURLRequest, NSURL,
 };
 use objc2_web_kit::{
+    WKContentWorld, WKFindConfiguration, WKFindResult,
     WKWebExtensionContext, WKWebExtensionTab, WKWebExtensionTabChangedProperties, WKWebExtensionWindow,
     WKDownload, WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
     WKNavigationResponse, WKNavigationResponsePolicy, WKNavigationType, WKOpenPanelParameters, WKUIDelegate,
@@ -32,6 +34,8 @@ use crate::App;
 
 /// Height of the toolbar row (buttons + address bar) above the page.
 const TOOLBAR_H: f64 = 32.0;
+/// Height of the find bar under the toolbar, while it's open.
+const FIND_H: f64 = 30.0;
 const BUTTON_W: f64 = 30.0;
 /// WKWebView properties whose changes refresh the toolbar.
 const OBSERVED: [&str; 5] = ["URL", "title", "canGoBack", "canGoForward", "loading"];
@@ -59,6 +63,15 @@ pub struct TabIvars {
     pub nav_start: Cell<Option<Instant>>,
     /// Set by our own loads; web pages may not navigate to internal pages.
     allow_internal: Cell<bool>,
+    /// Find bar (Cmd+F): built on first use.
+    find_row: OnceCell<Retained<NSView>>,
+    find_field: OnceCell<Retained<NSSearchField>>,
+    find_status: OnceCell<Retained<NSTextField>>,
+    find_open: Cell<bool>,
+    /// The term last searched for; a new term searches from the top.
+    find_last: RefCell<String>,
+    /// Bench: print the next find result.
+    pub find_report: Cell<bool>,
 }
 
 define_class!(
@@ -227,6 +240,28 @@ define_class!(
         }
     }
 
+    unsafe impl NSControlTextEditingDelegate for Tab {
+        /// Find field keys: Enter = next, Shift+Enter = previous, Esc = close.
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        fn find_field_command(&self, _control: &NSControl, _view: &NSTextView, command: objc2::runtime::Sel) -> bool {
+            if command == sel!(cancelOperation:) {
+                self.hide_find();
+                true
+            } else if command == sel!(insertNewline:) {
+                let shift = NSApplication::sharedApplication(self.mtm())
+                    .currentEvent()
+                    .is_some_and(|e| e.modifierFlags().contains(NSEventModifierFlags::Shift));
+                self.find(shift);
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    unsafe impl NSTextFieldDelegate for Tab {}
+    unsafe impl NSSearchFieldDelegate for Tab {}
+
     /// The tab as web extensions see it (`tabs` API, content scripts).
     unsafe impl WKWebExtensionTab for Tab {
         #[unsafe(method(windowForWebExtensionContext:))]
@@ -358,6 +393,27 @@ define_class!(
         fn stop_action(&self, _s: Option<&AnyObject>) {
             self.stop();
         }
+
+        /// Typing in the find field: search as you type.
+        #[unsafe(method(findChanged:))]
+        fn find_changed_action(&self, _s: Option<&AnyObject>) {
+            self.find(false);
+        }
+
+        #[unsafe(method(findNextButton:))]
+        fn find_next_button(&self, _s: Option<&AnyObject>) {
+            self.find(false);
+        }
+
+        #[unsafe(method(findPreviousButton:))]
+        fn find_previous_button(&self, _s: Option<&AnyObject>) {
+            self.find(true);
+        }
+
+        #[unsafe(method(closeFind:))]
+        fn close_find_action(&self, _s: Option<&AnyObject>) {
+            self.hide_find();
+        }
     }
 );
 
@@ -478,14 +534,7 @@ impl Tab {
     /// Create the web view (waking the tab). Uses `config` for popups.
     fn attach_web(&self, config: &WKWebViewConfiguration) -> Retained<WKWebView> {
         let content = self.window().contentView().unwrap();
-        let frame = content.frame();
-        let web = unsafe {
-            WKWebView::initWithFrame_configuration(
-                WKWebView::alloc(self.mtm()),
-                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(frame.size.width, frame.size.height - TOOLBAR_H)),
-                config,
-            )
-        };
+        let web = unsafe { WKWebView::initWithFrame_configuration(WKWebView::alloc(self.mtm()), self.web_frame(), config) };
         web.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
         unsafe {
             web.setNavigationDelegate(Some(ProtocolObject::from_ref(self)));
@@ -504,6 +553,168 @@ impl Tab {
         }
         self.ivars().web.replace(Some(web.clone()));
         web
+    }
+
+    /// The page area: below the toolbar, and below the find bar while it's open.
+    fn web_frame(&self) -> NSRect {
+        let size = self.window().contentView().unwrap().frame().size;
+        let top = TOOLBAR_H + if self.ivars().find_open.get() { FIND_H } else { 0.0 };
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(size.width, size.height - top))
+    }
+
+    /// Open the find bar (Cmd+F) and focus its field.
+    pub fn show_find(&self) {
+        let iv = self.ivars();
+        if iv.find_row.get().is_none() {
+            self.build_find_bar();
+        }
+        let content = self.window().contentView().unwrap();
+        let row = iv.find_row.get().unwrap();
+        if !iv.find_open.replace(true) {
+            let size = content.frame().size;
+            row.setFrame(NSRect::new(NSPoint::new(0.0, size.height - TOOLBAR_H - FIND_H), NSSize::new(size.width, FIND_H)));
+            content.addSubview(row);
+            if let Some(web) = self.web() {
+                web.setFrame(self.web_frame());
+            }
+        }
+        let field = iv.find_field.get().unwrap();
+        self.window().makeFirstResponder(Some(field));
+        unsafe { field.selectText(None) };
+    }
+
+    /// Close the find bar and give the page its space back.
+    pub fn hide_find(&self) {
+        let iv = self.ivars();
+        if !iv.find_open.replace(false) {
+            return;
+        }
+        if let Some(row) = iv.find_row.get() {
+            row.removeFromSuperview();
+        }
+        if let Some(web) = self.web() {
+            web.setFrame(self.web_frame());
+            self.window().makeFirstResponder(Some(&web));
+        }
+        iv.find_last.replace(String::new());
+    }
+
+    pub fn is_find_open(&self) -> bool {
+        self.ivars().find_open.get()
+    }
+
+    pub fn set_find_text(&self, text: &str) {
+        if let Some(f) = self.ivars().find_field.get() {
+            f.setStringValue(&NSString::from_str(text));
+        }
+    }
+
+    /// `FINDBAR open=<0|1> text=<term> status=<shown status>`
+    pub fn find_state(&self) -> String {
+        let iv = self.ivars();
+        let text = iv.find_field.get().map(|f| f.stringValue().to_string()).unwrap_or_default();
+        let status = iv.find_status.get().map(|s| s.stringValue().to_string()).unwrap_or_default();
+        format!("FINDBAR open={} text={text} status={status}", iv.find_open.get() as u8)
+    }
+
+    fn build_find_bar(&self) {
+        let mtm = self.mtm();
+        let width = self.window().contentView().unwrap().frame().size.width;
+        let row = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, FIND_H)));
+        row.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMinYMargin);
+
+        let field = NSSearchField::new(mtm);
+        field.setFrame(NSRect::new(NSPoint::new(8.0, 4.0), NSSize::new(260.0, 22.0)));
+        field.setPlaceholderString(Some(&NSString::from_str("Find on page")));
+        unsafe {
+            field.setTarget(Some(self));
+            field.setAction(Some(sel!(findChanged:)));
+            field.setDelegate(Some(ProtocolObject::from_ref(self)));
+        }
+        row.addSubview(&field);
+
+        let buttons = [
+            ("chevron.up", "Previous match", sel!(findPreviousButton:), 274.0),
+            ("chevron.down", "Next match", sel!(findNextButton:), 300.0),
+        ];
+        for (symbol, label, action, x) in buttons {
+            let b = unsafe { NSButton::buttonWithImage_target_action(&symbol_image(symbol, label), Some(self), Some(action), mtm) };
+            b.setBordered(false);
+            b.setFrame(NSRect::new(NSPoint::new(x, 3.0), NSSize::new(26.0, 24.0)));
+            row.addSubview(&b);
+        }
+
+        let status = NSTextField::labelWithString(&NSString::from_str(""), mtm);
+        status.setFrame(NSRect::new(NSPoint::new(334.0, 7.0), NSSize::new(200.0, 16.0)));
+        status.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+        row.addSubview(&status);
+
+        let done = unsafe {
+            NSButton::buttonWithTitle_target_action(&NSString::from_str("Done"), Some(self), Some(sel!(closeFind:)), mtm)
+        };
+        done.setFrame(NSRect::new(NSPoint::new(width - 76.0, 2.0), NSSize::new(68.0, 26.0)));
+        done.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
+        row.addSubview(&done);
+
+        let _ = self.ivars().find_field.set(field);
+        let _ = self.ivars().find_status.set(status);
+        let _ = self.ivars().find_row.set(row);
+    }
+
+    /// Find the field's text in the page, wrapping around. A new term starts
+    /// from the top of the page; repeating it moves to the next match.
+    pub fn find(&self, backwards: bool) {
+        let iv = self.ivars();
+        let (Some(field), Some(web)) = (iv.find_field.get(), self.web()) else { return };
+        let text = field.stringValue().to_string();
+        if text.is_empty() {
+            iv.find_status.get().unwrap().setStringValue(&NSString::from_str(""));
+            iv.find_last.replace(String::new());
+            return;
+        }
+        let new_term = iv.find_last.replace(text.clone()) != text;
+        let this = self.retain();
+        let search = move || {
+            let config = unsafe { WKFindConfiguration::new(this.mtm()) };
+            unsafe {
+                config.setBackwards(backwards);
+                config.setWraps(true);
+                config.setCaseSensitive(false);
+            }
+            let tab = this.clone();
+            let done = RcBlock::new(move |result: std::ptr::NonNull<WKFindResult>| {
+                let found = unsafe { result.as_ref().matchFound() };
+                let label = if found { "" } else { "No matches" };
+                tab.ivars().find_status.get().unwrap().setStringValue(&NSString::from_str(label));
+                if tab.ivars().find_report.replace(false) {
+                    println!("FIND found={}", found as u8);
+                }
+            });
+            if let Some(web) = this.web() {
+                unsafe { web.findString_withConfiguration_completionHandler(&NSString::from_str(&text), Some(&config), &done) };
+            }
+        };
+        if new_term {
+            // Searching continues from the current selection; drop it so a new
+            // term starts at the top. Runs in the browser's own script world,
+            // invisible to the page.
+            let search = RefCell::new(Some(search));
+            let then = RcBlock::new(move |_r: *mut AnyObject, _e: *mut NSError| {
+                if let Some(s) = search.take() {
+                    s();
+                }
+            });
+            unsafe {
+                web.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+                    &NSString::from_str("getSelection().removeAllRanges()"),
+                    None,
+                    &WKContentWorld::defaultClientWorld(self.mtm()),
+                    Some(&then),
+                )
+            };
+        } else {
+            search();
+        }
     }
 
     fn ensure_web(&self) -> Retained<WKWebView> {

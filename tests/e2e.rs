@@ -701,3 +701,66 @@ fn leftover_data_is_listed_and_deleted_but_profiles_are_kept() {
     assert!(lib.join("HTTPStorages/com.apple.Safari.binarycookies").exists(), "other apps kept");
     assert!(!lib.join("HTTPStorages/my-browser.binarycookies").exists());
 }
+
+// ---------------------------------------------------------------------------
+// Find in page
+
+#[test]
+fn find_bar_finds_steps_wraps_and_closes() {
+    let mut b = launch();
+    // "alpha" at offsets 0 and 11.
+    b.nav("go data:text/html,<title>t</title><p>alpha beta alpha gamma</p>");
+    b.key("cmd+f");
+    assert!(b.send("findbar").starts_with("FINDBAR open=1"), "cmd+f opens the bar");
+
+    assert_eq!(b.send("find alpha"), "FIND found=1");
+    assert_eq!(b.send("selection"), "SELECTION 0");
+    assert_eq!(b.send("findnext"), "FIND found=1");
+    assert_eq!(b.send("selection"), "SELECTION 11");
+    assert_eq!(b.send("findnext"), "FIND found=1");
+    assert_eq!(b.send("selection"), "SELECTION 0", "wraps around");
+    assert_eq!(b.send("findprev"), "FIND found=1");
+    assert_eq!(b.send("selection"), "SELECTION 11", "previous wraps back");
+
+    // A new term starts from the top again.
+    assert_eq!(b.send("find gamma"), "FIND found=1");
+    assert_eq!(b.send("selection"), "SELECTION 17");
+
+    assert_eq!(b.send("find zzz"), "FIND found=0");
+    assert_eq!(b.send("findbar"), "FINDBAR open=1 text=zzz status=No matches");
+
+    // Esc closes it; Cmd+G reopens it and searches again.
+    assert!(b.send("findesc").starts_with("FINDBAR open=0"));
+    b.key("cmd+g");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let bar = b.send("findbar");
+        if bar == "FINDBAR open=1 text=zzz status=No matches" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "cmd+g didn't reopen and search: {bar}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Shift+Cmd+G searches backwards from the same bar.
+    b.send("find alpha");
+    b.key("cmd+shift+g");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(b.send("selection"), "SELECTION 11", "previous from the first match wraps to the last");
+}
+
+#[test]
+fn find_bar_survives_navigation_and_sleep() {
+    let base = serve();
+    let mut b = launch();
+    b.nav(&format!("go {base}/page/needle"));
+    assert_eq!(b.send("find needle"), "FIND found=1");
+    // The bar stays open across a navigation and searches the new page.
+    b.nav(&format!("go {base}/page/other"));
+    assert_eq!(b.send("findnext"), "FIND found=0");
+    // A tab that slept and woke up still lays out under an open find bar.
+    b.nav(&format!("newtab {base}/page/second"));
+    b.send("sleep");
+    b.nav("switch 0");
+    assert!(b.send("findbar").starts_with("FINDBAR open=1"));
+    assert_eq!(b.send("find other"), "FIND found=1");
+}
