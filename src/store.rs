@@ -159,6 +159,10 @@ impl Store {
         .unwrap_or_default()
     }
 
+    pub fn history_count(&self) -> i64 {
+        self.db.query_row("SELECT COUNT(*) FROM history", [], |r| r.get(0)).unwrap_or(0)
+    }
+
     pub fn delete_visit(&self, id: i64) {
         let _ = self.db.execute("DELETE FROM history WHERE id = ?1", [id]);
     }
@@ -199,6 +203,11 @@ impl Store {
 
     pub fn remove_download(&self, id: i64) {
         let _ = self.db.execute("DELETE FROM downloads WHERE id = ?1", [id]);
+    }
+
+    /// Forget finished downloads (the files stay); in-flight ones are kept.
+    pub fn clear_downloads(&self) {
+        let _ = self.db.execute("DELETE FROM downloads WHERE status != 'active'", []);
     }
 
     /// Downloads still marked active belong to a previous run that ended mid-download.
@@ -303,6 +312,7 @@ mod tests {
         // LIKE wildcards in the query are literal.
         assert_eq!(s.history("100%_", 10).len(), 1);
         assert_eq!(s.history("%", 10).len(), 1);
+        assert_eq!(s.history_count(), 2);
         s.delete_visit(a);
         assert_eq!(s.history("", 10).len(), 1);
         s.clear_history();
@@ -321,6 +331,12 @@ mod tests {
         assert_eq!((d.status.as_str(), d.bytes), ("done", 42));
         s.remove_download(id);
         assert!(s.downloads().is_empty());
+        let active = s.add_download("https://x/a", "/tmp/a");
+        let done = s.add_download("https://x/b", "/tmp/b");
+        s.finish_download(done, "done", 1);
+        s.clear_downloads();
+        let left: Vec<i64> = s.downloads().iter().map(|d| d.id).collect();
+        assert_eq!(left, vec![active], "only the in-flight download stays");
     }
 
     #[test]

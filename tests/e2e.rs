@@ -25,9 +25,14 @@ fn launch() -> Browser {
 }
 
 fn spawn(extra: &[&str]) -> (Child, ChildStdin, Receiver<String>) {
+    spawn_env(extra, &[])
+}
+
+fn spawn_env(extra: &[&str], env: &[(&str, &str)]) -> (Child, ChildStdin, Receiver<String>) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_my-browser"))
         .arg("--bench")
         .args(extra)
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -45,7 +50,11 @@ fn spawn(extra: &[&str]) -> (Child, ChildStdin, Receiver<String>) {
 }
 
 fn launch_with(extra: &[&str]) -> Browser {
-    let (child, stdin, lines) = spawn(extra);
+    launch_env(extra, &[])
+}
+
+fn launch_env(extra: &[&str], env: &[(&str, &str)]) -> Browser {
+    let (child, stdin, lines) = spawn_env(extra, env);
     let mut b = Browser { child, stdin, lines, tune: Vec::new() };
     loop {
         match b.next() {
@@ -224,8 +233,10 @@ impl Drop for TempProfile {
         if let Ok(db) = rusqlite::Connection::open(self.0.join("browser.db")) {
             if let Ok(id) = db.query_row("SELECT value FROM settings WHERE key='profile_id'", [], |r| r.get::<_, String>(0)) {
                 if let Some(home) = std::env::var_os("HOME") {
-                    let store = Path::new(&home).join("Library/WebKit/my-browser/WebsiteDataStore").join(id.to_lowercase());
-                    let _ = std::fs::remove_dir_all(store);
+                    // Cookies and site data, and extension storage, both keyed by the profile id.
+                    let webkit = Path::new(&home).join("Library/WebKit/my-browser");
+                    let _ = std::fs::remove_dir_all(webkit.join("WebsiteDataStore").join(id.to_lowercase()));
+                    let _ = std::fs::remove_dir_all(webkit.join("WebExtensions").join(id.to_uppercase()));
                 }
             }
         }
@@ -640,4 +651,53 @@ fn installing_a_folder_without_manifest_fails() {
     let r = b.send(&format!("bridge ext.install\t{}", dir.path()));
     assert!(r.starts_with("BRIDGE err ") && r.contains("manifest.json"), "{r}");
     assert_eq!(b.bridge(&["ext.list"]), "[]");
+}
+
+// ---------------------------------------------------------------------------
+// Storage
+
+#[test]
+fn storage_reports_and_clears_this_profile() {
+    let base = serve();
+    let mut b = launch();
+    b.nav(&format!("go {base}/page/one"));
+    let s = b.bridge(&["storage.get"]);
+    assert!(s.contains("\"history\":1"), "{s}");
+    assert_eq!(b.bridge(&["storage.clear_cache"]), "true");
+    // Clearing the cache keeps logins.
+    b.nav(&format!("go {base}/setcookie"));
+    b.bridge(&["storage.clear_cache"]);
+    b.nav(&format!("go {base}/echo"));
+    assert!(b.state_until(|s| s.contains("title=cookie:")).contains("cookie:session=abc123"));
+    assert_eq!(b.bridge(&["downloads.clear"]), "true");
+    assert!(b.bridge(&["storage.get"]).contains("\"downloads\":0"));
+}
+
+#[test]
+fn leftover_data_is_listed_and_deleted_but_profiles_are_kept() {
+    // A fake home, so the real ~/Library is never touched.
+    let home = TempProfile::new("home");
+    let lib = home.0.join("Library");
+    let put = |p: &str| {
+        let p = lib.join(p);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b"x").unwrap();
+    };
+    put("HTTPStorages/my-browser.binarycookies");
+    put("HTTPStorages/my-browser.binarycookies_tmp_9.dat");
+    put("WebKit/my-browser/WebsiteData/IndexedDB/db");
+    put("Caches/my-browser/WebKit/NetworkCache/r");
+    put("WebKit/my-browser/WebsiteDataStore/1234/cookies");
+    put("HTTPStorages/com.apple.Safari.binarycookies");
+
+    let mut b = launch_env(&[], &[("HOME", home.path())]);
+    let s = b.bridge(&["storage.get"]);
+    assert_eq!(s.matches("\"path\":").count(), 4, "{s}");
+    assert!(!s.contains("WebsiteDataStore") && !s.contains("Safari"), "{s}");
+    let r = b.bridge(&["legacy.clear"]);
+    assert!(r.starts_with("{\"removed\":4,"), "{r}");
+    assert!(b.bridge(&["storage.get"]).contains("\"leftovers\":[]"));
+    assert!(lib.join("WebKit/my-browser/WebsiteDataStore/1234/cookies").exists(), "profile data kept");
+    assert!(lib.join("HTTPStorages/com.apple.Safari.binarycookies").exists(), "other apps kept");
+    assert!(!lib.join("HTTPStorages/my-browser.binarycookies").exists());
 }

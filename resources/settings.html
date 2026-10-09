@@ -50,6 +50,7 @@
   <a href="#privacy">Privacy</a>
   <a href="#history">History</a>
   <a href="#downloads">Downloads</a>
+  <a href="#storage">Storage</a>
   <a href="#extensions">Extensions</a>
 </nav>
 <main>
@@ -96,6 +97,23 @@
   <section id="downloads">
     <h1>Downloads</h1>
     <ul class="list" id="downloads-list"></ul>
+  </section>
+
+  <section id="storage">
+    <h1>Storage</h1>
+    <p class="note">Everything this browser keeps on your Mac. Nothing here is ever uploaded.</p>
+    <div class="row"><div><div>Cookies and site data</div><div class="hint" id="st-site"></div></div>
+      <button class="danger" id="st-clear-site">Clear…</button></div>
+    <div class="row"><div><div>Cached files</div><div class="hint">Copies of pages and images kept to load sites faster. Clearing keeps you signed in.</div></div>
+      <button id="st-clear-cache">Clear cache</button></div>
+    <div class="row"><div><div>History</div><div class="hint" id="st-history"></div></div>
+      <button class="danger" id="st-clear-history">Clear…</button></div>
+    <div class="row"><div><div>Downloads list</div><div class="hint" id="st-downloads"></div></div>
+      <button id="st-clear-downloads">Clear list</button></div>
+    <h2>Left over from older versions</h2>
+    <p class="note">Earlier builds kept cookies and site data in one shared place. Your profile doesn't use it anymore, so it's safe to delete.</p>
+    <ul class="list" id="st-leftovers"></ul>
+    <p><button class="danger" id="st-clear-leftovers">Delete leftovers…</button></p>
   </section>
 
   <section id="extensions">
@@ -196,6 +214,27 @@ async function loadDownloads() {
   if (active && location.hash === "#downloads") loadDownloads.t = setTimeout(loadDownloads, 1000);
 }
 loaders.downloads = loadDownloads;
+
+// ---- storage
+async function loadStorage() {
+  const s = await call("storage.get");
+  $("st-site").textContent = s.site_data_bytes ? size(s.site_data_bytes) + " for this profile. Clearing signs you out of every site." : "Clearing signs you out of every site.";
+  $("st-history").textContent = s.history + (s.history === 1 ? " visit" : " visits");
+  $("st-downloads").textContent = s.downloads + (s.downloads === 1 ? " entry" : " entries") + ". Clearing the list keeps the files.";
+  const list = $("st-leftovers"); list.replaceChildren();
+  if (!s.leftovers.length) list.append(el("li", "empty", "Nothing left over."));
+  for (const l of s.leftovers) {
+    const li = el("li"); const main = el("div", "main");
+    main.append(el("div", "sub", l.path)); li.append(main, el("span", "time", size(l.bytes))); list.append(li);
+  }
+  $("st-clear-leftovers").disabled = !s.leftovers.length;
+}
+$("st-clear-site").onclick = () => { if (confirm("Sign out of all sites and delete all cookies, caches and site data?")) call("data.clear").then(() => { toast("Cleared"); loadStorage(); }, fail); };
+$("st-clear-cache").onclick = () => call("storage.clear_cache").then(() => { toast("Cache cleared"); loadStorage(); }, fail);
+$("st-clear-history").onclick = () => { if (confirm("Delete all history?")) call("history.clear").then(() => { toast("History cleared"); loadStorage(); }, fail); };
+$("st-clear-downloads").onclick = () => call("downloads.clear").then(() => { toast("List cleared"); loadStorage(); }, fail);
+$("st-clear-leftovers").onclick = () => { if (confirm("Delete the leftover data listed here? This can't be undone.")) call("legacy.clear").then(r => { toast("Freed " + size(r.bytes)); loadStorage(); }, fail); };
+loaders.storage = loadStorage;
 
 // ---- extensions
 async function loadExtensions() {

@@ -186,6 +186,16 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             "true".into()
         }),
         "data.clear" => return clear_site_data(app.data_store(), reply),
+        "storage.get" => Ok(storage_json(app)),
+        "storage.clear_cache" => return clear_cache(app.data_store(), reply),
+        "downloads.clear" => {
+            store.clear_downloads();
+            ok()
+        }
+        "legacy.clear" => {
+            let (removed, bytes) = remove_paths(&leftovers(&home()));
+            Ok(format!("{{\"removed\":{removed},\"bytes\":{bytes}}}"))
+        }
         "open" => match args.get(1) {
             Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
                 app.open_tab(url, false);
@@ -321,6 +331,117 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+fn home() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
+/// WebKit keeps an app's data under its bundle id, or the executable's name
+/// when it isn't bundled.
+fn webkit_app_id() -> String {
+    objc2_foundation::NSBundle::mainBundle()
+        .bundleIdentifier()
+        .map(|s| s.to_string())
+        .or_else(|| std::env::current_exe().ok()?.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "my-browser".into())
+}
+
+/// Data that older builds left behind: WebKit's shared default store (cookies,
+/// site data, cache), from before every profile got its own store, and the
+/// `dev.local.my-browser` test bundle. A fixed list: current profiles live in
+/// `WebKit/<app>/WebsiteDataStore/<id>` and are never in it.
+pub fn leftovers(home: &Path) -> Vec<PathBuf> {
+    let lib = home.join("Library");
+    let mut paths = vec![
+        lib.join("WebKit/my-browser/WebsiteData"),
+        lib.join("Caches/my-browser/WebKit"),
+        lib.join("WebKit/dev.local.my-browser"),
+        lib.join("Caches/dev.local.my-browser"),
+    ];
+    // The old shared cookie file and its unfinished temp copies.
+    if let Ok(dir) = std::fs::read_dir(lib.join("HTTPStorages")) {
+        for entry in dir.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let ours = ["my-browser.binarycookies", "dev.local.my-browser"].iter().any(|p| name.starts_with(p));
+            if ours {
+                paths.push(entry.path());
+            }
+        }
+    }
+    paths.retain(|p| p.symlink_metadata().is_ok());
+    paths.sort();
+    paths
+}
+
+/// Bytes on disk, without following symlinks.
+fn size_of(path: &Path) -> u64 {
+    let Ok(meta) = path.symlink_metadata() else { return 0 };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    std::fs::read_dir(path).map_or(0, |d| d.flatten().map(|e| size_of(&e.path())).sum())
+}
+
+/// Delete each path; returns (how many, bytes freed).
+fn remove_paths(paths: &[PathBuf]) -> (usize, u64) {
+    let mut removed = 0;
+    let mut bytes = 0;
+    for p in paths {
+        let size = size_of(p);
+        let gone = if p.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+            std::fs::remove_dir_all(p)
+        } else {
+            std::fs::remove_file(p)
+        };
+        if gone.is_ok() {
+            removed += 1;
+            bytes += size;
+        }
+    }
+    (removed, bytes)
+}
+
+/// What this browser keeps on disk, for the Storage section.
+fn storage_json(app: &App) -> String {
+    let store = app.store();
+    let site_data = match (app.profile_dir(), store.get("profile_id")) {
+        (Some(_), Some(id)) => {
+            let dir = home().join("Library/WebKit").join(webkit_app_id()).join("WebsiteDataStore").join(id.to_lowercase());
+            size_of(&dir)
+        }
+        _ => 0,
+    };
+    let profile_files = app.profile_dir().map_or(0, size_of);
+    let leftovers: Vec<String> = leftovers(&home())
+        .iter()
+        .map(|p| format!("{{\"path\":{},\"bytes\":{}}}", json_str(&p.display().to_string()), size_of(p)))
+        .collect();
+    format!(
+        "{{\"site_data_bytes\":{site_data},\"profile_bytes\":{profile_files},\"history\":{},\"downloads\":{},\"leftovers\":[{}]}}",
+        store.history_count(),
+        store.downloads().len(),
+        leftovers.join(",")
+    )
+}
+
+/// Delete cached files only; logins and site storage stay.
+fn clear_cache(store: &WKWebsiteDataStore, reply: Reply) {
+    let types = unsafe {
+        objc2_foundation::NSSet::from_slice(&[
+            objc2_web_kit::WKWebsiteDataTypeDiskCache,
+            objc2_web_kit::WKWebsiteDataTypeMemoryCache,
+            objc2_web_kit::WKWebsiteDataTypeFetchCache,
+            objc2_web_kit::WKWebsiteDataTypeOfflineWebApplicationCache,
+        ])
+    };
+    let reply = std::cell::RefCell::new(Some(reply));
+    let done = RcBlock::new(move || {
+        if let Some(r) = reply.take() {
+            r(ok());
+        }
+    });
+    unsafe { store.removeDataOfTypes_modifiedSince_completionHandler(&types, &NSDate::distantPast(), &done) };
+}
+
 /// Delete all cookies, caches and site storage for this profile.
 fn clear_site_data(store: &WKWebsiteDataStore, reply: Reply) {
     let types = unsafe { WKWebsiteDataStore::allWebsiteDataTypes(store.mtm()) };
@@ -331,4 +452,60 @@ fn clear_site_data(store: &WKWebsiteDataStore, reply: Reply) {
         }
     });
     unsafe { store.removeDataOfTypes_modifiedSince_completionHandler(&types, &NSDate::distantPast(), &done) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leftovers_are_only_the_known_old_paths() {
+        let home = std::env::temp_dir().join(format!("mybrowser-leftovers-{}", std::process::id()));
+        let lib = home.join("Library");
+        let make = |p: &str, file: bool| {
+            let p = lib.join(p);
+            if file {
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(&p, b"12345").unwrap();
+            } else {
+                std::fs::create_dir_all(&p).unwrap();
+                std::fs::write(p.join("x"), b"123").unwrap();
+            }
+        };
+        make("WebKit/my-browser/WebsiteData", false);
+        make("Caches/my-browser/WebKit", false);
+        make("WebKit/dev.local.my-browser", false);
+        make("HTTPStorages/my-browser.binarycookies", true);
+        make("HTTPStorages/my-browser.binarycookies_tmp_1.dat", true);
+        // Must survive: a current profile's store, other apps' files.
+        make("WebKit/my-browser/WebsiteDataStore/abc", false);
+        make("WebKit/my-browser/ContentRuleLists", false);
+        make("HTTPStorages/com.other.app.binarycookies", true);
+        make("Caches/com.other.app", false);
+
+        let found = leftovers(&home);
+        assert_eq!(found.len(), 5, "{found:?}");
+        assert!(found.iter().all(|p| !p.to_string_lossy().contains("WebsiteDataStore")));
+        assert_eq!(size_of(&lib.join("WebKit/my-browser/WebsiteData")), 3);
+
+        let (removed, bytes) = remove_paths(&found);
+        assert_eq!((removed, bytes), (5, 3 + 3 + 3 + 5 + 5));
+        assert!(leftovers(&home).is_empty());
+        assert!(lib.join("WebKit/my-browser/WebsiteDataStore/abc/x").exists());
+        assert!(lib.join("WebKit/my-browser/ContentRuleLists").exists());
+        assert!(lib.join("HTTPStorages/com.other.app.binarycookies").exists());
+        assert!(lib.join("Caches/com.other.app").exists());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn sizes_do_not_follow_symlinks() {
+        let dir = std::env::temp_dir().join(format!("mybrowser-size-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("inner")).unwrap();
+        std::fs::write(dir.join("inner/a"), vec![0u8; 100]).unwrap();
+        std::os::unix::fs::symlink("/usr", dir.join("link")).unwrap();
+        let link_len = dir.join("link").symlink_metadata().unwrap().len();
+        assert_eq!(size_of(&dir), 100 + link_len);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
