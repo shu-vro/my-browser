@@ -1,0 +1,110 @@
+# my-browser
+
+A web browser for macOS built to use as little memory as possible. It has no
+developer tools and no telemetry; extensions are supported. It's a thin native
+Rust shell around the WebKit engine that ships with macOS. Every change is
+measured against recorded benchmarks, and a change that makes memory or speed
+worse is rejected.
+
+## What it does
+
+- **Tabs that sleep.** A background tab unloads its page (and the process
+  behind it) after a few minutes, or right away when macOS runs low on memory.
+  It reloads when you click it. Restored sessions open asleep, so 50 restored
+  tabs cost about the same as one.
+- **Private by default.**
+  - Built-in tracker blocking: Disconnect's list, the one Firefox uses.
+  - All third-party cookies blocked, and WebKit's Intelligent Tracking
+    Prevention on.
+  - No ad-click attribution, and no safe-browsing lookups unless you turn them
+    on.
+  - The browser itself never sends anything anywhere.
+- **The basics, done properly:**
+  - persistent logins (per-profile cookie store),
+  - back, forward and reload,
+  - history with search,
+  - downloads,
+  - session restore,
+  - keyboard shortcuts for everything,
+  - popups open as tabs,
+  - file upload,
+  - JavaScript dialogs.
+- **Web extensions** (Safari/Chrome format, unpacked), managed from the
+  settings page.
+- **Settings** at `mybrowser://settings`, opened with ⌘, : search engine, tab
+  sleep, privacy, history, downloads and extensions.
+
+## Requirements
+
+- macOS 15.4 or later (needed for WebKit's extension support). Apple Silicon or
+  Intel.
+- Rust 1.89 or later (`File::try_lock`). Edition 2024.
+
+## Run it
+
+```sh
+cargo run --release                   # opens with your profile
+cargo run --release -- example.com    # opens a URL
+./scripts/bundle.sh                   # builds target/release/my-browser.app
+```
+
+Use the `.app` for daily browsing. Camera and microphone (video calls) only
+work from the bundle, because macOS requires the permission text in its
+Info.plist. WebKit keeps site data per app identity, so the `.app` and
+`cargo run` have **separate logins**.
+
+Command-line flags:
+
+| Flag | Meaning |
+|---|---|
+| `--profile DIR` | Use another profile folder (default `~/Library/Application Support/my-browser`) |
+| `--bench` | Driven over stdin/stdout by the benchmark and tests. Uses a throwaway profile unless `--profile` is given. |
+| `--on-top` | Float the window above every app and Space (benchmarks need a visible window) |
+
+## Test and measure
+
+```sh
+cargo test --release                  # 43 tests, opens real browser windows briefly
+./target/release/bench                # benchmark against the recorded bars (~4 min)
+```
+
+- [tests/README.md](tests/README.md): what the tests cover and how to run them.
+- [benchmark/README.md](benchmark/README.md): every metric, how runs are
+  judged, how to beat a bar.
+
+## Documentation
+
+| Document | For |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How it's built: processes, tabs, profiles, privacy, internal pages, extensions |
+| [docs/DESIGN-DECISIONS.md](docs/DESIGN-DECISIONS.md) | How and why: every major decision as a question, with its evidence |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | The vision, the rules every change follows, the workflow |
+| [SECURITY.md](SECURITY.md) | Threat model, trust boundaries, the privacy policy |
+| [AGENTS.md](AGENTS.md) | Short operating manual for AI coding agents |
+| [previous-iterations/](previous-iterations/) | What each development session did and left open |
+
+## Layout
+
+```
+src/
+  main.rs          app delegate: startup, profile, engine setup, tabs list, menu/shortcuts,
+                   downloads, extension loading, bench protocol
+  tab.rs           one tab: native window tab, toolbar, web view, sleep/wake, navigation policy
+  extwindow.rs     a window (tab group) as web extensions see it
+  internal.rs      mybrowser:// pages and the settings-page bridge
+  privacy.rs       tracking protection and the tracker blocker
+  store.rs         SQLite: settings, history, downloads, extensions, session
+resources/
+  settings.html    the settings / history / downloads / extensions page
+  trackers.bin     compressed tracker blocker rules (generated)
+scripts/
+  bundle.sh        build the .app
+  update-trackers.py   regenerate resources/trackers.bin
+benchmark/         benchmark harness and recorded bars
+tests/             end-to-end tests and fixtures
+```
+
+## Licenses
+
+The tracker list comes from Disconnect and is licensed **CC BY-NC-SA 4.0**:
+non-commercial use only. Replace it before any commercial distribution.
