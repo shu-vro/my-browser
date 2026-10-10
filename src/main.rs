@@ -208,12 +208,17 @@ define_class!(
                 .unwrap_or_default();
             // The package of a Web Store extension the user is adding: a
             // temporary file, installed when it arrives, not a download.
-            let package = self.ivars().expected_package.borrow().clone().filter(|id| url == extensions::webstore_package_url(id));
+            // (Google redirects the download, so it's known by its file name,
+            // `<ID>_<version>.crx`.)
+            let name = suggested.to_string().to_ascii_lowercase();
+            let package =
+                self.ivars().expected_package.borrow().clone().filter(|id| name.ends_with(".crx") && name.contains(id));
             let path = match &package {
                 Some(id) => {
                     let dir = extensions::unpack_root();
                     let _ = std::fs::create_dir_all(&dir);
-                    dir.join(format!("{id}.crx"))
+                    // WebKit cancels a download whose file already exists.
+                    unique_path(&dir, &format!("{id}.crx"))
                 }
                 None => unique_path(&self.downloads_dir(), &sanitize_filename(&suggested.to_string())),
             };
@@ -1669,6 +1674,11 @@ impl App {
             ("home", Some(t)) => say!("{}", t.home_state()),
             ("netbutton", Some(t)) => say!("NETBUTTON {}", t.net_button_shown() as u8),
             ("storebutton", Some(t)) => say!("STOREBUTTON {}", t.store_button_shown() as u8),
+            // Press the Web Store button.
+            ("storeclick", Some(t)) => {
+                let _: () = unsafe { msg_send![&*t, addFromWebStore: Option::<&AnyObject>::None] };
+                say!("STORECLICK");
+            }
             ("star", Some(t)) => say!("{}", t.star_state()),
             ("reader", Some(t)) => t.toggle_reader(),
             // Run JavaScript in the page (as the page, with a user gesture):

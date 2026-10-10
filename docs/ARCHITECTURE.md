@@ -546,10 +546,14 @@ it starts at the top. The field's delegate maps Enter, Shift+Enter and Esc;
   (`chromewebstore.google.com/detail/<name>/<id>`) a puzzle-piece button
   appears left of the star (not in private windows). Clicking it loads
   Google's package address for that id in the tab (`webstore_package_url`),
-  a user navigation like any link. When that exact download arrives it goes
-  to the temporary folder instead of Downloads, unlisted, and the install
-  prompt follows (`App::install_package`). A `.crx` downloaded any other way
-  is an ordinary download: nothing installs without the user picking it.
+  a user navigation like any link. Google redirects it, so the download is
+  recognised by its file name (`<ID>_<version>.crx`); it goes to a fresh file
+  in the temporary folder instead of Downloads (WebKit cancels a download
+  whose file exists), unlisted, and the install prompt follows
+  (`App::install_package`). A `.crx` downloaded any other way is an ordinary
+  download: nothing installs without the user picking it. Checked by hand
+  with uBlock Origin Lite (bench `storeclick` presses the button); the e2e
+  tests don't reach the network.
 - **Launch:** every enabled extension's manifest is read
   (`WKWebExtension.extensionWithResourceBaseURL`; nothing runs) for its
   button. Only `always` extensions get a `WKWebExtensionContext` now.
@@ -686,6 +690,7 @@ active tab.
 | `netbutton` | `NETBUTTON <0\|1>`: the blocked-requests button is showing |
 | `openurl <url>` | a `TABS` line: opens it like a link from another app (`application:openURLs:`) |
 | `star` | `STAR on=<0\|1>`: the star shows the page as bookmarked |
+| `storebutton` / `storeclick` | `STOREBUTTON <0\|1>` (the Web Store button is showing) / presses it, `STORECLICK`; the install reports `INSTALLED <json>` |
 | `reader` | `READER on\|off\|none`: toggles reader mode (`none`: no article found) |
 | `eval <js>` | `EVAL <result>`: runs the script in the page, with a user gesture |
 | `menu <Menu>[/<Item>]` | `MENU <item>\|…` (`-` separator) after picking `<Item>` if given, as a click would |
