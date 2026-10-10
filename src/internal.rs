@@ -16,9 +16,9 @@ use objc2_app_kit::{NSModalResponseOK, NSOpenPanel, NSWorkspace};
 use objc2_foundation::{NSArray, NSData, NSDate, NSError, NSString, NSURL};
 use objc2_web_kit::{WKScriptMessage, WKURLSchemeTask, WKWebsiteDataStore};
 
-use crate::store::{json_str, SETTINGS};
-use crate::tab::INTERNAL;
 use crate::App;
+use crate::store::{SETTINGS, json_str};
+use crate::tab::INTERNAL;
 
 static SETTINGS_HTML: &str = include_str!("../resources/settings.html");
 
@@ -121,7 +121,15 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             let rows = store.history(args.get(1).map_or("", |s| s), 500);
             let items: Vec<String> = rows
                 .iter()
-                .map(|v| format!("{{\"id\":{},\"url\":{},\"title\":{},\"at\":{}}}", v.id, json_str(&v.url), json_str(&v.title), v.at))
+                .map(|v| {
+                    format!(
+                        "{{\"id\":{},\"url\":{},\"title\":{},\"at\":{}}}",
+                        v.id,
+                        json_str(&v.url),
+                        json_str(&v.title),
+                        v.at
+                    )
+                })
                 .collect();
             Ok(format!("[{}]", items.join(",")))
         }
@@ -179,7 +187,11 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             None => return pick_and_install_extension(app, reply),
         },
         "ext.toggle" => {
-            let Some(ext) = args.get(1).and_then(|s| s.parse().ok()).and_then(|id: i64| store.extensions().into_iter().find(|e| e.id == id)) else {
+            let Some(ext) = args
+                .get(1)
+                .and_then(|s| s.parse().ok())
+                .and_then(|id: i64| store.extensions().into_iter().find(|e| e.id == id))
+            else {
                 return reply(Err("no such extension".into()));
             };
             let on = args.get(2).map(String::as_str) == Some("1");
@@ -190,24 +202,26 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             app.unload_extension(ext.id);
             ok()
         }
-        "ext.access" => id_arg(&args, 1).and_then(|id| {
-            app.set_extension_access(id, args.get(2).map_or("", |s| s)).map(|()| "true".to_string())
-        }),
+        "ext.access" => id_arg(&args, 1)
+            .and_then(|id| app.set_extension_access(id, args.get(2).map_or("", |s| s)).map(|()| "true".to_string())),
         "ext.remove" => id_arg(&args, 1).map(|id| {
             app.unload_extension(id);
             if let Some(e) = store.extensions().into_iter().find(|e| e.id == id) {
                 // Only delete copies the browser made, never the user's own folder.
                 if let Some(dir) = extensions_dir(app)
-                    && Path::new(&e.path).starts_with(&dir) {
-                        let _ = std::fs::remove_dir_all(&e.path);
-                    }
+                    && Path::new(&e.path).starts_with(&dir)
+                {
+                    let _ = std::fs::remove_dir_all(&e.path);
+                }
             }
             store.remove_extension(id);
             "true".into()
         }),
         // Settings → Network: the gate's blocked and allowed requests.
         "net.list" => Ok(app.net_json()),
-        "net.allow" => id_arg(&args, 1).and_then(|ext| app.net_allow(ext, args.get(2).map_or("", |s| s)).map(|()| "true".into())),
+        "net.allow" => {
+            id_arg(&args, 1).and_then(|ext| app.net_allow(ext, args.get(2).map_or("", |s| s)).map(|()| "true".into()))
+        }
         "net.deny" => id_arg(&args, 1).map(|ext| {
             app.net_deny(ext, args.get(2).map_or("", |s| s));
             "true".into()
@@ -231,7 +245,9 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             let items: Vec<String> = store
                 .permissions()
                 .iter()
-                .map(|(site, kind, value)| format!("{{\"site\":{},\"kind\":{},\"value\":{}}}", json_str(site), json_str(kind), json_str(value)))
+                .map(|(site, kind, value)| {
+                    format!("{{\"site\":{},\"kind\":{},\"value\":{}}}", json_str(site), json_str(kind), json_str(value))
+                })
                 .collect();
             Ok(format!("[{}]", items.join(",")))
         }
@@ -245,7 +261,11 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             };
             match result {
                 // Shields and local-network exceptions live in the compiled blockers.
-                Ok(()) => return app.load_shields(move |_, t, l| reply(if t && l { ok() } else { Err("blocker failed to compile".into()) })),
+                Ok(()) => {
+                    return app.load_shields(move |_, t, l| {
+                        reply(if t && l { ok() } else { Err("blocker failed to compile".into()) })
+                    });
+                }
                 Err(e) => Err(e),
             }
         }
@@ -356,7 +376,10 @@ fn install_extension(app: &App, source: PathBuf, reply: Reply) {
             };
             if !this.is_bench() {
                 let alert = objc2_app_kit::NSAlert::new(this.mtm());
-                alert.setMessageText(&NSString::from_str(&format!("Add “{}”?", crate::extensions::extension_name(&ext))));
+                alert.setMessageText(&NSString::from_str(&format!(
+                    "Add “{}”?",
+                    crate::extensions::extension_name(&ext)
+                )));
                 alert.setInformativeText(&NSString::from_str(&crate::extensions::describe_access(&ext)));
                 alert.addButtonWithTitle(&NSString::from_str("Add Extension"));
                 alert.addButtonWithTitle(&NSString::from_str("Cancel"));
@@ -372,7 +395,8 @@ fn install_extension(app: &App, source: PathBuf, reply: Reply) {
 fn copy_and_register(app: &App, source: PathBuf, reply: Reply) {
     let path = match extensions_dir(app) {
         Some(dir) => {
-            let name = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "extension".into());
+            let name =
+                source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "extension".into());
             let dest = dir.join(format!("{}-{name}", crate::store::now()));
             if let Err(e) = copy_dir(&source, &dest) {
                 return reply(Err(format!("Couldn't copy the extension: {e}")));
@@ -393,9 +417,10 @@ fn copy_and_register(app: &App, source: PathBuf, reply: Reply) {
                 // A broken extension isn't kept.
                 this.store().remove_extension(id);
                 if let Some(dir) = extensions_dir(&this)
-                    && Path::new(&path).starts_with(&dir) {
-                        let _ = std::fs::remove_dir_all(&path);
-                    }
+                    && Path::new(&path).starts_with(&dir)
+                {
+                    let _ = std::fs::remove_dir_all(&path);
+                }
                 reply(Err(e))
             }
         }),
@@ -492,7 +517,8 @@ fn storage_json(app: &App) -> String {
     let store = app.store();
     let site_data = match (app.profile_dir(), store.get("profile_id")) {
         (Some(_), Some(id)) => {
-            let dir = home().join("Library/WebKit").join(webkit_app_id()).join("WebsiteDataStore").join(id.to_lowercase());
+            let dir =
+                home().join("Library/WebKit").join(webkit_app_id()).join("WebsiteDataStore").join(id.to_lowercase());
             size_of(&dir)
         }
         _ => 0,
@@ -503,7 +529,10 @@ fn storage_json(app: &App) -> String {
         .map(|p| format!("{{\"path\":{},\"bytes\":{}}}", json_str(&p.display().to_string()), size_of(p)))
         .collect();
     let uninstall: Vec<String> = if is_main_profile(app) {
-        uninstall_paths(&home(), &webkit_app_id(), bundle_path().as_deref()).iter().map(|p| json_str(&p.display().to_string())).collect()
+        uninstall_paths(&home(), &webkit_app_id(), bundle_path().as_deref())
+            .iter()
+            .map(|p| json_str(&p.display().to_string()))
+            .collect()
     } else {
         Vec::new()
     };

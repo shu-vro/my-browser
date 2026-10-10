@@ -24,29 +24,31 @@ use std::time::{Duration, Instant};
 use block2::{DynBlock, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, ProtocolObject, Sel};
-use objc2::{define_class, msg_send, sel, AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
+use objc2::{
+    AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
+};
 use objc2_app_kit::{
     NSAlert, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSEvent, NSEventModifierFlags,
     NSEventType, NSMenu, NSMenuItem, NSWindow, NSWindowOcclusionState, NSWindowOrderingMode,
 };
 use objc2_foundation::{
-    NSArray, NSData, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSString, NSTimer, NSURLResponse, NSUUID,
-    NSURL,
+    NSArray, NSData, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSString, NSTimer, NSURL,
+    NSURLResponse, NSUUID,
 };
 #[allow(deprecated)]
 use objc2_web_kit::WKProcessPool;
 use objc2_web_kit::{
     WKAudiovisualMediaTypes, WKContentRuleList, WKContentWorld, WKDownload, WKDownloadDelegate, WKPreferences,
     WKScriptMessage, WKScriptMessageHandlerWithReply, WKURLSchemeHandler, WKURLSchemeTask, WKUserContentController,
-    WKWebExtension, WKWebExtensionAction, WKWebExtensionContext, WKWebExtensionController, WKWebExtensionMatchPattern,
-    WKWebExtensionControllerConfiguration, WKWebExtensionControllerDelegate, WKWebExtensionTab,
-    WKWebExtensionTabChangedProperties, WKWebExtensionTabConfiguration, WKWebExtensionWindow, WKWebView,
-    WKWebViewConfiguration, WKWebpagePreferences, WKWebsiteDataStore,
+    WKWebExtension, WKWebExtensionAction, WKWebExtensionContext, WKWebExtensionController,
+    WKWebExtensionControllerConfiguration, WKWebExtensionControllerDelegate, WKWebExtensionMatchPattern,
+    WKWebExtensionTab, WKWebExtensionTabChangedProperties, WKWebExtensionTabConfiguration, WKWebExtensionWindow,
+    WKWebView, WKWebViewConfiguration, WKWebpagePreferences, WKWebsiteDataStore,
 };
 
 use extwindow::ExtWindow;
 use store::Store;
-use tab::{Tab, INTERNAL};
+use tab::{INTERNAL, Tab};
 
 #[derive(Default)]
 pub struct AppIvars {
@@ -589,7 +591,9 @@ impl App {
             Some(_) => unsafe { WKWebsiteDataStore::dataStoreForIdentifier(&self.profile_uuid(), mtm) },
             None => unsafe { WKWebsiteDataStore::nonPersistentDataStore(mtm) },
         };
-        let line = |name: &str, value: bool, ok: bool| format!("TUNE {name}={} {}", value as u8, if ok { "ok" } else { "missing" });
+        let line = |name: &str, value: bool, ok: bool| {
+            format!("TUNE {name}={} {}", value as u8, if ok { "ok" } else { "missing" })
+        };
         let mut report: Vec<String> =
             privacy::harden_data_store(&data_store).into_iter().map(|(n, ok)| line(n, true, ok)).collect();
         let prefs = unsafe { WKPreferences::new(mtm) };
@@ -602,7 +606,11 @@ impl App {
         // The address bar shows the committed address (anti-spoofing).
         report.push(line("committed_url", true, WKWebView::class().responds_to(sel!(_committedURL))));
         // Extensions' background pages can play audio (see `host_extension_audio`).
-        report.push(line("ext_background_view", true, WKWebExtensionContext::class().responds_to(sel!(_backgroundWebView))));
+        report.push(line(
+            "ext_background_view",
+            true,
+            WKWebExtensionContext::class().responds_to(sel!(_backgroundWebView)),
+        ));
         let (pool, tuning) = engine_tuning(&prefs, self.store().flag("jit"), mtm);
         report.extend(tuning.into_iter().map(|(n, v, ok)| line(n, v, ok)));
 
@@ -620,8 +628,9 @@ impl App {
             },
             None => unsafe { WKWebExtensionControllerConfiguration::nonPersistentConfiguration(mtm) },
         };
-        let extensions =
-            unsafe { WKWebExtensionController::initWithConfiguration(WKWebExtensionController::alloc(mtm), &ext_config) };
+        let extensions = unsafe {
+            WKWebExtensionController::initWithConfiguration(WKWebExtensionController::alloc(mtm), &ext_config)
+        };
         unsafe { extensions.setDelegate(Some(ProtocolObject::from_ref(self))) };
         let _ = self.ivars().data_store.set(data_store);
         let _ = self.ivars().prefs.set(prefs);
@@ -698,7 +707,8 @@ impl App {
             config.setPreferences(iv.prefs.get().unwrap());
             // No autoplay: media only plays after a click.
             config.setMediaTypesRequiringUserActionForPlayback(WKAudiovisualMediaTypes::All);
-            config.setURLSchemeHandler_forURLScheme(Some(ProtocolObject::from_ref(self)), &NSString::from_str(INTERNAL));
+            config
+                .setURLSchemeHandler_forURLScheme(Some(ProtocolObject::from_ref(self)), &NSString::from_str(INTERNAL));
             config.setWebExtensionController(Some(iv.extensions.get().unwrap()));
             let page = WKWebpagePreferences::new(self.mtm());
             privacy::harden_webpage_preferences(&page, true);
@@ -733,7 +743,11 @@ impl App {
         });
     }
 
-    fn set_rule_lists(&self, trackers: Option<Retained<WKContentRuleList>>, local: Option<Retained<WKContentRuleList>>) {
+    fn set_rule_lists(
+        &self,
+        trackers: Option<Retained<WKContentRuleList>>,
+        local: Option<Retained<WKContentRuleList>>,
+    ) {
         let content = self.ivars().content.get().unwrap();
         for old in [self.ivars().trackers.borrow().clone(), self.ivars().local.borrow().clone()].into_iter().flatten() {
             unsafe { content.removeContentRuleList(&old) };
@@ -780,7 +794,8 @@ impl App {
         self.ivars()
             .user_agent
             .get_or_init(|| {
-                let safari = objc2_foundation::NSBundle::bundleWithPath(&NSString::from_str("/Applications/Safari.app"))?;
+                let safari =
+                    objc2_foundation::NSBundle::bundleWithPath(&NSString::from_str("/Applications/Safari.app"))?;
                 let version = safari.objectForInfoDictionaryKey(&NSString::from_str("CFBundleShortVersionString"))?;
                 let version = version.downcast_ref::<NSString>()?.to_string();
                 version
@@ -882,7 +897,12 @@ impl App {
         self.ivars().active.replace(Some(tab.retain()));
         tab.wake();
         let ext = self.extensions();
-        unsafe { ext.didActivateTab_previousActiveTab(ProtocolObject::from_ref(tab), prev.as_deref().map(ProtocolObject::from_ref)) };
+        unsafe {
+            ext.didActivateTab_previousActiveTab(
+                ProtocolObject::from_ref(tab),
+                prev.as_deref().map(ProtocolObject::from_ref),
+            )
+        };
         let window = self.ext_window_for(tab);
         let prev_window = prev.as_deref().and_then(|p| self.ext_window_for(p));
         if window.as_ref().map(Retained::as_ptr) != prev_window.as_ref().map(Retained::as_ptr) {
@@ -1031,7 +1051,11 @@ impl App {
             .filter(|(u, _)| !u.is_empty() && !u.starts_with(&format!("{INTERNAL}:")))
             .collect();
         self.store().save_session(&tabs);
-        let active = self.ordered_tabs().iter().filter(|t| !t.url().starts_with(&format!("{INTERNAL}:"))).position(|t| self.is_active(t));
+        let active = self
+            .ordered_tabs()
+            .iter()
+            .filter(|t| !t.url().starts_with(&format!("{INTERNAL}:")))
+            .position(|t| self.is_active(t));
         self.store().put("session_active", &active.unwrap_or(0).to_string());
     }
 
@@ -1190,7 +1214,8 @@ impl App {
             },
             // `EXTBUTTONS <id>:<on 0|1> ...` for the active tab.
             ("extbuttons", Some(t)) => {
-                let items: Vec<String> = t.extension_buttons().iter().map(|(id, on)| format!("{id}:{}", *on as u8)).collect();
+                let items: Vec<String> =
+                    t.extension_buttons().iter().map(|(id, on)| format!("{id}:{}", *on as u8)).collect();
                 say!("EXTBUTTONS {}", items.join(" "));
             }
             ("sleep", _) => {
@@ -1232,7 +1257,9 @@ impl App {
                     });
                     unsafe {
                         web.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
-                            &NSString::from_str("(s => s.rangeCount ? s.getRangeAt(0).startOffset : -1)(getSelection())"),
+                            &NSString::from_str(
+                                "(s => s.rangeCount ? s.getRangeAt(0).startOffset : -1)(getSelection())",
+                            ),
                             None,
                             &WKContentWorld::defaultClientWorld(self.mtm()),
                             Some(&done),
@@ -1376,8 +1403,11 @@ fn is_spoofing_char(c: char) -> bool {
 /// direction overrides.
 fn sanitize_filename(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or("");
-    let clean: String =
-        base.chars().filter(|c| !is_spoofing_char(*c)).map(|c| if c == ':' || c.is_control() { '_' } else { c }).collect();
+    let clean: String = base
+        .chars()
+        .filter(|c| !is_spoofing_char(*c))
+        .map(|c| if c == ':' || c.is_control() { '_' } else { c })
+        .collect();
     let clean = clean.trim().trim_start_matches('.').to_string();
     if clean.is_empty() { "download".into() } else { clean }
 }
@@ -1485,12 +1515,15 @@ fn responds(obj: &AnyObject, sel: Sel) -> bool {
 /// them for experiments. These are private WebKit APIs: each one is skipped if
 /// this macOS doesn't have it. Returns the process pool to use and
 /// (name, value, applied) for each setting.
+/// (name, value, applied) for one engine setting.
+type Tuning = (&'static str, bool, bool);
+
 #[allow(deprecated)] // WKProcessPool: the only way to pass the private pool configuration.
 fn engine_tuning(
     prefs: &WKPreferences,
     jit_default: bool,
     mtm: MainThreadMarker,
-) -> (Option<Retained<WKProcessPool>>, Vec<(&'static str, bool, bool)>) {
+) -> (Option<Retained<WKProcessPool>>, Vec<Tuning>) {
     let spec = std::env::var("MYB_TUNE").ok();
     let tune = |name, default| tune_value(spec.as_deref(), name, default);
     let mut report = Vec::new();
@@ -1532,7 +1565,13 @@ fn engine_tuning(
     (pool, report)
 }
 
-fn menu_item(mtm: MainThreadMarker, title: &str, action: Sel, key: &str, mods: NSEventModifierFlags) -> Retained<NSMenuItem> {
+fn menu_item(
+    mtm: MainThreadMarker,
+    title: &str,
+    action: Sel,
+    key: &str,
+    mods: NSEventModifierFlags,
+) -> Retained<NSMenuItem> {
     let item = unsafe {
         NSMenuItem::initWithTitle_action_keyEquivalent(
             NSMenuItem::alloc(mtm),

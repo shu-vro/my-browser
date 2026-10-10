@@ -6,15 +6,15 @@ use std::cell::OnceCell;
 use block2::DynBlock;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly, Message};
+use objc2::{DefinedClass, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::NSWindowTabGroup;
 use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
 use objc2_web_kit::{
     WKWebExtensionContext, WKWebExtensionTab, WKWebExtensionWindow, WKWebExtensionWindowState, WKWebExtensionWindowType,
 };
 
-use crate::tab::Tab;
 use crate::App;
+use crate::tab::Tab;
 
 #[derive(Default)]
 pub struct ExtWindowIvars {

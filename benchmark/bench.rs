@@ -211,8 +211,8 @@ impl Browser {
     }
 
     fn measure(&mut self) -> Usage {
-        let visible = writeln!(self.stdin, "visible").is_ok()
-            && self.next_event(&["VISIBLE"]).is_ok_and(|l| l == "VISIBLE 1");
+        let visible =
+            writeln!(self.stdin, "visible").is_ok() && self.next_event(&["VISIBLE"]).is_ok_and(|l| l == "VISIBLE 1");
         if !visible {
             HIDDEN_SAMPLES.fetch_add(1, Ordering::Relaxed);
         }
@@ -260,7 +260,8 @@ const j=JSON.parse(JSON.stringify(a.slice(0,50000)));let h=0;\
 for(let r=0;r<20;r++)for(let i=0;i<1e6;i++)h=(h*31+i)|0;document.title=t+':'+h+':'+j.length</script>";
 
 fn page(path: &str) -> Option<(&'static str, Vec<u8>)> {
-    let html = |body: String| Some(("text/html", format!("<!doctype html><meta charset=utf-8><body>{body}").into_bytes()));
+    let html =
+        |body: String| Some(("text/html", format!("<!doctype html><meta charset=utf-8><body>{body}").into_bytes()));
     match path {
         "/blank" => html(String::new()),
         // ~2 MB of static text: parsing + layout.
@@ -505,11 +506,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let rebaseline = args.iter().any(|a| a == "--rebaseline");
     let save = rebaseline || args.iter().any(|a| a == "--save");
-    let runs: usize = args
-        .iter()
-        .position(|a| a == "--runs")
-        .and_then(|i| args.get(i + 1)?.parse().ok())
-        .unwrap_or(3);
+    let runs: usize = args.iter().position(|a| a == "--runs").and_then(|i| args.get(i + 1)?.parse().ok()).unwrap_or(3);
     if cfg!(debug_assertions) {
         eprintln!("warning: debug build; bars should come from `cargo build --release`");
     }
@@ -537,10 +534,8 @@ fn main() {
     }
 
     // Crashes are summed, everything else is the median across runs.
-    let results: BTreeMap<String, f64> = s
-        .iter()
-        .map(|(k, v)| (k.clone(), if k == "crashes_count" { v.iter().sum() } else { median(v) }))
-        .collect();
+    let results: BTreeMap<String, f64> =
+        s.iter().map(|(k, v)| (k.clone(), if k == "crashes_count" { v.iter().sum() } else { median(v) })).collect();
     let bars = parse_bars(&std::fs::read_to_string(BARS).unwrap_or_default());
 
     println!("{:<26} {:>10} {:>10} {:>8}  status", "metric", "bar", "now", "delta");

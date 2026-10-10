@@ -65,6 +65,11 @@ changing the decision, and update it after.
 
 - macOS 15.4+, Xcode command line tools, Rust 1.89+.
 - `cargo build --release`.
+- `git config core.hooksPath .githooks`: before every commit,
+  [.githooks/pre-commit](.githooks/pre-commit) runs `cargo fmt --check`,
+  `cargo clippy -D warnings` and the whole test suite. CI runs the same checks
+  on every push. The hook checks the working tree, so commit everything you
+  changed together.
 - Always benchmark and run the e2e tests on **release** builds.
 
 ## Workflow
@@ -91,6 +96,7 @@ changed, measured decisions, traps found, open items.
 
 - Write code that reads like the surrounding code: short functions, comments
   that say *why*, no speculative abstractions.
+- `cargo fmt` (settings in rustfmt.toml) and no clippy warnings.
 - Every `unsafe` block calls an Objective-C or C API; keep them small.
 - **Main thread only** for AppKit and WebKit objects. Long-lived objects (the
   app delegate) may be referenced by raw pointer from timers and the stdin

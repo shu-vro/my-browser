@@ -1,0 +1,3 @@
+# Long lines are the house style (objc2 calls are wordy); this keeps rustfmt close to it.
+max_width = 120
+use_small_heuristics = "Max"

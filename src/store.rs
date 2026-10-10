@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// Settings the settings page may change, with their defaults.
 pub const SETTINGS: [(&str, &str); 13] = [
@@ -128,11 +128,7 @@ impl Store {
 
     /// Raw value, including internal keys like `profile_id`.
     pub fn get(&self, key: &str) -> Option<String> {
-        self.db
-            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
-            .optional()
-            .ok()
-            .flatten()
+        self.db.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0)).optional().ok().flatten()
     }
 
     pub fn put(&self, key: &str, value: &str) {
@@ -161,9 +157,14 @@ impl Store {
             "homepage" => value.is_empty() || value.starts_with("https://") || value.starts_with("http://"),
             "tab_sleep_minutes" => value.parse::<u32>().is_ok_and(|m| m <= 24 * 60),
             "theme" => ["system", "light", "dark"].contains(&value),
-            "restore_session" | "block_trackers" | "block_local_network" | "safe_browsing" | "jit" | "home_art" | "home_search" | "home_top_sites" => {
-                value == "0" || value == "1"
-            }
+            "restore_session"
+            | "block_trackers"
+            | "block_local_network"
+            | "safe_browsing"
+            | "jit"
+            | "home_art"
+            | "home_search"
+            | "home_top_sites" => value == "0" || value == "1",
             "downloads_dir" => value.is_empty() || Path::new(value).is_dir(),
             _ => return Err(format!("unknown setting {key}")),
         };
@@ -206,10 +207,13 @@ impl Store {
     /// The most visited sites (scheme and host), most visited first, counted
     /// over the latest 5000 visits so it stays fast and follows current habits.
     pub fn top_sites(&self, limit: usize) -> Vec<String> {
-        let Ok(mut stmt) = self.db.prepare("SELECT url FROM history ORDER BY id DESC LIMIT 5000") else { return Vec::new() };
+        let Ok(mut stmt) = self.db.prepare("SELECT url FROM history ORDER BY id DESC LIMIT 5000") else {
+            return Vec::new();
+        };
         // site -> (visits, rank of its newest visit)
         let mut counts: std::collections::HashMap<String, (usize, usize)> = std::collections::HashMap::new();
-        let urls = stmt.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>());
+        let urls =
+            stmt.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>());
         for (i, url) in urls.unwrap_or_default().iter().enumerate() {
             let Some((scheme, rest)) = url.split_once("://") else { continue };
             let host = rest.split(['/', '?', '#']).next().unwrap_or("");
@@ -246,7 +250,8 @@ impl Store {
     }
 
     pub fn finish_download(&self, id: i64, status: &str, bytes: i64) {
-        let _ = self.db.execute("UPDATE downloads SET status = ?2, bytes = ?3 WHERE id = ?1", params![id, status, bytes]);
+        let _ =
+            self.db.execute("UPDATE downloads SET status = ?2, bytes = ?3 WHERE id = ?1", params![id, status, bytes]);
     }
 
     pub fn downloads(&self) -> Vec<Download> {
@@ -255,7 +260,14 @@ impl Store {
             return Vec::new();
         };
         stmt.query_map([], |r| {
-            Ok(Download { id: r.get(0)?, url: r.get(1)?, path: r.get(2)?, status: r.get(3)?, bytes: r.get(4)?, at: r.get(5)? })
+            Ok(Download {
+                id: r.get(0)?,
+                url: r.get(1)?,
+                path: r.get(2)?,
+                status: r.get(3)?,
+                bytes: r.get(4)?,
+                at: r.get(5)?,
+            })
         })
         .map(|rows| rows.filter_map(Result::ok).collect())
         .unwrap_or_default()
@@ -283,9 +295,7 @@ impl Store {
 
     pub fn add_extension(&self, path: &str) -> i64 {
         let _ = self.db.execute("INSERT OR IGNORE INTO extensions (path) VALUES (?1)", [path]);
-        self.db
-            .query_row("SELECT id FROM extensions WHERE path = ?1", [path], |r| r.get(0))
-            .unwrap_or(0)
+        self.db.query_row("SELECT id FROM extensions WHERE path = ?1", [path], |r| r.get(0)).unwrap_or(0)
     }
 
     pub fn extensions(&self) -> Vec<Extension> {
@@ -295,8 +305,8 @@ impl Store {
         stmt.query_map([], |r| {
             Ok(Extension { id: r.get(0)?, path: r.get(1)?, enabled: r.get::<_, i64>(2)? == 1, access: r.get(3)? })
         })
-            .map(|rows| rows.filter_map(Result::ok).collect())
-            .unwrap_or_default()
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
     }
 
     pub fn set_extension_enabled(&self, id: i64, enabled: bool) {
@@ -327,7 +337,9 @@ impl Store {
     }
 
     pub fn allow_net(&self, ext: i64, rule: &str) {
-        let _ = self.db.execute("INSERT OR IGNORE INTO net_allowed (ext, rule) VALUES (?1, ?2)", rusqlite::params![ext, rule]);
+        let _ = self
+            .db
+            .execute("INSERT OR IGNORE INTO net_allowed (ext, rule) VALUES (?1, ?2)", rusqlite::params![ext, rule]);
     }
 
     pub fn forget_net(&self, ext: i64, rule: &str) {
@@ -347,7 +359,8 @@ impl Store {
     /// Set a site's permission; "ask" (or "default") forgets it. Validated,
     /// since the settings page is web content.
     pub fn set_permission(&self, site: &str, kind: &str, value: &str) -> Result<(), String> {
-        let values = PERMISSIONS.iter().find(|(k, _)| *k == kind).map(|(_, v)| v).ok_or(format!("unknown permission {kind}"))?;
+        let values =
+            PERMISSIONS.iter().find(|(k, _)| *k == kind).map(|(_, v)| v).ok_or(format!("unknown permission {kind}"))?;
         let valid_site = !site.is_empty()
             && site.len() <= 253
             && site.chars().all(|c| c.is_ascii_alphanumeric() || "-.:[]_".contains(c))
@@ -393,7 +406,9 @@ impl Store {
     pub fn save_session(&self, tabs: &[(String, String)]) {
         let _ = self.db.execute("DELETE FROM session", []);
         for (pos, (url, title)) in tabs.iter().enumerate() {
-            let _ = self.db.execute("INSERT INTO session (pos, url, title) VALUES (?1, ?2, ?3)", params![pos as i64, url, title]);
+            let _ = self
+                .db
+                .execute("INSERT INTO session (pos, url, title) VALUES (?1, ?2, ?3)", params![pos as i64, url, title]);
         }
     }
 
@@ -473,7 +488,13 @@ mod tests {
     #[test]
     fn top_sites_by_visits() {
         let s = Store::open(None).unwrap();
-        for u in ["https://a.example/1", "https://b.example/", "https://a.example/2?x", "http://b.example/", "https://a.example"] {
+        for u in [
+            "https://a.example/1",
+            "https://b.example/",
+            "https://a.example/2?x",
+            "http://b.example/",
+            "https://a.example",
+        ] {
             s.add_visit(u, "");
         }
         s.add_visit("https://c.example/", "");

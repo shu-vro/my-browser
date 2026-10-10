@@ -12,23 +12,22 @@ use std::time::Instant;
 use block2::{DynBlock, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, ProtocolObject};
-use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSMenu, NSMenuItem, NSApplication, NSControl, NSControlTextEditingDelegate, NSSearchField, NSSearchFieldDelegate, NSTextFieldDelegate,
-    NSTextView, NSView, NSAlert, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSEventModifierFlags, NSImage,
-    NSModalResponseOK, NSOpenPanel, NSTextField, NSWindow, NSWindowCollectionBehavior, NSWindowDelegate,
-    NSWindowStyleMask, NSWindowTabbingMode, NSFloatingWindowLevel,
+    NSAlert, NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSControl,
+    NSControlTextEditingDelegate, NSEventModifierFlags, NSFloatingWindowLevel, NSImage, NSMenu, NSMenuItem,
+    NSModalResponseOK, NSOpenPanel, NSSearchField, NSSearchFieldDelegate, NSTextField, NSTextFieldDelegate, NSTextView,
+    NSView, NSWindow, NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask, NSWindowTabbingMode,
 };
 use objc2_foundation::{
     NSArray, NSError, NSKeyValueObservingOptions, NSNotification, NSObject, NSObjectNSKeyValueObserverRegistration,
-    NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURLRequest, NSURL,
+    NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest,
 };
 use objc2_web_kit::{
-    WKContentWorld, WKFindConfiguration, WKFindResult,
-    WKWebExtensionContext, WKWebExtensionTab, WKWebExtensionTabChangedProperties, WKWebExtensionWindow,
-    WKDownload, WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
-    WKNavigationResponse, WKNavigationResponsePolicy, WKNavigationType, WKOpenPanelParameters, WKUIDelegate,
-    WKMediaCaptureType, WKPermissionDecision, WKSecurityOrigin,
+    WKContentWorld, WKDownload, WKFindConfiguration, WKFindResult, WKFrameInfo, WKMediaCaptureType, WKNavigation,
+    WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKNavigationResponse,
+    WKNavigationResponsePolicy, WKNavigationType, WKOpenPanelParameters, WKPermissionDecision, WKSecurityOrigin,
+    WKUIDelegate, WKWebExtensionContext, WKWebExtensionTab, WKWebExtensionTabChangedProperties, WKWebExtensionWindow,
     WKWebView, WKWebViewConfiguration, WKWebpagePreferences, WKWindowFeatures,
 };
 
@@ -748,8 +747,9 @@ impl Tab {
             ("house", "Home", sel!(goHome:), &self.ivars().home_button),
         ];
         for (i, (symbol, label, action, slot)) in buttons.into_iter().enumerate() {
-            let button =
-                unsafe { NSButton::buttonWithImage_target_action(&symbol_image(symbol, label), Some(self), Some(action), mtm) };
+            let button = unsafe {
+                NSButton::buttonWithImage_target_action(&symbol_image(symbol, label), Some(self), Some(action), mtm)
+            };
             button.setBordered(false);
             button.setFrame(NSRect::new(NSPoint::new(4.0 + i as f64 * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
             button.setAutoresizingMask(pin_top);
@@ -757,7 +757,12 @@ impl Tab {
             let _ = slot.set(button);
         }
         let site = unsafe {
-            NSButton::buttonWithImage_target_action(&symbol_image("info.circle", "Site settings"), Some(self), Some(sel!(showSiteMenu:)), mtm)
+            NSButton::buttonWithImage_target_action(
+                &symbol_image("info.circle", "Site settings"),
+                Some(self),
+                Some(sel!(showSiteMenu:)),
+                mtm,
+            )
         };
         site.setBordered(false);
         site.setFrame(NSRect::new(NSPoint::new(4.0 + 4.0 * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
@@ -797,7 +802,9 @@ impl Tab {
             home.sites.join(",")
         ));
         let view = crate::home::build(self, &home, self.web_frame(), self.mtm());
-        view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
+        view.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
         self.window().contentView().unwrap().addSubview(&view);
         if let Some(old) = self.ivars().home.replace(Some(view)) {
             old.removeFromSuperview();
@@ -806,7 +813,11 @@ impl Tab {
 
     /// `HOME shown=<0|1> art=<0|1> search=<0|1> sites=<urls>`
     pub fn home_state(&self) -> String {
-        if self.ivars().home.borrow().is_some() { self.ivars().home_state.borrow().clone() } else { "HOME shown=0".into() }
+        if self.ivars().home.borrow().is_some() {
+            self.ivars().home_state.borrow().clone()
+        } else {
+            "HOME shown=0".into()
+        }
     }
 
     /// Create the web view (waking the tab). Uses `config` for popups.
@@ -815,8 +826,11 @@ impl Tab {
             home.removeFromSuperview();
         }
         let content = self.window().contentView().unwrap();
-        let web = unsafe { WKWebView::initWithFrame_configuration(WKWebView::alloc(self.mtm()), self.web_frame(), config) };
-        web.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
+        let web =
+            unsafe { WKWebView::initWithFrame_configuration(WKWebView::alloc(self.mtm()), self.web_frame(), config) };
+        web.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
         unsafe {
             web.setNavigationDelegate(Some(ProtocolObject::from_ref(self)));
             web.setUIDelegate(Some(ProtocolObject::from_ref(self)));
@@ -853,7 +867,10 @@ impl Tab {
         let row = iv.find_row.get().unwrap();
         if !iv.find_open.replace(true) {
             let size = content.frame().size;
-            row.setFrame(NSRect::new(NSPoint::new(0.0, size.height - TOOLBAR_H - FIND_H), NSSize::new(size.width, FIND_H)));
+            row.setFrame(NSRect::new(
+                NSPoint::new(0.0, size.height - TOOLBAR_H - FIND_H),
+                NSSize::new(size.width, FIND_H),
+            ));
             content.addSubview(row);
             if let Some(web) = self.web() {
                 web.setFrame(self.web_frame());
@@ -901,8 +918,11 @@ impl Tab {
     fn build_find_bar(&self) {
         let mtm = self.mtm();
         let width = self.window().contentView().unwrap().frame().size.width;
-        let row = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, FIND_H)));
-        row.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMinYMargin);
+        let row =
+            NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, FIND_H)));
+        row.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMinYMargin,
+        );
 
         let field = NSSearchField::new(mtm);
         field.setFrame(NSRect::new(NSPoint::new(8.0, 4.0), NSSize::new(260.0, 22.0)));
@@ -919,7 +939,9 @@ impl Tab {
             ("chevron.down", "Next match", sel!(findNextButton:), 300.0),
         ];
         for (symbol, label, action, x) in buttons {
-            let b = unsafe { NSButton::buttonWithImage_target_action(&symbol_image(symbol, label), Some(self), Some(action), mtm) };
+            let b = unsafe {
+                NSButton::buttonWithImage_target_action(&symbol_image(symbol, label), Some(self), Some(action), mtm)
+            };
             b.setBordered(false);
             b.setFrame(NSRect::new(NSPoint::new(x, 3.0), NSSize::new(26.0, 24.0)));
             row.addSubview(&b);
@@ -931,7 +953,12 @@ impl Tab {
         row.addSubview(&status);
 
         let done = unsafe {
-            NSButton::buttonWithTitle_target_action(&NSString::from_str("Done"), Some(self), Some(sel!(closeFind:)), mtm)
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Done"),
+                Some(self),
+                Some(sel!(closeFind:)),
+                mtm,
+            )
         };
         done.setFrame(NSRect::new(NSPoint::new(width - 76.0, 2.0), NSSize::new(68.0, 26.0)));
         done.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
@@ -972,7 +999,9 @@ impl Tab {
                 }
             });
             if let Some(web) = this.web() {
-                unsafe { web.findString_withConfiguration_completionHandler(&NSString::from_str(&text), Some(&config), &done) };
+                unsafe {
+                    web.findString_withConfiguration_completionHandler(&NSString::from_str(&text), Some(&config), &done)
+                };
             }
         };
         if new_term {
@@ -1077,10 +1106,8 @@ impl Tab {
         self.ivars().title.replace(String::new());
         self.show_home();
         self.refresh_toolbar();
-        self.app().ext_tab_changed(
-            self,
-            WKWebExtensionTabChangedProperties::URL | WKWebExtensionTabChangedProperties::Title,
-        );
+        self.app()
+            .ext_tab_changed(self, WKWebExtensionTabChangedProperties::URL | WKWebExtensionTabChangedProperties::Title);
     }
 
     pub fn go_back(&self) {
@@ -1147,11 +1174,15 @@ impl Tab {
         // back/forward step is left alone.
         let get = request.HTTPMethod().is_none_or(|m| m.to_string() == "GET");
         let fresh = kind != WKNavigationType::BackForward && kind != WKNavigationType::Reload;
-        if main && get && fresh && self.app().shields_up(&url)
-            && let Some(clean) = crate::privacy::strip_tracking_params(&url) {
-                self.load(&clean);
-                return WKNavigationActionPolicy::Cancel;
-            }
+        if main
+            && get
+            && fresh
+            && self.app().shields_up(&url)
+            && let Some(clean) = crate::privacy::strip_tracking_params(&url)
+        {
+            self.load(&clean);
+            return WKNavigationActionPolicy::Cancel;
+        }
         if unsafe { action.shouldPerformDownload() } {
             return WKNavigationActionPolicy::Download;
         }
@@ -1172,9 +1203,8 @@ impl Tab {
         let iv = self.ivars();
         let (Some(bar), Some(window)) = (iv.bar.get(), iv.window.get()) else { return };
         let web = self.web();
-        let (back, fwd, loading) = web.as_ref().map_or((false, false, false), |w| unsafe {
-            (w.canGoBack(), w.canGoForward(), w.isLoading())
-        });
+        let (back, fwd, loading) =
+            web.as_ref().map_or((false, false, false), |w| unsafe { (w.canGoBack(), w.canGoForward(), w.isLoading()) });
         iv.back.get().unwrap().setEnabled(back);
         iv.forward.get().unwrap().setEnabled(fwd);
         if iv.shown_loading.replace(Some(loading)) != Some(loading) {
@@ -1244,8 +1274,9 @@ impl Tab {
         }
         // Nothing committed yet (a new popup its opener can still write
         // into) shows as blank, not as the address it's heading to.
-        get(sel!(_committedURL))
-            .unwrap_or_else(|| unsafe { web.URL() }.and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default())
+        get(sel!(_committedURL)).unwrap_or_else(|| {
+            unsafe { web.URL() }.and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default()
+        })
     }
 
     /// `STATE back=<0|1> forward=<0|1> url=<address bar> title=<window title>`, read from the UI itself.
@@ -1314,7 +1345,13 @@ impl Tab {
     /// alert/confirm/prompt from the page. From the second one on, the user
     /// can block the rest: an endless alert() loop would otherwise trap the
     /// tab, since a tab can't close while a sheet is up.
-    fn page_dialog(&self, message: &NSString, buttons: &[&str], input: Option<String>, done: impl Fn(bool, Option<String>) + 'static) {
+    fn page_dialog(
+        &self,
+        message: &NSString,
+        buttons: &[&str],
+        input: Option<String>,
+        done: impl Fn(bool, Option<String>) + 'static,
+    ) {
         let iv = self.ivars();
         if iv.dialogs_blocked.get() {
             return done(false, None);
@@ -1360,15 +1397,22 @@ impl Tab {
             phrases.join(" and ")
         };
         let message = NSString::from_str(&format!("{site} wants to {what}"));
-        let (this, site, kinds) = (self.retain(), site.to_string(), kinds.iter().map(|k| k.to_string()).collect::<Vec<_>>());
-        self.sheet(&message, &["Allow", "Don't Allow"], None, Some(("Remember for this site", true)), move |ok, _, remember| {
-            if remember {
-                for k in &kinds {
-                    let _ = this.app().store().set_permission(&site, k, if ok { "allow" } else { "deny" });
+        let (this, site, kinds) =
+            (self.retain(), site.to_string(), kinds.iter().map(|k| k.to_string()).collect::<Vec<_>>());
+        self.sheet(
+            &message,
+            &["Allow", "Don't Allow"],
+            None,
+            Some(("Remember for this site", true)),
+            move |ok, _, remember| {
+                if remember {
+                    for k in &kinds {
+                        let _ = this.app().store().set_permission(&site, k, if ok { "allow" } else { "deny" });
+                    }
                 }
-            }
-            done(ok)
-        });
+                done(ok)
+            },
+        );
     }
 
     /// A question as a sheet on this tab; `done(true)` for the first button.
@@ -1405,9 +1449,13 @@ impl Tab {
             };
             b.setBordered(false);
             b.setContentTintColor(Some(&objc2_app_kit::NSColor::systemOrangeColor()));
-            b.setToolTip(Some(&NSString::from_str("An extension's network request was blocked. Click to allow or deny it.")));
+            b.setToolTip(Some(&NSString::from_str(
+                "An extension's network request was blocked. Click to allow or deny it.",
+            )));
             b.setFrame(NSRect::new(NSPoint::new(width - 4.0 - (n + 1.0) * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
-            b.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin);
+            b.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
+            );
             content.addSubview(&b);
             iv.net_button.replace(Some(b));
         }
@@ -1415,12 +1463,19 @@ impl Tab {
         frame.size.width = width - frame.origin.x - 8.0 - (n + waiting as u8 as f64) * BUTTON_W;
         bar.setFrame(frame);
         for (i, item) in items.iter().enumerate() {
-            let b = unsafe { NSButton::buttonWithImage_target_action(&item.image, Some(self), Some(sel!(extensionClicked:)), mtm) };
+            let b = unsafe {
+                NSButton::buttonWithImage_target_action(&item.image, Some(self), Some(sel!(extensionClicked:)), mtm)
+            };
             b.setBordered(false);
             b.setImageScaling(objc2_app_kit::NSImageScaling::ScaleProportionallyDown);
             b.setTag(item.id as isize);
-            b.setFrame(NSRect::new(NSPoint::new(width - 4.0 - (n - i as f64) * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
-            b.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin);
+            b.setFrame(NSRect::new(
+                NSPoint::new(width - 4.0 - (n - i as f64) * BUTTON_W, top),
+                NSSize::new(BUTTON_W, 28.0),
+            ));
+            b.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
+            );
             // Dimmed while it's off on this site.
             b.setAlphaValue(if item.on { 1.0 } else { 0.45 });
             let hint = if item.always {
@@ -1432,12 +1487,16 @@ impl Tab {
             };
             b.setToolTip(Some(&NSString::from_str(&format!("{}: {hint}", item.label))));
             let menu = NSMenu::new(mtm);
-            for (title, tag, on) in [
-                ("Only when clicked", item.id * 2, !item.always),
-                ("On every site", item.id * 2 + 1, item.always),
-            ] {
+            for (title, tag, on) in
+                [("Only when clicked", item.id * 2, !item.always), ("On every site", item.id * 2 + 1, item.always)]
+            {
                 let m = unsafe {
-                    NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str(title), Some(sel!(extensionAccess:)), &NSString::from_str(""))
+                    NSMenuItem::initWithTitle_action_keyEquivalent(
+                        NSMenuItem::alloc(mtm),
+                        &NSString::from_str(title),
+                        Some(sel!(extensionAccess:)),
+                        &NSString::from_str(""),
+                    )
                 };
                 unsafe { m.setTarget(Some(self)) };
                 m.setTag(tag as isize);
@@ -1446,7 +1505,12 @@ impl Tab {
             }
             menu.addItem(&NSMenuItem::separatorItem(mtm));
             let manage = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str("Manage Extensions…"), Some(sel!(manageExtensions:)), &NSString::from_str(""))
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    &NSString::from_str("Manage Extensions…"),
+                    Some(sel!(manageExtensions:)),
+                    &NSString::from_str(""),
+                )
             };
             unsafe { manage.setTarget(Some(self)) };
             menu.addItem(&manage);
@@ -1487,7 +1551,12 @@ impl Tab {
         menu.setAutoenablesItems(false);
         let add = |title: &str, action: Option<objc2::runtime::Sel>, tag: isize, on: bool| {
             let item = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str(title), action, &NSString::from_str(""))
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    &NSString::from_str(title),
+                    action,
+                    &NSString::from_str(""),
+                )
             };
             if action.is_some() {
                 unsafe { item.setTarget(Some(self)) };
@@ -1500,7 +1569,12 @@ impl Tab {
             item
         };
         add(&site, None, 0, false);
-        add(if url.starts_with("https://") { "Connection is secure" } else { "Connection is not secure" }, None, 0, false);
+        add(
+            if url.starts_with("https://") { "Connection is secure" } else { "Connection is not secure" },
+            None,
+            0,
+            false,
+        );
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         let shields = store.permission(&site, "shields").as_deref() != Some("off");
         add("Block trackers and fingerprinting", Some(sel!(siteToggle:)), 0, shields);
@@ -1559,7 +1633,9 @@ impl Tab {
         let responds: bool = unsafe { msg_send![&*web, respondsToSelector: private] };
         match unreachable {
             Some(u) if responds => {
-                let _: () = unsafe { msg_send![&*web, _loadAlternateHTMLString: &*html, baseURL: Option::<&NSURL>::None, forUnreachableURL: &*u] };
+                let _: () = unsafe {
+                    msg_send![&*web, _loadAlternateHTMLString: &*html, baseURL: Option::<&NSURL>::None, forUnreachableURL: &*u]
+                };
             }
             _ => {
                 unsafe { web.loadHTMLString_baseURL(&html, None) };
@@ -1599,8 +1675,11 @@ unsafe fn is_attachment(response: &WKNavigationResponse) -> bool {
 }
 
 fn symbol_image(symbol: &str, label: &str) -> Retained<NSImage> {
-    NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(symbol), Some(&NSString::from_str(label)))
-        .expect("SF Symbol missing")
+    NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(symbol),
+        Some(&NSString::from_str(label)),
+    )
+    .expect("SF Symbol missing")
 }
 
 #[cfg(test)]
@@ -1612,13 +1691,18 @@ mod tests {
         assert!(extension_may_load("https://example.com/"));
         assert!(extension_may_load("webkit-extension://abc/options.html"));
         assert!(extension_may_load("about:blank"));
-        for bad in ["mybrowser://settings", "MyBrowser://settings#extensions", "file:///etc/passwd", "javascript:alert(1)", ""] {
+        for bad in
+            ["mybrowser://settings", "MyBrowser://settings#extensions", "file:///etc/passwd", "javascript:alert(1)", ""]
+        {
             assert!(!extension_may_load(bad), "{bad}");
         }
     }
 
     #[test]
     fn error_pages_escape_what_they_show() {
-        assert_eq!(escape_html(r#"<img src=x onerror="a('b')">&"#), "&lt;img src=x onerror=&quot;a(&#39;b&#39;)&quot;&gt;&amp;");
+        assert_eq!(
+            escape_html(r#"<img src=x onerror="a('b')">&"#),
+            "&lt;img src=x onerror=&quot;a(&#39;b&#39;)&quot;&gt;&amp;"
+        );
     }
 }

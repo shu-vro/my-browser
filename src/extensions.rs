@@ -18,7 +18,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use std::path::Path;
 
-use objc2::{msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, msg_send, sel};
 use objc2_app_kit::{NSBackingStoreType, NSImage, NSWindow, NSWindowStyleMask};
 use objc2_foundation::{
     NSArray, NSData, NSError, NSJSONReadingOptions, NSJSONSerialization, NSJSONWritingOptions, NSMutableArray,
@@ -29,9 +29,9 @@ use objc2_web_kit::{
     WKWebExtensionTab, WKWebView,
 };
 
+use crate::App;
 use crate::store::site_of;
 use crate::tab::Tab;
-use crate::App;
 
 /// What a toolbar button shows.
 pub struct ExtButton {
@@ -73,10 +73,11 @@ impl App {
                 let name = extension_name(&ext);
                 this.ivars().ext_meta.borrow_mut().insert(id, ext);
                 if this.extension_access(id) == "always"
-                    && let Err(e) = this.start_extension(id) {
-                        this.ivars().ext_meta.borrow_mut().remove(&id);
-                        return done(Err(e));
-                    }
+                    && let Err(e) = this.start_extension(id)
+                {
+                    this.ivars().ext_meta.borrow_mut().remove(&id);
+                    return done(Err(e));
+                }
                 this.refresh_extension_buttons();
                 done(Ok(name))
             }),
@@ -151,10 +152,9 @@ impl App {
         self.store().set_extension_access(id, access)?;
         let running = self.extension_context(id).is_some();
         self.stop_extension(id);
-        if (running || access == "always")
-            && self.extension_meta(id).is_some() {
-                self.start_extension(id)?;
-            }
+        if (running || access == "always") && self.extension_meta(id).is_some() {
+            self.start_extension(id)?;
+        }
         self.refresh_extension_buttons();
         Ok(())
     }
@@ -172,7 +172,12 @@ impl App {
             let already = tab.ivars().ext_on.borrow().iter().any(|(e, s)| *e == id && *s == site);
             if !already {
                 if let Some(pattern) = site_pattern(&site, self.mtm()) {
-                    unsafe { ctx.setPermissionStatus_forMatchPattern(WKWebExtensionContextPermissionStatus::GrantedExplicitly, &pattern) };
+                    unsafe {
+                        ctx.setPermissionStatus_forMatchPattern(
+                            WKWebExtensionContextPermissionStatus::GrantedExplicitly,
+                            &pattern,
+                        )
+                    };
                 }
                 tab.ivars().ext_on.borrow_mut().push((id, site));
                 let page = NSURL::URLWithString(&NSString::from_str(&url));
@@ -211,14 +216,15 @@ impl App {
             return;
         }
         for (id, site) in left {
-            let still_used = self
-                .ivars()
-                .tabs
-                .borrow()
-                .iter()
-                .any(|t| !std::ptr::eq(&**t, tab) && t.ivars().ext_on.borrow().iter().any(|(e, s)| *e == id && *s == site));
-            if let (false, Some(ctx), Some(pattern)) = (still_used, self.extension_context(id), site_pattern(&site, self.mtm())) {
-                unsafe { ctx.setPermissionStatus_forMatchPattern(WKWebExtensionContextPermissionStatus::Unknown, &pattern) };
+            let still_used = self.ivars().tabs.borrow().iter().any(|t| {
+                !std::ptr::eq(&**t, tab) && t.ivars().ext_on.borrow().iter().any(|(e, s)| *e == id && *s == site)
+            });
+            if let (false, Some(ctx), Some(pattern)) =
+                (still_used, self.extension_context(id), site_pattern(&site, self.mtm()))
+            {
+                unsafe {
+                    ctx.setPermissionStatus_forMatchPattern(WKWebExtensionContextPermissionStatus::Unknown, &pattern)
+                };
             }
         }
         self.refresh_extension_buttons_for(tab);
@@ -256,7 +262,8 @@ impl App {
                         )
                     })?;
                 let name = extension_name(ext);
-                let label = action.as_ref().map(|a| unsafe { a.label() }.to_string()).filter(|l| !l.is_empty()).unwrap_or(name);
+                let label =
+                    action.as_ref().map(|a| unsafe { a.label() }.to_string()).filter(|l| !l.is_empty()).unwrap_or(name);
                 let always = e.access == "always";
                 let on = always || tab.ivars().ext_on.borrow().iter().any(|(id, _)| *id == e.id);
                 Some(ExtButton { id: e.id, image, label, on, always })
@@ -331,7 +338,11 @@ pub fn extension_name(ext: &WKWebExtension) -> String {
 }
 
 /// Read an unpacked extension's manifest and resources (nothing runs).
-pub fn read_extension(mtm: MainThreadMarker, path: &str, done: Box<dyn FnOnce(Result<Retained<WKWebExtension>, String>)>) {
+pub fn read_extension(
+    mtm: MainThreadMarker,
+    path: &str,
+    done: Box<dyn FnOnce(Result<Retained<WKWebExtension>, String>)>,
+) {
     let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(path), true);
     let done = std::cell::RefCell::new(Some(done));
     let block = RcBlock::new(move |ext: *mut WKWebExtension, err: *mut NSError| {
@@ -374,7 +385,8 @@ static WEBSOCKET_JS: &str = include_str!("../resources/websocket.js");
 pub fn adapt_offscreen(dir: &Path) -> Option<()> {
     let path = dir.join("manifest.json");
     let data = NSData::with_bytes(&std::fs::read(&path).ok()?);
-    let manifest = NSJSONSerialization::JSONObjectWithData_options_error(&data, NSJSONReadingOptions::MutableContainers).ok()?;
+    let manifest =
+        NSJSONSerialization::JSONObjectWithData_options_error(&data, NSJSONReadingOptions::MutableContainers).ok()?;
     let manifest = manifest.downcast::<NSMutableDictionary>().ok()?;
     let key = |k: &str| NSString::from_str(k);
     let perms = manifest.objectForKey(&key("permissions"))?.downcast::<NSMutableArray>().ok()?;
@@ -399,7 +411,8 @@ pub fn adapt_offscreen(dir: &Path) -> Option<()> {
         if !perms.containsObject(&key("nativeMessaging")) {
             let _: () = msg_send![&*perms, addObject: &*key("nativeMessaging")];
         }
-        let out = NSJSONSerialization::dataWithJSONObject_options_error(&manifest, NSJSONWritingOptions::PrettyPrinted).ok()?;
+        let out = NSJSONSerialization::dataWithJSONObject_options_error(&manifest, NSJSONWritingOptions::PrettyPrinted)
+            .ok()?;
         std::fs::write(&path, out.to_vec()).ok()
     }
 }
@@ -429,9 +442,10 @@ fn with_script(html: &str, tag: &str) -> String {
     // The tag itself: `<head>` or `<head …>`, not `<header>`.
     let after = |name: &str| {
         let open = format!("<{name}");
-        let i = lower.match_indices(&open).map(|(i, _)| i).find(|&i| {
-            lower[i + open.len()..].starts_with(|c: char| c == '>' || c.is_ascii_whitespace())
-        })?;
+        let i = lower
+            .match_indices(&open)
+            .map(|(i, _)| i)
+            .find(|&i| lower[i + open.len()..].starts_with(|c: char| c == '>' || c.is_ascii_whitespace()))?;
         lower[i..].find('>').map(|j| i + j + 1)
     };
     let at = after("head").or_else(|| after("html")).or_else(|| after("!doctype")).unwrap_or(0);
@@ -442,7 +456,8 @@ fn with_script(html: &str, tag: &str) -> String {
 pub fn describe_access(ext: &WKWebExtension) -> String {
     let mut perms: Vec<String> = unsafe { ext.requestedPermissions() }.iter().map(|p| p.to_string()).collect();
     perms.sort();
-    let mut sites: Vec<String> = unsafe { ext.allRequestedMatchPatterns() }.iter().map(|m| unsafe { m.string() }.to_string()).collect();
+    let mut sites: Vec<String> =
+        unsafe { ext.allRequestedMatchPatterns() }.iter().map(|m| unsafe { m.string() }.to_string()).collect();
     sites.sort();
     sites.dedup();
     let mut out = String::new();
@@ -467,7 +482,10 @@ mod tests {
             with_script("<!DOCTYPE html><HTML><Head lang=x><script type=module src=a.js></script></head>", tag),
             format!("<!DOCTYPE html><HTML><Head lang=x>{tag}<script type=module src=a.js></script></head>")
         );
-        assert_eq!(with_script("<!doctype html><header>x</header>", tag), format!("<!doctype html>{tag}<header>x</header>"));
+        assert_eq!(
+            with_script("<!doctype html><header>x</header>", tag),
+            format!("<!doctype html>{tag}<header>x</header>")
+        );
         assert_eq!(with_script("<p>x", tag), format!("{tag}<p>x"));
     }
 }

@@ -196,12 +196,15 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::new();
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() && i + 2 <= b.len() - 1 + 1
-            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && i + 2 <= b.len() - 1 + 1
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
         out.push(b[i]);
         i += 1;
     }
@@ -209,9 +212,7 @@ fn percent_decode(s: &str) -> String {
 }
 
 fn encode(js: &str) -> String {
-    js.bytes()
-        .map(|c| if c.is_ascii_alphanumeric() { (c as char).to_string() } else { format!("%{c:02X}") })
-        .collect()
+    js.bytes().map(|c| if c.is_ascii_alphanumeric() { (c as char).to_string() } else { format!("%{c:02X}") }).collect()
 }
 
 /// A temp folder, removed (with the WebKit data of the profile in it) on drop.
@@ -234,13 +235,15 @@ impl Drop for TempProfile {
     fn drop(&mut self) {
         // WebKit keeps the profile's cookies under ~/Library/WebKit/<app>/WebsiteDataStore/<id>.
         if let Ok(db) = rusqlite::Connection::open(self.0.join("browser.db"))
-            && let Ok(id) = db.query_row("SELECT value FROM settings WHERE key='profile_id'", [], |r| r.get::<_, String>(0))
-                && let Some(home) = std::env::var_os("HOME") {
-                    // Cookies and site data, and extension storage, both keyed by the profile id.
-                    let webkit = Path::new(&home).join("Library/WebKit/my-browser");
-                    let _ = std::fs::remove_dir_all(webkit.join("WebsiteDataStore").join(id.to_lowercase()));
-                    let _ = std::fs::remove_dir_all(webkit.join("WebExtensions").join(id.to_uppercase()));
-                }
+            && let Ok(id) =
+                db.query_row("SELECT value FROM settings WHERE key='profile_id'", [], |r| r.get::<_, String>(0))
+            && let Some(home) = std::env::var_os("HOME")
+        {
+            // Cookies and site data, and extension storage, both keyed by the profile id.
+            let webkit = Path::new(&home).join("Library/WebKit/my-browser");
+            let _ = std::fs::remove_dir_all(webkit.join("WebsiteDataStore").join(id.to_lowercase()));
+            let _ = std::fs::remove_dir_all(webkit.join("WebExtensions").join(id.to_uppercase()));
+        }
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
@@ -324,26 +327,44 @@ fn back_forward_reload_and_toolbar_state() {
     let bb = "data:text/html,<title>Page B</title>b";
     let a_url = b.nav(&format!("go {a}"));
     assert!(a_url.starts_with("data:text/html,"), "{a_url}");
-    { let want = format!("STATE back=0 forward=0 url={a_url} title=Page A"); assert_eq!(b.state_until(|s| s == want), want); }
+    {
+        let want = format!("STATE back=0 forward=0 url={a_url} title=Page A");
+        assert_eq!(b.state_until(|s| s == want), want);
+    }
 
     let b_url = b.nav(&format!("go {bb}"));
-    { let want = format!("STATE back=1 forward=0 url={b_url} title=Page B"); assert_eq!(b.state_until(|s| s == want), want); }
+    {
+        let want = format!("STATE back=1 forward=0 url={b_url} title=Page B");
+        assert_eq!(b.state_until(|s| s == want), want);
+    }
 
     assert_eq!(b.nav("back"), a_url);
-    { let want = format!("STATE back=0 forward=1 url={a_url} title=Page A"); assert_eq!(b.state_until(|s| s == want), want); }
+    {
+        let want = format!("STATE back=0 forward=1 url={a_url} title=Page A");
+        assert_eq!(b.state_until(|s| s == want), want);
+    }
 
     assert_eq!(b.nav("forward"), b_url);
-    { let want = format!("STATE back=1 forward=0 url={b_url} title=Page B"); assert_eq!(b.state_until(|s| s == want), want); }
+    {
+        let want = format!("STATE back=1 forward=0 url={b_url} title=Page B");
+        assert_eq!(b.state_until(|s| s == want), want);
+    }
 
     assert_eq!(b.nav("reload"), b_url);
-    { let want = format!("STATE back=1 forward=0 url={b_url} title=Page B"); assert_eq!(b.state_until(|s| s == want), want); }
+    {
+        let want = format!("STATE back=1 forward=0 url={b_url} title=Page B");
+        assert_eq!(b.state_until(|s| s == want), want);
+    }
 }
 
 #[test]
 fn untitled_page_shows_its_url() {
     let mut b = launch();
     b.nav("go about:blank");
-    { let want = "STATE back=0 forward=0 url=about:blank title=about:blank"; assert_eq!(b.state_until(|s| s == want), want); }
+    {
+        let want = "STATE back=0 forward=0 url=about:blank title=about:blank";
+        assert_eq!(b.state_until(|s| s == want), want);
+    }
 }
 
 #[test]
@@ -751,7 +772,9 @@ fn websites_cannot_reach_the_local_network() {
     let base = serve();
     let mut b = launch();
     // A page that isn't local (a data: URL) tries to reach a server on this Mac.
-    let probe = format!("fetch('{base}/page/x',{{mode:'no-cors'}}).then(()=>document.title='reached',()=>document.title='blocked')");
+    let probe = format!(
+        "fetch('{base}/page/x',{{mode:'no-cors'}}).then(()=>document.title='reached',()=>document.title='blocked')"
+    );
     let remote = format!("go data:text/html,{}", encode(&format!("<title>start</title><script>{probe}</script>")));
     let outcome = |b: &mut Browser| b.state_until(|s| s.contains("title=reached") || s.contains("title=blocked"));
     b.nav(&remote);
@@ -837,7 +860,7 @@ fn extension_connections_are_blocked_until_allowed() {
     b.state_until(|s| s.contains("title=AUDIO"));
     assert_eq!(b.send("netbutton"), "NETBUTTON 0");
     // The page asks the extension's offscreen page to open a WebSocket.
-    let mut socket = |b: &mut Browser, url: &str| {
+    let socket = |b: &mut Browser, url: &str| {
         b.nav(&format!("go {base}/script/{}", encode(&format!("setTimeout(()=>postMessage({{ws:'{url}'}},'*'),100)"))));
         let s = b.state_until(|s| s.contains("title=WS"));
         s.split("title=WS ").nth(1).unwrap().to_string()
@@ -848,7 +871,10 @@ fn extension_connections_are_blocked_until_allowed() {
     assert_eq!(socket(&mut b, "wss://gate.invalid/other"), blocked);
     assert_eq!(b.send("netbutton"), "NETBUTTON 1");
     let list = b.bridge(&["net.list"]);
-    assert!(list.contains(r#""address":"wss://gate.invalid/tts","site":"wss://gate.invalid/*","denied":false,"count":2"#), "{list}");
+    assert!(
+        list.contains(r#""address":"wss://gate.invalid/tts","site":"wss://gate.invalid/*","denied":false,"count":2"#),
+        "{list}"
+    );
     // Never offered: hosts the manifest doesn't ask for, this Mac, plain ws:.
     for (url, why) in [
         ("wss://elsewhere.invalid/x", "not a site this extension asks for"),
@@ -867,7 +893,10 @@ fn extension_connections_are_blocked_until_allowed() {
     assert_eq!(b.send("netbutton"), "NETBUTTON 0");
     let list = b.bridge(&["net.list"]);
     assert!(list.contains(r#""allowed":[{"ext":"#) && list.contains(r#""rule":"wss://gate.invalid/tts""#), "{list}");
-    assert!(list.contains(r#""address":"wss://gate.invalid/other","site":"wss://gate.invalid/*","denied":true"#), "{list}");
+    assert!(
+        list.contains(r#""address":"wss://gate.invalid/other","site":"wss://gate.invalid/*","denied":true"#),
+        "{list}"
+    );
     // Allowed: the browser connects (the name doesn't exist, so it fails as a
     // connection, not as a refusal).
     assert_eq!(socket(&mut b, "wss://gate.invalid/tts?token=3"), "error close 1006");
@@ -895,7 +924,10 @@ fn extensions_stay_off_until_clicked_then_turn_off_when_leaving_the_site() {
     assert!(installed.contains("\"name\":\"Title Marker\""), "{installed}");
     let id: String = installed.split("\"id\":").nth(1).unwrap().chars().take_while(char::is_ascii_digit).collect();
     let list = b.bridge(&["ext.list"]);
-    assert!(list.contains("\"access\":\"click\"") && list.contains("\"running\":false"), "installed, not started: {list}");
+    assert!(
+        list.contains("\"access\":\"click\"") && list.contains("\"running\":false"),
+        "installed, not started: {list}"
+    );
     assert!(list.contains("http://127.0.0.1/*"), "{list}");
 
     // Off until clicked: the page is untouched, and the button shows it's off.
@@ -937,7 +969,8 @@ fn extensions_stay_off_until_clicked_then_turn_off_when_leaving_the_site() {
     assert_eq!(b.bridge(&["ext.remove", &id]), "true");
     assert_eq!(b.bridge(&["ext.list"]), "[]");
     // The copy the browser made inside the profile is gone too.
-    let left: Vec<_> = std::fs::read_dir(profile.0.join("extensions")).map(|d| d.flatten().collect()).unwrap_or_default();
+    let left: Vec<_> =
+        std::fs::read_dir(profile.0.join("extensions")).map(|d| d.flatten().collect()).unwrap_or_default();
     assert!(left.iter().all(|e| !e.file_name().to_string_lossy().ends_with("title-extension")), "{left:?}");
     b.quit();
 }

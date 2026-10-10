@@ -9,9 +9,11 @@ use std::rc::Rc;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
-use objc2::{msg_send, sel, MainThreadMarker, Message};
+use objc2::{MainThreadMarker, Message, msg_send, sel};
 use objc2_foundation::{NSError, NSString};
-use objc2_web_kit::{WKContentRuleList, WKContentRuleListStore, WKPreferences, WKWebpagePreferences, WKWebsiteDataStore};
+use objc2_web_kit::{
+    WKContentRuleList, WKContentRuleListStore, WKPreferences, WKWebpagePreferences, WKWebsiteDataStore,
+};
 
 use crate::store::json_str;
 
@@ -38,7 +40,14 @@ pub fn tracker_rules_json() -> Option<String> {
     let len = u64::from_le_bytes(len.try_into().ok()?) as usize;
     let mut out = vec![0u8; len];
     let n = unsafe {
-        compression_decode_buffer(out.as_mut_ptr(), len, packed.as_ptr(), packed.len(), std::ptr::null_mut(), COMPRESSION_ZLIB)
+        compression_decode_buffer(
+            out.as_mut_ptr(),
+            len,
+            packed.as_ptr(),
+            packed.len(),
+            std::ptr::null_mut(),
+            COMPRESSION_ZLIB,
+        )
     };
     (n == len).then(|| String::from_utf8(out).ok()).flatten()
 }
@@ -73,7 +82,12 @@ fn site_regex(host: &str) -> String {
 fn exemptions(sites: &[String]) -> String {
     sites
         .iter()
-        .map(|h| format!(r#"{{"trigger":{{"url-filter":".*","if-top-url":[{}]}},"action":{{"type":"ignore-previous-rules"}}}}"#, json_str(&site_regex(h))))
+        .map(|h| {
+            format!(
+                r#"{{"trigger":{{"url-filter":".*","if-top-url":[{}]}},"action":{{"type":"ignore-previous-rules"}}}}"#,
+                json_str(&site_regex(h))
+            )
+        })
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -116,7 +130,12 @@ pub fn local_rules(allowed: &[String]) -> String {
     let top: Vec<String> = LOCAL.iter().map(|p| json_str(p)).collect();
     let mut rules: Vec<String> = top
         .iter()
-        .map(|p| format!(r#"{{"trigger":{{"url-filter":{p},"unless-top-url":[{}]}},"action":{{"type":"block"}}}}"#, top.join(",")))
+        .map(|p| {
+            format!(
+                r#"{{"trigger":{{"url-filter":{p},"unless-top-url":[{}]}},"action":{{"type":"block"}}}}"#,
+                top.join(",")
+            )
+        })
         .collect();
     if !allowed.is_empty() {
         rules.push(exemptions(allowed));
@@ -173,9 +192,11 @@ fn load_rules(
             };
         }
     };
-    let lookup = RcBlock::new(move |list: *mut WKContentRuleList, _err: *mut NSError| {
-        if list.is_null() { compile() } else { finish(list) }
-    });
+    let lookup = RcBlock::new(
+        move |list: *mut WKContentRuleList, _err: *mut NSError| {
+            if list.is_null() { compile() } else { finish(list) }
+        },
+    );
     unsafe { store.lookUpContentRuleListForIdentifier_completionHandler(Some(&ns_id), Some(&lookup)) };
 }
 
@@ -189,7 +210,12 @@ fn forget_old_lists(store: &WKContentRuleListStore, keep: &str) {
         for id in ids.iter() {
             let s = id.to_string();
             if s.starts_with(&prefix) && s != keep {
-                unsafe { store2.removeContentRuleListForIdentifier_completionHandler(Some(&id), Some(&RcBlock::new(|_e: *mut NSError| {}))) };
+                unsafe {
+                    store2.removeContentRuleListForIdentifier_completionHandler(
+                        Some(&id),
+                        Some(&RcBlock::new(|_e: *mut NSError| {})),
+                    )
+                };
             }
         }
     });
@@ -220,9 +246,36 @@ pub fn load_local_rules(
 /// default list (brave-core query_filter); campaign tags like `utm_*` stay,
 /// as in Brave and Firefox, since sites use them for more than tracking.
 const TRACKING_PARAMS: [&str; 30] = [
-    "__hsfp", "__hssc", "__hstc", "__s", "_hsenc", "_hsmi", "_kx", "_openstat", "dclid", "fbclid", "gbraid", "gclid",
-    "hsCtaTracking", "igshid", "mc_eid", "mkt_tok", "ml_subscriber", "ml_subscriber_hash", "msclkid", "oly_anon_id",
-    "oly_enc_id", "rb_clickid", "s_cid", "ss_email_id", "ttclid", "twclid", "vero_conv", "vero_id", "wbraid", "yclid",
+    "__hsfp",
+    "__hssc",
+    "__hstc",
+    "__s",
+    "_hsenc",
+    "_hsmi",
+    "_kx",
+    "_openstat",
+    "dclid",
+    "fbclid",
+    "gbraid",
+    "gclid",
+    "hsCtaTracking",
+    "igshid",
+    "mc_eid",
+    "mkt_tok",
+    "ml_subscriber",
+    "ml_subscriber_hash",
+    "msclkid",
+    "oly_anon_id",
+    "oly_enc_id",
+    "rb_clickid",
+    "s_cid",
+    "ss_email_id",
+    "ttclid",
+    "twclid",
+    "vero_conv",
+    "vero_id",
+    "wbraid",
+    "yclid",
 ];
 
 /// `url` without tracking parameters, or None if it has none.
@@ -252,7 +305,8 @@ pub fn harden_data_store(store: &WKWebsiteDataStore) -> Vec<(&'static str, bool)
     if ok_itp {
         let _: () = unsafe { msg_send![store, _setResourceLoadStatisticsEnabled: Bool::YES] };
     }
-    let ok_cookies = responds(store, sel!(_setThirdPartyCookieBlockingMode:onlyOnSitesWithoutUserInteraction:completionHandler:));
+    let ok_cookies =
+        responds(store, sel!(_setThirdPartyCookieBlockingMode:onlyOnSitesWithoutUserInteraction:completionHandler:));
     if ok_cookies {
         let done = RcBlock::new(|| {});
         let _: () = unsafe {
@@ -334,7 +388,9 @@ mod tests {
         let json = tracker_rules(&["news.example".into()]).unwrap();
         assert!(json.ends_with(r#"{"trigger":{"url-filter":".*","if-top-url":["^[a-z]+://([^/]*\\.)?news\\.example[:/]"]},"action":{"type":"ignore-previous-rules"}}]"#), "{}", &json[json.len() - 200..]);
         let local = local_rules(&[]);
-        assert!(local.starts_with('[') && local.ends_with(']') && local.matches(r#""type":"block""#).count() == LOCAL.len());
+        assert!(
+            local.starts_with('[') && local.ends_with(']') && local.matches(r#""type":"block""#).count() == LOCAL.len()
+        );
         assert!(local_rules(&["router.example".into()]).contains("ignore-previous-rules"));
         assert_ne!(local_identifier(&[]), local_identifier(&["x".into()]));
     }

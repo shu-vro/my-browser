@@ -22,17 +22,17 @@ use std::net::{IpAddr, Ipv4Addr};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{define_class, msg_send, AnyThread, DefinedClass, Message};
+use objc2::{AnyThread, DefinedClass, Message, define_class, msg_send};
 use objc2_foundation::{
     NSData, NSDataBase64DecodingOptions, NSDataBase64EncodingOptions, NSDictionary, NSError, NSMutableURLRequest,
-    NSNumber, NSObject, NSObjectProtocol, NSOperationQueue, NSString, NSURLSession, NSURLSessionConfiguration,
+    NSNumber, NSObject, NSObjectProtocol, NSOperationQueue, NSString, NSURL, NSURLSession, NSURLSessionConfiguration,
     NSURLSessionDelegate, NSURLSessionTask, NSURLSessionTaskDelegate, NSURLSessionWebSocketCloseCode,
-    NSURLSessionWebSocketDelegate, NSURLSessionWebSocketMessage, NSURLSessionWebSocketTask, NSURL,
+    NSURLSessionWebSocketDelegate, NSURLSessionWebSocketMessage, NSURLSessionWebSocketTask,
 };
 use objc2_web_kit::{WKWebExtensionContext, WKWebExtensionMessagePort};
 
-use crate::store::json_str;
 use crate::App;
+use crate::store::json_str;
 
 /// A request blocked this session, as Settings → Network lists it.
 pub struct Blocked {
@@ -88,14 +88,21 @@ pub fn is_local(address: &str) -> bool {
     let host = host.trim_end_matches('.');
     let local_v4 = |ip: Ipv4Addr| {
         let [a, b, ..] = ip.octets();
-        ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast()
+        ip.is_loopback()
+            || ip.is_private()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || ip.is_broadcast()
             || (a == 100 && (64..128).contains(&b))
     };
     match host.parse::<IpAddr>() {
         Ok(IpAddr::V4(ip)) => local_v4(ip),
         Ok(IpAddr::V6(ip)) => {
             let s = ip.segments()[0];
-            ip.is_loopback() || ip.is_unspecified() || s & 0xfe00 == 0xfc00 || s & 0xffc0 == 0xfe80
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || s & 0xfe00 == 0xfc00
+                || s & 0xffc0 == 0xfe80
                 || ip.to_ipv4_mapped().is_some_and(local_v4)
         }
         Err(_) => {
@@ -155,7 +162,13 @@ define_class!(
         }
 
         #[unsafe(method(URLSession:webSocketTask:didCloseWithCode:reason:))]
-        fn did_close(&self, _s: &NSURLSession, task: &NSURLSessionWebSocketTask, code: NSURLSessionWebSocketCloseCode, reason: Option<&NSData>) {
+        fn did_close(
+            &self,
+            _s: &NSURLSession,
+            task: &NSURLSessionWebSocketTask,
+            code: NSURLSessionWebSocketCloseCode,
+            reason: Option<&NSData>,
+        ) {
             if let Some(port) = with_gate(|g| g.take(task)).flatten() {
                 let reason = reason.map(|r| String::from_utf8_lossy(&r.to_vec()).into_owned()).unwrap_or_default();
                 send(&port, &format!(r#"{{"t":"close","code":{},"reason":{}}}"#, code.0, json_str(&reason)));
@@ -208,7 +221,10 @@ impl Gate {
             request.setValue_forHTTPHeaderField(Some(&NSString::from_str(ua)), &NSString::from_str("User-Agent"));
         }
         if !protocols.is_empty() {
-            request.setValue_forHTTPHeaderField(Some(&NSString::from_str(protocols)), &NSString::from_str("Sec-WebSocket-Protocol"));
+            request.setValue_forHTTPHeaderField(
+                Some(&NSString::from_str(protocols)),
+                &NSString::from_str("Sec-WebSocket-Protocol"),
+            );
         }
         let task = self.session.webSocketTaskWithRequest(&request);
         self.conns.borrow_mut().push((port.retain(), task.clone()));
@@ -310,9 +326,16 @@ impl App {
             }
             Some("send") => {
                 let message = if let Some(text) = string_of(msg, "text") {
-                    NSURLSessionWebSocketMessage::initWithString(NSURLSessionWebSocketMessage::alloc(), &NSString::from_str(&text))
+                    NSURLSessionWebSocketMessage::initWithString(
+                        NSURLSessionWebSocketMessage::alloc(),
+                        &NSString::from_str(&text),
+                    )
                 } else if let Some(data) = string_of(msg, "b64").and_then(|b| {
-                    NSData::initWithBase64EncodedString_options(NSData::alloc(), &NSString::from_str(&b), NSDataBase64DecodingOptions::empty())
+                    NSData::initWithBase64EncodedString_options(
+                        NSData::alloc(),
+                        &NSString::from_str(&b),
+                        NSDataBase64DecodingOptions::empty(),
+                    )
                 }) {
                     NSURLSessionWebSocketMessage::initWithData(NSURLSessionWebSocketMessage::alloc(), &data)
                 } else {
@@ -321,7 +344,10 @@ impl App {
                 with_gate(|g| g.send_to(port, &message));
             }
             Some("close") => {
-                let code = msg.objectForKey(&NSString::from_str("code")).and_then(|c| c.downcast::<NSNumber>().ok()).map_or(1000, |n| n.integerValue());
+                let code = msg
+                    .objectForKey(&NSString::from_str("code"))
+                    .and_then(|c| c.downcast::<NSNumber>().ok())
+                    .map_or(1000, |n| n.integerValue());
                 with_gate(|g| g.close(port, code, &string_of(msg, "reason").unwrap_or_default()));
             }
             _ => {}
@@ -339,7 +365,9 @@ impl App {
         // the host is its `https:` one (Chrome treats them alike).
         let https = format!("https://{}", &url[6..]);
         let nsurl = NSURL::URLWithString(&NSString::from_str(&https)).ok_or("my-browser: bad address")?;
-        let asked = unsafe { ctx.webExtension().allRequestedMatchPatterns() }.iter().any(|p| unsafe { p.matchesURL(Some(&nsurl)) });
+        let asked = unsafe { ctx.webExtension().allRequestedMatchPatterns() }
+            .iter()
+            .any(|p| unsafe { p.matchesURL(Some(&nsurl)) });
         if !asked {
             return Err("my-browser: not a site this extension asks for");
         }
@@ -366,7 +394,8 @@ impl App {
 
     /// Settings → Network: `{"blocked":[…],"allowed":[…]}`.
     pub fn net_json(&self) -> String {
-        let name = |ext: i64| self.extension_meta(ext).map(|e| crate::extensions::extension_name(&e)).unwrap_or_default();
+        let name =
+            |ext: i64| self.extension_meta(ext).map(|e| crate::extensions::extension_name(&e)).unwrap_or_default();
         let blocked: Vec<String> = self
             .ivars()
             .net_blocked
@@ -443,14 +472,30 @@ mod tests {
     #[test]
     fn this_mac_and_the_local_network_are_local() {
         for local in [
-            "wss://localhost/", "wss://a.localhost/", "wss://printer.local/", "wss://router/", "wss://127.0.0.1/",
-            "wss://10.1.2.3:8443/", "wss://192.168.1.1/", "wss://169.254.169.254/", "wss://100.64.0.1/", "wss://[::1]/",
-            "wss://[fe80::1]/", "wss://[fd00::1]/", "wss://[::ffff:127.0.0.1]/", "wss://0.0.0.0/", "wss://2130706433/",
-            "wss://0x7f.1/", "wss://127.1/", "wss://localhost./",
+            "wss://localhost/",
+            "wss://a.localhost/",
+            "wss://printer.local/",
+            "wss://router/",
+            "wss://127.0.0.1/",
+            "wss://10.1.2.3:8443/",
+            "wss://192.168.1.1/",
+            "wss://169.254.169.254/",
+            "wss://100.64.0.1/",
+            "wss://[::1]/",
+            "wss://[fe80::1]/",
+            "wss://[fd00::1]/",
+            "wss://[::ffff:127.0.0.1]/",
+            "wss://0.0.0.0/",
+            "wss://2130706433/",
+            "wss://0x7f.1/",
+            "wss://127.1/",
+            "wss://localhost./",
         ] {
             assert!(is_local(local), "{local}");
         }
-        for public in ["wss://speech.platform.bing.com/", "wss://8.8.8.8/", "wss://[2001:4860::8888]/", "wss://a.b.example:443/"] {
+        for public in
+            ["wss://speech.platform.bing.com/", "wss://8.8.8.8/", "wss://[2001:4860::8888]/", "wss://a.b.example:443/"]
+        {
             assert!(!is_local(public), "{public}");
         }
     }

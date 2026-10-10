@@ -10,7 +10,7 @@ use std::ptr::NonNull;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::sel;
-use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly, Message};
+use objc2::{MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameDarkAqua, NSAutoresizingMaskOptions, NSBezierPath, NSButton, NSColor, NSFont,
     NSTextField, NSTextFieldBezelStyle, NSView,
@@ -140,7 +140,12 @@ pub fn build(tab: &Tab, home: &Home, frame: NSRect, mtm: MainThreadMarker) -> Re
         let banner = Banner::new(mtm);
         let h = banner.frame().size.height;
         col.push(&banner, h);
-        let by = label("s  h  u  -  v  r  o", &NSFont::boldSystemFontOfSize(13.0), &adaptive((0.31, 0.50, 0.61), (0.53, 0.68, 0.76)), mtm);
+        let by = label(
+            "s  h  u  -  v  r  o",
+            &NSFont::boldSystemFontOfSize(13.0),
+            &adaptive((0.31, 0.50, 0.61), (0.53, 0.68, 0.76)),
+            mtm,
+        );
         col.push(&by, by.frame().size.height);
     }
 
@@ -165,7 +170,14 @@ pub fn build(tab: &Tab, home: &Home, frame: NSRect, mtm: MainThreadMarker) -> Re
         for url in chunk {
             let host = url.split("://").nth(1).unwrap_or(url).trim_end_matches('/');
             let host = host.strip_prefix("www.").unwrap_or(host);
-            let b = unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str(host), Some(tab), Some(sel!(homeSite:)), mtm) };
+            let b = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str(host),
+                    Some(tab),
+                    Some(sel!(homeSite:)),
+                    mtm,
+                )
+            };
             // The address to open travels in the tooltip, which also shows it.
             b.setToolTip(Some(&NSString::from_str(url)));
             b.sizeToFit();
@@ -181,7 +193,12 @@ pub fn build(tab: &Tab, home: &Home, frame: NSRect, mtm: MainThreadMarker) -> Re
     }
 
     let customize = unsafe {
-        NSButton::buttonWithTitle_target_action(&NSString::from_str("Customize"), Some(tab), Some(sel!(openHomeSettings:)), mtm)
+        NSButton::buttonWithTitle_target_action(
+            &NSString::from_str("Customize"),
+            Some(tab),
+            Some(sel!(openHomeSettings:)),
+            mtm,
+        )
     };
     customize.setBordered(false);
     customize.setContentTintColor(Some(&NSColor::secondaryLabelColor()));
@@ -194,7 +211,9 @@ pub fn build(tab: &Tab, home: &Home, frame: NSRect, mtm: MainThreadMarker) -> Re
     column.setFrame(f);
     // Stays centered and at the same distance from the top as the window resizes.
     column.setAutoresizingMask(
-        NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMaxXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
+        NSAutoresizingMaskOptions::ViewMinXMargin
+            | NSAutoresizingMaskOptions::ViewMaxXMargin
+            | NSAutoresizingMaskOptions::ViewMinYMargin,
     );
     container.addSubview(&column);
     container
