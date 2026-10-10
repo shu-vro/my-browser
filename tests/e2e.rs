@@ -282,7 +282,8 @@ fn loads_report_timing() {
 fn failed_load_is_reported() {
     let mut b = launch();
     // Port 1 is a restricted port; WebKit refuses it immediately.
-    assert!(b.send("go http://127.0.0.1:1/").starts_with("FAILED "));
+    let failed = b.send("go http://127.0.0.1:1/");
+    assert!(failed.starts_with("FAILED "), "{failed}");
     // Browser still works afterwards.
     assert!(b.send("go about:blank").starts_with("LOADED "));
 }
@@ -1135,6 +1136,9 @@ fn settings_page_loads_and_its_bridge_works() {
     b.nav("go mybrowser://settings");
     // The page's own script set the title after reading settings over the bridge.
     assert!(b.state_until(|s| s.ends_with("title=Settings")).ends_with("title=Settings"));
+    // The sidebar's #links switch sections without a reload.
+    b.send("eval document.querySelector('nav a[href=\"#history\"]').click()");
+    assert!(b.state_until(|s| s.ends_with("title=History")).ends_with("title=History"));
     let s = b.bridge(&["settings.get"]);
     assert!(s.contains("\"search\":\"duckduckgo\"") && s.contains("\"block_trackers\":\"1\""), "{s}");
     assert_eq!(b.bridge(&["settings.set", "search", "brave"]), "true");
@@ -1262,7 +1266,8 @@ fn a_page_needs_permission_for_more_than_one_download() {
 #[test]
 fn failed_loads_show_an_error_page() {
     let mut b = launch();
-    assert!(b.send("go http://127.0.0.1:1/").starts_with("FAILED "));
+    let failed = b.send("go http://127.0.0.1:1/");
+    assert!(failed.starts_with("FAILED "), "{failed}");
     let s = b.state_until(|s| s.ends_with("title=Can't open this page"));
     assert!(s.contains("url=http://127.0.0.1:1/") && s.ends_with("title=Can't open this page"), "{s}");
     assert!(b.bridge(&["history.list", ""]) == "[]", "an error page isn't a visit");
@@ -1364,7 +1369,7 @@ fn extension_connections_are_blocked_until_allowed() {
     let socket = |b: &mut Browser, url: &str| {
         b.nav(&format!("go {base}/script/{}", encode(&format!("setTimeout(()=>postMessage({{ws:'{url}'}},'*'),100)"))));
         let s = b.state_until(|s| s.contains("title=WS"));
-        s.split("title=WS ").nth(1).unwrap().to_string()
+        s.split("title=WS ").nth(1).unwrap_or_else(|| panic!("{s}")).to_string()
     };
     let blocked = "error close 1006 my-browser: blocked until allowed in Settings → Network";
     assert_eq!(socket(&mut b, "wss://gate.invalid/tts?token=1"), blocked);

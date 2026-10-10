@@ -42,6 +42,18 @@
   #toast { position: fixed; bottom: 18px; right: 18px; background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   #toast.show { opacity: .92; }
   progress { width: 120px; }
+  .list a.title { color: inherit; text-decoration: none; }
+  .list a.title:hover { text-decoration: underline; }
+  .bar { display: flex; gap: 10px; align-items: center; margin-bottom: 4px; }
+  .bar input[type=search] { margin: 0; flex: 1; }
+  .day { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 22px 0 2px; }
+  .hist li { padding: 7px 8px; margin: 0 -8px; border-bottom: none; border-radius: 7px; }
+  .hist li:hover { background: var(--panel); }
+  .hist .tile { width: 26px; height: 26px; border-radius: 6px; flex-shrink: 0; display: grid; place-items: center; font-weight: 600; font-size: 13px; color: #fff; }
+  .hist .time { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
+  .hist .x { border: none; background: none; color: var(--muted); padding: 2px 8px; font-size: 16px; line-height: 1; visibility: hidden; }
+  .hist li:hover .x, .hist .x:focus-visible { visibility: visible; }
+  .hist .x:hover { color: var(--danger); }
 </style>
 </head>
 <body>
@@ -139,9 +151,8 @@
 
   <section id="history">
     <h1>History</h1>
-    <input type="search" id="history-q" placeholder="Search history">
-    <ul class="list" id="history-list"></ul>
-    <p><button class="danger" id="clear-history">Clear all history…</button></p>
+    <div class="bar"><input type="search" id="history-q" placeholder="Search history"><button class="danger" id="clear-history">Clear history…</button></div>
+    <div id="history-list"></div>
   </section>
 
   <section id="downloads">
@@ -274,18 +285,44 @@ async function loadPermissions() {
 loaders.permissions = loadPermissions;
 
 // ---- history
+// One group per day, newest first. Back-to-back visits to the same address
+// show as one row; removing it removes all of them.
+const dayLabel = d => {
+  const start = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((start(new Date()) - start(d)) / 86400000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  const opts = { weekday: "long", month: "long", day: "numeric" };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString(undefined, opts);
+};
+const tileColor = host => { let h = 0; for (const c of host) h = (h * 31 + c.charCodeAt(0)) % 360; return `hsl(${h} 45% 45%)`; };
 async function loadHistory() {
-  const rows = await call("history.list", $("history-q").value);
+  const q = $("history-q").value;
+  const rows = await call("history.list", q);
   const list = $("history-list"); list.replaceChildren();
-  if (!rows.length) list.append(el("li", "empty", "No history."));
+  if (!rows.length) { list.append(el("p", "empty", q ? "No matches." : "No history.")); return; }
+  let ul = null, day = "", prev = null;
   for (const r of rows) {
-    const li = el("li");
+    if (prev && prev.url === r.url) { prev.ids.push(r.id); continue; }
+    const d = new Date(r.at * 1000), label = dayLabel(d);
+    if (label !== day) { day = label; list.append(el("h2", "day", label)); ul = el("ul", "list hist"); list.append(ul); }
+    let host = r.url, path = "";
+    try { const u = new URL(r.url); host = u.host; path = u.pathname === "/" ? "" : u.pathname + u.search; } catch {}
+    host = host.replace(/^www\./, "");
+    const li = el("li"); li.title = r.url;
+    const tile = el("span", "tile", (host[0] || "?").toUpperCase()); tile.style.background = tileColor(host);
     const main = el("div", "main");
-    const link = el("a", "title", r.title || r.url); link.href = "#"; link.onclick = e => { e.preventDefault(); call("open", r.url).catch(fail); };
-    main.append(link, el("div", "sub", r.url));
-    const del = el("button", null, "Delete"); del.onclick = () => call("history.delete", r.id).then(loadHistory, fail);
-    li.append(main, el("span", "time", when(r.at)), del);
-    list.append(li);
+    const link = el("a", "title", r.title || host || r.url); link.href = "#";
+    link.onclick = e => { e.preventDefault(); call("open", r.url).catch(fail); };
+    main.append(link, el("div", "sub", host + path));
+    const time = el("span", "time", d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }));
+    const x = el("button", "x", "×"); x.title = "Remove from history";
+    const ids = [r.id];
+    x.onclick = () => Promise.all(ids.map(id => call("history.delete", id))).then(loadHistory, fail);
+    li.append(tile, main, time, x);
+    ul.append(li);
+    prev = { url: r.url, ids };
   }
 }
 $("history-q").addEventListener("input", () => { clearTimeout(loadHistory.t); loadHistory.t = setTimeout(loadHistory, 150); });

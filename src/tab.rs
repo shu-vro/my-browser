@@ -1607,8 +1607,14 @@ impl Tab {
         let link = kind == WKNavigationType::LinkActivated;
         let main = is_main_frame(action);
         if url.starts_with(&format!("{INTERNAL}:")) {
-            let from_internal = unsafe { action.sourceFrame() }
-                .is_some_and(|f| unsafe { f.securityOrigin().protocol() }.to_string() == INTERNAL);
+            // The page now showing, not the source frame: WebKit reports an
+            // empty origin and about:blank for frames of custom schemes, which
+            // blocked the settings sidebar's own #links.
+            let from_internal = self
+                .web()
+                .and_then(|w| unsafe { w.URL() })
+                .and_then(|u| u.scheme())
+                .is_some_and(|s| s.to_string() == INTERNAL);
             // Internal pages never load in a frame: a site could overlay one
             // and trick clicks into it (clickjacking "Clear data" or "Uninstall").
             let ours = self.ivars().allow_internal.borrow().as_deref() == Some(url.as_str());

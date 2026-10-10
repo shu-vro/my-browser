@@ -8,8 +8,10 @@ on:
 jobs:
   check:
     # The e2e tests open real browser windows; GitHub's macOS runners have a
-    # logged-in GUI session.
-    runs-on: macos-26
+    # logged-in GUI session. xcode-27 is the macOS 27 image: on macos-26 the
+    # older WebKit lacks private settings the tests require (Global Privacy
+    # Control, among others).
+    runs-on: xcode-27
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
