@@ -710,6 +710,31 @@ fn bookmarks_toggle_with_cmd_d_and_fill_the_menu() {
 }
 
 #[test]
+fn pages_print_to_pdf_and_window_print_opens_the_panel() {
+    let base = serve();
+    let dir = TempProfile::new("print");
+    let mut b = launch();
+    b.nav(&format!("go {base}/page/printable"));
+    let pdf = dir.0.join("page.pdf");
+    assert_eq!(b.send(&format!("printpdf {}", pdf.display())), "PRINTED 1");
+    let bytes = std::fs::read(&pdf).unwrap();
+    assert!(bytes.starts_with(b"%PDF") && bytes.len() > 500, "{} bytes", bytes.len());
+    // The page's own print() shows the print panel; cancelling it prints nothing.
+    b.nav(&format!("go {base}/script/{}", encode("setTimeout(() => print(), 10)")));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        // The operation's end can be reported before or after the answer.
+        match b.send("dialog cancel").as_str() {
+            "ANSWERED 0" if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            "ANSWERED 1" => break assert_eq!(b.next(), "PRINTED 0"),
+            "PRINTED 0" => break assert_eq!(b.next(), "ANSWERED 1"),
+            other => panic!("no print panel: {other}"),
+        }
+    }
+    b.quit();
+}
+
+#[test]
 fn history_is_recorded_searchable_and_clearable() {
     let base = serve();
     let mut b = launch();

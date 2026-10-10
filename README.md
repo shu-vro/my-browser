@@ -39,6 +39,7 @@ worse is rejected.
   Downloaded files stay.
 - **Bookmarks** (⌘D or the star): in the Bookmarks menu, with folders, and in
   Settings → Bookmarks.
+- **Print and save as PDF** (⌘P).
 - **Find in page** (⌘F, ⌘G, ⇧⌘G).
 - **Can be your default browser** (Settings → General): links from other apps
   and HTML files from Finder open in new tabs.

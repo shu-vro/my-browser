@@ -480,6 +480,11 @@ define_class!(
             self.open_internal("settings#downloads");
         }
 
+        #[unsafe(method(printPage:))]
+        fn print_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.print(None));
+        }
+
         #[unsafe(method(toggleBookmark:))]
         fn toggle_bookmark_action(&self, _s: Option<&AnyObject>) {
             self.with_active(|t| t.toggle_bookmark());
@@ -1495,6 +1500,8 @@ impl App {
             ("netbutton", Some(t)) => say!("NETBUTTON {}", t.net_button_shown() as u8),
             ("star", Some(t)) => say!("{}", t.star_state()),
             ("private", Some(t)) => say!("{}", t.private_state()),
+            // Print the page to a PDF file, through the print panel's own path.
+            ("printpdf", Some(t)) => t.print(Some(arg)),
             // The Bookmarks menu as it would open: `BOOKMARKSMENU a|b|-|Folder/|c`.
             // With an index, picks that item (as a click would) first.
             ("bookmarksmenu", _) => {
@@ -1916,6 +1923,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Reopen Closed Tab", sel!(reopenClosedTab:), "T", cmd, true),
                 ("Open Location", sel!(focusAddressBar:), "l", cmd, true),
                 ("Close Tab", sel!(closeTab:), "w", cmd, true),
+                ("Print…", sel!(printPage:), "p", cmd, true),
             ],
         ),
         (

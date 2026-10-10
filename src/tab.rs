@@ -620,6 +620,23 @@ define_class!(
             self.toggle_bookmark();
         }
 
+        /// The print operation ended (printed, saved, or cancelled).
+        #[unsafe(method(printOperationDidRun:success:contextInfo:))]
+        fn print_done(&self, _op: &AnyObject, ok: Bool, _ctx: *mut c_void) {
+            if self.app().is_bench() {
+                say!("PRINTED {}", ok.as_bool() as u8);
+            }
+        }
+
+        /// The page called `window.print()` (WKUIDelegate, private).
+        #[unsafe(method(_webView:printFrame:pdfFirstPageSize:completionHandler:))]
+        fn page_print(&self, _web: &WKWebView, _frame: &AnyObject, _size: NSSize, done: &DynBlock<dyn Fn()>) {
+            if !self.ivars().dialogs_blocked.get() {
+                self.print(None);
+            }
+            done.call(());
+        }
+
         #[unsafe(method(goHome:))]
         fn go_home_action(&self, _s: Option<&AnyObject>) {
             self.go_home();
@@ -1132,6 +1149,40 @@ impl Tab {
         }
     }
 
+    /// Print the page (⌘P, or its own `window.print()`): the system print
+    /// panel, whose PDF menu also saves it as a PDF. With `to`, saves a PDF
+    /// there without the panel (tests use it). One at a time: a page can't
+    /// stack print panels.
+    pub fn print(&self, to: Option<&str>) {
+        let Some(web) = self.web() else { return };
+        if self.window().attachedSheet().is_some() {
+            return;
+        }
+        let info: Retained<objc2_app_kit::NSPrintInfo> =
+            unsafe { msg_send![&*objc2_app_kit::NSPrintInfo::sharedPrintInfo(), copy] };
+        if let Some(path) = to {
+            info.setJobDisposition(unsafe { objc2_app_kit::NSPrintSaveJob });
+            let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+            let _: () =
+                unsafe { msg_send![&*info.dictionary(), setObject: &*url, forKey: objc2_app_kit::NSPrintJobSavingURL] };
+        }
+        let op = unsafe { web.printOperationWithPrintInfo(&info) };
+        op.setShowsPrintPanel(to.is_none());
+        op.setShowsProgressPanel(to.is_none());
+        // WebKit prints blank pages unless the operation's view has a size.
+        if let Some(view) = op.view() {
+            view.setFrame(web.bounds());
+        }
+        unsafe {
+            op.runOperationModalForWindow_delegate_didRunSelector_contextInfo(
+                self.window(),
+                Some(self),
+                Some(sel!(printOperationDidRun:success:contextInfo:)),
+                std::ptr::null_mut(),
+            )
+        };
+    }
+
     /// Bookmark this page, or remove its bookmark (⌘D, the star).
     pub fn toggle_bookmark(&self) {
         let url = self.web().and_then(|w| unsafe { w.URL() }).and_then(|u| u.absoluteString()).map(|u| u.to_string());
@@ -1463,7 +1514,12 @@ impl Tab {
 
     /// Answer the sheet on screen (bench `dialog ok|cancel [check]`).
     pub fn answer_dialog(&self, ok: bool, check: bool) -> bool {
-        let Some(alert) = self.ivars().alert.borrow().clone() else { return false };
+        let Some(alert) = self.ivars().alert.borrow().clone() else {
+            // Another sheet (the print panel): OK or Cancel.
+            let Some(sheet) = self.window().attachedSheet() else { return false };
+            self.window().endSheet_returnCode(&sheet, if ok { 1 } else { 0 });
+            return true;
+        };
         if let Some(b) = alert.suppressionButton() {
             b.setState(if check { 1 } else { 0 });
         }

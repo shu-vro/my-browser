@@ -386,6 +386,17 @@ chooses a path, and current profiles' stores
 (`WebKit/<app>/WebsiteDataStore/<id>`) are never in it. Sizes don't follow
 symlinks.
 
+## Printing
+
+⌘P (`Tab::print`) runs `WKWebView printOperationWithPrintInfo:` as a sheet;
+the system print panel's PDF menu saves a PDF. The operation's view gets the
+web view's size first, or WebKit prints blank pages. A page's own
+`window.print()` arrives through the private
+`_webView:printFrame:pdfFirstPageSize:completionHandler:` and opens the same
+panel, one at a time (ignored while any sheet is up, or after the user
+blocked the page's dialogs). Test: `pages_print_to_pdf_and_window_print_opens_the_panel`
+(bench `printpdf <path>` saves straight to a PDF through the same operation).
+
 ## Private windows
 
 ⇧⌘N opens a window whose tabs (`Tab::is_private`) use a non-persistent
@@ -539,6 +550,7 @@ key press does.
 |---|---|
 | ⌘T / ⌘N / ⌘W | New tab / new window / close tab |
 | ⇧⌘N | New private window |
+| ⌘P | Print (the panel's PDF menu saves a PDF) |
 | ⇧⌘T | Reopen closed tab |
 | ⌘L | Address bar |
 | ⌘R / ⌘. | Reload / stop |
@@ -574,7 +586,7 @@ active tab.
 | `selection` | `SELECTION <offset>`: where the current selection (find match) starts |
 | `window` | `WINDOW minimized=<0\|1> key=<0\|1> app_active=<0\|1>` |
 | `bridge <op>\t<arg>…` | `BRIDGE ok <json>` or `BRIDGE err <message>` |
-| `dialog ok\|cancel [check]` | `ANSWERED <0\|1>`: answers the sheet on screen, ticking its checkbox with `check` |
+| `dialog ok\|cancel [check]` | `ANSWERED <0\|1>`: answers the sheet on screen (an alert, or the print panel), ticking its checkbox with `check` |
 | `home` | `HOME shown=<0\|1> art=<0\|1> search=<0\|1> sites=<urls>` |
 | `extclick <id>` | `EXTCLICK ok\|err <message>`: clicks an extension's button |
 | `extbuttons` | `EXTBUTTONS <id>:<on 0\|1> …` for the active tab |
@@ -583,6 +595,7 @@ active tab.
 | `openurl <url>` | a `TABS` line: opens it like a link from another app (`application:openURLs:`) |
 | `star` | `STAR on=<0\|1>`: the star shows the page as bookmarked |
 | `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |
+| `printpdf <path>` | `PRINTED <0\|1>` once the page is saved there as a PDF (also printed when any print panel closes) |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |
 | `crash` | panics (tests the crash reporter) |
 | `quit` or stdin EOF | exits |
