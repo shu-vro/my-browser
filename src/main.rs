@@ -480,6 +480,40 @@ define_class!(
             self.open_internal("settings#downloads");
         }
 
+        #[unsafe(method(duplicateTab:))]
+        fn duplicate_tab_action(&self, _s: Option<&AnyObject>) {
+            if let Some(t) = self.active() {
+                self.open_tab_in(t.is_private(), &t.url(), false);
+            }
+        }
+
+        #[unsafe(method(closeOtherTabs:))]
+        fn close_other_tabs_action(&self, _s: Option<&AnyObject>) {
+            for t in self.ordered_tabs().iter().filter(|t| !self.is_active(t)) {
+                t.window().performClose(None);
+            }
+        }
+
+        // Native tab-group actions, sent to the active tab's window (not the
+        // key window: it may not be ours when the app is in the background).
+
+        #[unsafe(method(moveTabToNewWindow:))]
+        fn move_tab_to_new_window_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.window().moveTabToNewWindow(None));
+            self.sync_ext_windows();
+        }
+
+        #[unsafe(method(mergeAllWindows:))]
+        fn merge_all_windows_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.window().mergeAllWindows(None));
+            self.sync_ext_windows();
+        }
+
+        #[unsafe(method(toggleTabOverview:))]
+        fn toggle_tab_overview_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.window().toggleTabOverview(None));
+        }
+
         #[unsafe(method(printPage:))]
         fn print_action(&self, _s: Option<&AnyObject>) {
             self.with_active(|t| t.print(None));
@@ -725,12 +759,14 @@ impl App {
         let mut urls = url_args();
         urls.extend(self.ivars().pending_urls.take());
         self.ivars().ready.set(true);
-        // Restored tabs open asleep: no page process until clicked.
-        let mut prev: Option<Retained<Tab>> = None;
-        for (url, title) in &session {
+        // Restored tabs open asleep (no page process until clicked), each
+        // window's tabs together.
+        let mut prev: Option<(i64, Retained<Tab>)> = None;
+        for (win, url, title) in &session {
             let tab = Tab::create(self, None, url, title, true, false);
-            self.add_tab(&tab, prev.as_deref(), false);
-            prev = Some(tab);
+            let next_to = prev.as_ref().filter(|(w, _)| w == win).map(|(_, t)| &**t);
+            self.add_tab(&tab, next_to, false);
+            prev = Some((*win, tab));
         }
         for u in &urls {
             let url = self.normalize(u);
@@ -1063,6 +1099,8 @@ impl App {
     }
 
     pub fn set_active(&self, tab: &Tab) {
+        // A tab dragged to another window becomes active there.
+        self.sync_ext_windows();
         if self.is_active(tab) {
             return;
         }
@@ -1137,8 +1175,8 @@ impl App {
     }
 
     /// The extension-facing window holding `tab` (its native tab group).
-    // ponytail: a tab dragged into another window isn't reported as moved
-    // (tabs.onDetached/onAttached); extensions see it in the new window on next query.
+    // ponytail: a move is reported when the tab next becomes active (or right
+    // away for menu moves), with its index from then; fine for tab managers.
     pub fn ext_window_for(&self, tab: &Tab) -> Option<Retained<ExtWindow>> {
         if tab.is_private() {
             return None;
@@ -1152,6 +1190,54 @@ impl App {
         self.ivars().ext_windows.borrow_mut().insert(key, w.clone());
         unsafe { self.extensions().didOpenWindow(ProtocolObject::from_ref(&*w)) };
         Some(w)
+    }
+
+    /// Tell extensions about tabs that moved to another window (dragged,
+    /// Move Tab to New Window, Merge All Windows), and about windows that
+    /// lost their last tab that way.
+    fn sync_ext_windows(&self) {
+        if self.ivars().extensions.get().is_none() {
+            return;
+        }
+        for t in self.ivars().tabs.borrow().clone().iter().filter(|t| !t.is_private()) {
+            let Some(now) = self.ext_window_for(t) else { continue };
+            let index = now.tabs().iter().position(|x| std::ptr::eq(&**x, &**t)).unwrap_or(0);
+            let before = t.ivars().ext_window.replace(Some((now.clone(), index)));
+            if let Some((old, old_index)) = before.filter(|(old, _)| !std::ptr::eq(&**old, &*now)) {
+                unsafe {
+                    self.extensions().didMoveTab_fromIndex_inWindow(
+                        ProtocolObject::from_ref(&**t),
+                        old_index,
+                        Some(ProtocolObject::from_ref(&*old)),
+                    )
+                };
+            }
+        }
+        let empty: Vec<Retained<ExtWindow>> =
+            self.ivars().ext_windows.borrow().values().filter(|w| w.tabs().is_empty()).cloned().collect();
+        for w in empty {
+            unsafe { self.extensions().didCloseWindow(ProtocolObject::from_ref(&*w)) };
+            self.ivars().ext_windows.borrow_mut().retain(|_, v| !std::ptr::eq(&**v, &*w));
+        }
+    }
+
+    /// Every window's normal (not private) tabs, in tab-bar order.
+    fn windows(&self) -> Vec<Vec<Retained<Tab>>> {
+        let mut seen: Vec<usize> = Vec::new();
+        let mut out = Vec::new();
+        for t in self.ivars().tabs.borrow().iter().filter(|t| !t.is_private()) {
+            let group = t.window().tabGroup();
+            let key = group.as_ref().map_or(t.window() as *const NSWindow as usize, |g| Retained::as_ptr(g) as usize);
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            out.push(match group {
+                Some(g) => g.windows().iter().filter_map(|w| self.tab_for_window(&w)).collect(),
+                None => vec![t.clone()],
+            });
+        }
+        out
     }
 
     pub fn ext_tab_changed(&self, tab: &Tab, changed: WKWebExtensionTabChangedProperties) {
@@ -1303,19 +1389,17 @@ impl App {
         if self.profile_dir().is_none() || self.ivars().store.get().is_none() {
             return;
         }
-        let tabs: Vec<(String, String)> = self
-            .ordered_tabs()
-            .iter()
-            .filter(|t| !t.is_private())
-            .map(|t| (t.url(), t.title()))
-            .filter(|(u, _)| !u.is_empty() && !u.starts_with(&format!("{INTERNAL}:")))
+        // Every window, not just the front one; private tabs never.
+        let saved: Vec<(i64, Retained<Tab>)> = self
+            .windows()
+            .into_iter()
+            .enumerate()
+            .flat_map(|(w, tabs)| tabs.into_iter().map(move |t| (w as i64, t)))
+            .filter(|(_, t)| !t.url().is_empty() && !t.url().starts_with(&format!("{INTERNAL}:")))
             .collect();
-        self.store().save_session(&tabs);
-        let active = self
-            .ordered_tabs()
-            .iter()
-            .filter(|t| !t.url().starts_with(&format!("{INTERNAL}:")))
-            .position(|t| self.is_active(t));
+        let rows: Vec<(i64, String, String)> = saved.iter().map(|(w, t)| (*w, t.url(), t.title())).collect();
+        self.store().save_session(&rows);
+        let active = saved.iter().position(|(_, t)| self.is_active(t));
         self.store().put("session_active", &active.unwrap_or(0).to_string());
     }
 
@@ -1504,6 +1588,31 @@ impl App {
             ("home", Some(t)) => say!("{}", t.home_state()),
             ("netbutton", Some(t)) => say!("NETBUTTON {}", t.net_button_shown() as u8),
             ("star", Some(t)) => say!("{}", t.star_state()),
+            // A menu bar menu's items as shown: `MENU <title>|…` (`-` separator).
+            // `menu File/Duplicate Tab` picks that item first, as a click would.
+            ("menu", _) => {
+                let (name, pick) = arg.split_once('/').map_or((arg, None), |(m, i)| (m, Some(i)));
+                let main = NSApplication::sharedApplication(self.mtm()).mainMenu();
+                let menu = main.and_then(|m| {
+                    m.itemArray().iter().filter_map(|i| i.submenu()).find(|s| s.title().to_string() == name)
+                });
+                let Some(menu) = menu else { return say!("ERR no menu {name}") };
+                menu.update();
+                if let Some(title) = pick {
+                    let index = menu.indexOfItemWithTitle(&NSString::from_str(title));
+                    if index < 0 {
+                        return say!("ERR no item {title}");
+                    }
+                    menu.performActionForItemAtIndex(index);
+                }
+                let titles: Vec<String> = menu
+                    .itemArray()
+                    .iter()
+                    .filter(|i| !i.isHidden())
+                    .map(|i| if i.isSeparatorItem() { "-".into() } else { i.title().to_string() })
+                    .collect();
+                say!("MENU {}", titles.join("|"));
+            }
             ("private", Some(t)) => say!("{}", t.private_state()),
             // `linkmenu <url> [i]`: WebKit's link menu after our changes (and
             // picking item i): `LINKMENU <title>|…`.
@@ -1933,6 +2042,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
     let cmd_alt = cmd | NSEventModifierFlags::Option;
     let ctrl = NSEventModifierFlags::Control;
     let ctrl_shift = ctrl | NSEventModifierFlags::Shift;
+    let cmd_shift = cmd | NSEventModifierFlags::Shift;
     let none = NSEventModifierFlags::empty();
     // An uppercase key or a shifted symbol ("{") implies Shift.
     type Item = (&'static str, Sel, &'static str, NSEventModifierFlags, bool);
@@ -1953,6 +2063,8 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Reopen Closed Tab", sel!(reopenClosedTab:), "T", cmd, true),
                 ("Open Location", sel!(focusAddressBar:), "l", cmd, true),
                 ("Close Tab", sel!(closeTab:), "w", cmd, true),
+                ("Duplicate Tab", sel!(duplicateTab:), "", none, true),
+                ("Close Other Tabs", sel!(closeOtherTabs:), "w", cmd_alt, true),
                 ("Print…", sel!(printPage:), "p", cmd, true),
             ],
         ),
@@ -2006,6 +2118,9 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Show Next Tab", sel!(nextTab:), "}", cmd, true),
                 ("Next Tab", sel!(nextTab:), "\t", ctrl, true),
                 ("Previous Tab", sel!(previousTab:), "\t", ctrl_shift, true),
+                ("Show All Tabs", sel!(toggleTabOverview:), "\\", cmd_shift, true),
+                ("Move Tab to New Window", sel!(moveTabToNewWindow:), "", none, true),
+                ("Merge All Windows", sel!(mergeAllWindows:), "", none, true),
             ],
         ),
     ];

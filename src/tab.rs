@@ -58,6 +58,9 @@ pub struct TabIvars {
     url: RefCell<String>,
     title: RefCell<String>,
     pub last_active: Cell<Option<Instant>>,
+    /// The extension window this tab was last seen in, and its place there,
+    /// to tell extensions when it moves to another window.
+    pub ext_window: RefCell<Option<(Retained<crate::extwindow::ExtWindow>, usize)>>,
     /// A private window's tab: memory-only cookies and site data, no
     /// history, no session, no extensions.
     private: Cell<bool>,

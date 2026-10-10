@@ -765,6 +765,46 @@ fn link_menu_opens_links_in_tabs_windows_and_private_windows() {
 }
 
 #[test]
+fn tabs_duplicate_close_others_move_and_merge() {
+    let base = serve();
+    let mut b = launch();
+    b.nav(&format!("go {base}/page/one"));
+    assert!(b.send("menu File/Duplicate Tab").starts_with("MENU "));
+    assert!(b.tabs().starts_with("TABS count=2 active=1"));
+    assert!(b.state_until(|s| s.ends_with("title=one")).ends_with("title=one"));
+    b.key("cmd+t");
+    b.key("cmd+alt+w");
+    assert!(b.tabs().starts_with("TABS count=1 active=0 asleep=0 windows=1"), "Close Other Tabs");
+    b.key("cmd+t");
+    b.send("menu Window/Move Tab to New Window");
+    assert!(b.tabs().starts_with("TABS count=1 active=0 asleep=0 windows=2"));
+    b.send("menu Window/Merge All Windows");
+    let tabs = b.tabs();
+    assert!(tabs.starts_with("TABS count=2 ") && tabs.ends_with("windows=1"), "{tabs}");
+    b.quit();
+}
+
+#[test]
+fn every_window_comes_back_after_a_restart() {
+    let base = serve();
+    let profile = TempProfile::new("windows");
+    let mut b = launch_with(&["--profile", profile.path()]);
+    b.nav(&format!("go {base}/page/a"));
+    b.send(&format!("newtab {base}/page/b"));
+    b.key("cmd+n");
+    b.nav(&format!("go {base}/page/c"));
+    assert!(b.tabs().ends_with("windows=2"));
+    b.quit();
+    let mut b = launch_with(&["--profile", profile.path()]);
+    // The window that was in front comes back in front, with its one tab awake.
+    assert!(b.tabs().starts_with("TABS count=1 active=0 asleep=2 windows=2"), "{}", b.tabs());
+    assert!(b.state_until(|s| s.ends_with("title=c")).ends_with("title=c"));
+    b.key("cmd+shift+]");
+    assert!(b.state_until(|s| s.ends_with("title=c")).ends_with("title=c"), "one tab in this window");
+    b.quit();
+}
+
+#[test]
 fn history_is_recorded_searchable_and_clearable() {
     let base = serve();
     let mut b = launch();

@@ -133,6 +133,10 @@ impl Store {
         if !has_access {
             db.execute_batch("ALTER TABLE extensions ADD COLUMN access TEXT NOT NULL DEFAULT 'click'")?;
         }
+        // Added in 0.2: which window each restored tab goes back to.
+        if db.prepare("SELECT win FROM session LIMIT 0").is_err() {
+            db.execute_batch("ALTER TABLE session ADD COLUMN win INTEGER NOT NULL DEFAULT 0")?;
+        }
         Ok(Store { db })
     }
 
@@ -487,18 +491,22 @@ impl Store {
 
     // ---- session (open tabs, for restore at launch)
 
-    pub fn save_session(&self, tabs: &[(String, String)]) {
+    /// Open tabs as (window number, url, title), in tab-bar order.
+    pub fn save_session(&self, tabs: &[(i64, String, String)]) {
         let _ = self.db.execute("DELETE FROM session", []);
-        for (pos, (url, title)) in tabs.iter().enumerate() {
-            let _ = self
-                .db
-                .execute("INSERT INTO session (pos, url, title) VALUES (?1, ?2, ?3)", params![pos as i64, url, title]);
+        for (pos, (win, url, title)) in tabs.iter().enumerate() {
+            let _ = self.db.execute(
+                "INSERT INTO session (pos, win, url, title) VALUES (?1, ?2, ?3, ?4)",
+                params![pos as i64, win, url, title],
+            );
         }
     }
 
-    pub fn session(&self) -> Vec<(String, String)> {
-        let Ok(mut stmt) = self.db.prepare("SELECT url, title FROM session ORDER BY pos") else { return Vec::new() };
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+    pub fn session(&self) -> Vec<(i64, String, String)> {
+        let Ok(mut stmt) = self.db.prepare("SELECT win, url, title FROM session ORDER BY pos") else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map(|rows| rows.filter_map(Result::ok).collect())
             .unwrap_or_default()
     }
@@ -616,8 +624,8 @@ mod tests {
         assert!(!s.extensions()[0].enabled);
         s.remove_extension(id);
         assert!(s.extensions().is_empty());
-        s.save_session(&[("https://a/".into(), "A".into()), ("https://b/".into(), "B".into())]);
-        assert_eq!(s.session()[1].0, "https://b/");
+        s.save_session(&[(0, "https://a/".into(), "A".into()), (1, "https://b/".into(), "B".into())]);
+        assert_eq!(s.session()[1], (1, "https://b/".into(), "B".into()));
     }
 
     #[test]

@@ -157,6 +157,22 @@ A tab has two states:
 active tab. This keeps shortcuts working when the app isn't frontmost; it also
 makes them testable.
 
+Tab commands, all native and costing nothing until used: Duplicate Tab,
+Close Other Tabs (⌥⌘W), and the tab-group actions AppKit only adds to its own
+menus (Show All Tabs ⇧⌘\, Move Tab to New Window, Merge All Windows), sent to
+the active tab's window. Private and normal windows have different tabbing
+identifiers, so they never merge and tabs can't be dragged between them.
+Tabs moved to another window (by menu or by dragging) are reported to
+extensions with `didMoveTab:fromIndex:inWindow:` (`App::sync_ext_windows`,
+on each activation), and a window left empty with `didCloseWindow:`. No
+pinned tabs: AppKit's tab bar has no way to pin, and a custom tab bar would
+cost memory and code for every window.
+
+**Session restore** saves every window (`session.win`, a column added in
+0.2) in tab-bar order, every 30 s and at quit; at launch each window comes
+back as a window, asleep, and the previously active tab wakes. Tests:
+`tabs_duplicate_close_others_move_and_merge`, `every_window_comes_back_after_a_restart`.
+
 ## Web view configuration
 
 Every web view gets a configuration from `App::make_config()`. All tabs of a
@@ -579,6 +595,7 @@ key press does.
 | ⌘D / ⌥⌘B | Bookmark this page (or remove it) / all bookmarks |
 | ⌘F / ⌘G / ⇧⌘G | Find in page / next match / previous match (Enter and ⇧Enter in the field too, Esc closes) |
 | ⌘M | Minimize |
+| ⌥⌘W / ⇧⌘\ | Close other tabs / show all tabs |
 | Right-click an extension button | Only when clicked / On every site / Manage |
 | ⌘Z ⇧⌘Z ⌘X ⌘C ⌘V ⌘A | Text editing |
 
@@ -611,6 +628,7 @@ active tab.
 | `netbutton` | `NETBUTTON <0\|1>`: the blocked-requests button is showing |
 | `openurl <url>` | a `TABS` line: opens it like a link from another app (`application:openURLs:`) |
 | `star` | `STAR on=<0\|1>`: the star shows the page as bookmarked |
+| `menu <Menu>[/<Item>]` | `MENU <item>\|…` (`-` separator) after picking `<Item>` if given, as a click would |
 | `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |
 | `printpdf <path>` | `PRINTED <0\|1>` once the page is saved there as a PDF (also printed when any print panel closes) |
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
