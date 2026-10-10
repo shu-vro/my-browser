@@ -58,6 +58,9 @@ pub struct TabIvars {
     url: RefCell<String>,
     title: RefCell<String>,
     pub last_active: Cell<Option<Instant>>,
+    /// A private window's tab: memory-only cookies and site data, no
+    /// history, no session, no extensions.
+    private: Cell<bool>,
     /// History row of the current page, so a late title can be filled in.
     visit: Cell<Option<i64>>,
     shown_loading: Cell<Option<bool>>,
@@ -211,7 +214,7 @@ define_class!(
             self.refresh_toolbar();
             let url = self.url();
             let error_page = self.ivars().error_page.replace(false);
-            if !error_page && (url.starts_with("http://") || url.starts_with("https://")) {
+            if !error_page && !self.is_private() && (url.starts_with("http://") || url.starts_with("https://")) {
                 let id = self.app().store().add_visit(&url, &self.ivars().title.borrow());
                 self.ivars().visit.set(Some(id));
             }
@@ -287,7 +290,7 @@ define_class!(
             _features: &WKWindowFeatures,
         ) -> *mut WKWebView {
             // WebKit requires a web view built from exactly this configuration.
-            let tab = self.app().open_tab_with_config(config);
+            let tab = self.app().open_tab_with_config(config, self.is_private());
             let web = tab.ivars().web.borrow().clone();
             web.map_or(std::ptr::null_mut(), Retained::autorelease_return)
         }
@@ -670,11 +673,13 @@ impl Tab {
         url: &str,
         title: &str,
         asleep: bool,
+        private: bool,
     ) -> Retained<Tab> {
         let mtm = app.mtm();
         let this = Self::alloc(mtm).set_ivars(TabIvars::default());
         let this: Retained<Tab> = unsafe { msg_send![super(this), init] };
         let _ = this.ivars().app.set(app.retain());
+        this.ivars().private.set(private);
         this.ivars().url.replace(url.to_string());
         this.ivars().title.replace(title.to_string());
         this.build_window(mtm);
@@ -732,7 +737,8 @@ impl Tab {
         window.setRestorable(false);
         // Native tabs: every tab is a window in the same tab group.
         window.setTabbingMode(NSWindowTabbingMode::Preferred);
-        window.setTabbingIdentifier(&NSString::from_str("browser"));
+        // Private and normal tabs never share a window.
+        window.setTabbingIdentifier(&NSString::from_str(if self.is_private() { "private" } else { "browser" }));
         window.setDelegate(Some(ProtocolObject::from_ref(self)));
         if self.app().is_on_top() {
             // macOS may refuse to activate an app launched from a terminal, or open the
@@ -783,7 +789,17 @@ impl Tab {
         let bar = NSTextField::textFieldWithString(&NSString::from_str(""), mtm);
         bar.setFrame(NSRect::new(NSPoint::new(bar_x, top + 3.0), NSSize::new(w - bar_x - 8.0, 22.0)));
         bar.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | pin_top);
-        bar.setPlaceholderString(Some(&NSString::from_str("Search or enter address")));
+        if self.is_private() {
+            // A dark address bar marks a private window, as in Safari.
+            bar.setDrawsBackground(true);
+            bar.setBackgroundColor(Some(&objc2_app_kit::NSColor::colorWithSRGBRed_green_blue_alpha(
+                0.17, 0.17, 0.22, 1.0,
+            )));
+            bar.setTextColor(Some(&objc2_app_kit::NSColor::whiteColor()));
+            bar.setPlaceholderString(Some(&NSString::from_str("Private: search or enter address")));
+        } else {
+            bar.setPlaceholderString(Some(&NSString::from_str("Search or enter address")));
+        }
         unsafe {
             bar.setTarget(Some(self));
             bar.setAction(Some(sel!(go:)));
@@ -1051,7 +1067,7 @@ impl Tab {
         if let Some(web) = self.web() {
             return web;
         }
-        let config = self.app().make_config();
+        let config = self.app().make_config(self.is_private());
         self.attach_web(&config)
     }
 
@@ -1245,7 +1261,7 @@ impl Tab {
             return WKNavigationActionPolicy::Download;
         }
         if link && unsafe { action.modifierFlags() }.contains(NSEventModifierFlags::Command) {
-            self.app().open_tab(&url, true);
+            self.app().open_tab_in(self.is_private(), &url, true);
             return WKNavigationActionPolicy::Cancel;
         }
         // Leaving the site turns off extensions that were clicked on for it,
@@ -1476,20 +1492,26 @@ impl Tab {
         let message = NSString::from_str(&format!("{site} wants to {what}"));
         let (this, site, kinds) =
             (self.retain(), site.to_string(), kinds.iter().map(|k| k.to_string()).collect::<Vec<_>>());
-        self.sheet(
-            &message,
-            &["Allow", "Don't Allow"],
-            None,
-            Some(("Remember for this site", true)),
-            move |ok, _, remember| {
-                if remember {
-                    for k in &kinds {
-                        let _ = this.app().store().set_permission(&site, k, if ok { "allow" } else { "deny" });
-                    }
+        // A private window's answers last for that page only.
+        let remember = (!self.is_private()).then_some(("Remember for this site", true));
+        self.sheet(&message, &["Allow", "Don't Allow"], None, remember, move |ok, _, remember| {
+            if remember {
+                for k in &kinds {
+                    let _ = this.app().store().set_permission(&site, k, if ok { "allow" } else { "deny" });
                 }
-                done(ok)
-            },
-        );
+            }
+            done(ok)
+        });
+    }
+
+    pub fn is_private(&self) -> bool {
+        self.ivars().private.get()
+    }
+
+    /// `PRIVATE <0|1>`, read from the address bar's placeholder.
+    pub fn private_state(&self) -> String {
+        let placeholder = self.ivars().bar.get().and_then(|b| b.placeholderString()).map(|p| p.to_string());
+        format!("PRIVATE {}", placeholder.is_some_and(|p| p.starts_with("Private")) as u8)
     }
 
     /// A question as a sheet on this tab; `done(true)` for the first button.

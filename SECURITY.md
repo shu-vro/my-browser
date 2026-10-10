@@ -138,6 +138,19 @@ folder).
   happened during development.
 - Tests and benchmarks never use the real profile.
 
+### Private windows
+
+- Their cookies and site data live in a memory-only WebKit store, separate
+  from the profile's both ways, and dropped when the last private tab
+  closes.
+- Nothing about them reaches `browser.db`: no history, session, downloads
+  list, Reopen Closed Tab or remembered permission. Downloaded files and
+  bookmarks the user makes do stay; both are deliberate user actions.
+- Extensions can't see or run in them. Links from other apps and from
+  extensions never open in them.
+- Not protection from the network or the sites themselves: the IP address
+  and fingerprinting surface are the same as a normal window.
+
 ### Private WebKit APIs
 
 We call undocumented WebKit methods for memory and privacy.

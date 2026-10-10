@@ -51,6 +51,10 @@ use extwindow::ExtWindow;
 use store::Store;
 use tab::{INTERNAL, Tab};
 
+/// A download in flight: (downloads row, download, file). Private windows'
+/// downloads have no row (0).
+type Download = (i64, Retained<WKDownload>, String);
+
 #[derive(Default)]
 pub struct AppIvars {
     store: OnceCell<Store>,
@@ -86,7 +90,11 @@ pub struct AppIvars {
     /// URLs of closed tabs, for Reopen Closed Tab.
     closed: RefCell<Vec<String>>,
     /// In-flight downloads: WKDownload pointer -> (downloads row, download).
-    downloads: RefCell<HashMap<usize, (i64, Retained<WKDownload>)>>,
+    /// In-flight downloads, by WKDownload pointer.
+    downloads: RefCell<HashMap<usize, Download>>,
+    /// Cookies and site data of private windows: memory only, shared by
+    /// every private window, dropped with the last private tab.
+    private_store: RefCell<Option<Retained<WKWebsiteDataStore>>>,
     bench: Cell<bool>,
     on_top: Cell<bool>,
     /// `TUNE ...` lines printed in bench mode.
@@ -198,9 +206,12 @@ define_class!(
                 .and_then(|u| u.absoluteString())
                 .map(|s| s.to_string())
                 .unwrap_or_default();
-            let id = self.store().add_download(&url, &path.to_string_lossy());
+            // The file stays; a private window's download isn't listed.
+            let private = unsafe { download.webView() }.is_some_and(|w| self.is_private_store(&*unsafe { w.configuration().websiteDataStore() }));
+            let id = if private { 0 } else { self.store().add_download(&url, &path.to_string_lossy()) };
             if let Some(entry) = self.ivars().downloads.borrow_mut().get_mut(&key(download)) {
                 entry.0 = id;
+                entry.2 = path.to_string_lossy().into_owned();
             }
             let dest = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
             done.call((Retained::as_ptr(&dest) as *mut NSURL,));
@@ -264,7 +275,7 @@ define_class!(
                 let err = NSError::new(1, &NSString::from_str("my-browser"));
                 return done.call((std::ptr::null_mut(), Retained::as_ptr(&err) as *mut _));
             }
-            let tab = self.open_tab(&url, !unsafe { config.shouldBeActive() });
+            let tab = self.open_tab_in(false, &url, !unsafe { config.shouldBeActive() });
             let tab: Retained<ProtocolObject<dyn WKWebExtensionTab>> = ProtocolObject::from_retained(tab);
             done.call((Retained::as_ptr(&tab) as *mut _, std::ptr::null_mut()));
         }
@@ -431,9 +442,12 @@ define_class!(
 
         #[unsafe(method(newWindow:))]
         fn new_window_action(&self, _s: Option<&AnyObject>) {
-            let tab = Tab::create(self, None, &self.new_tab_url(), "", false);
-            self.add_tab(&tab, None, true);
-            tab.focus_address_bar();
+            self.new_window(false);
+        }
+
+        #[unsafe(method(newPrivateWindow:))]
+        fn new_private_window_action(&self, _s: Option<&AnyObject>) {
+            self.new_window(true);
         }
 
         #[unsafe(method(reopenClosedTab:))]
@@ -709,13 +723,13 @@ impl App {
         // Restored tabs open asleep: no page process until clicked.
         let mut prev: Option<Retained<Tab>> = None;
         for (url, title) in &session {
-            let tab = Tab::create(self, None, url, title, true);
+            let tab = Tab::create(self, None, url, title, true, false);
             self.add_tab(&tab, prev.as_deref(), false);
             prev = Some(tab);
         }
         for u in &urls {
             let url = self.normalize(u);
-            self.open_tab(&url, false);
+            self.open_tab_in(false, &url, false);
         }
         if session.is_empty() && urls.is_empty() {
             self.new_tab();
@@ -760,7 +774,7 @@ impl App {
             &["Report…", "Don't Send"],
             move |yes| {
                 if yes {
-                    this.open_tab(&crash::issue_url(&crash::summary(&report)), false);
+                    this.open_tab_in(false, &crash::issue_url(&crash::summary(&report)), false);
                     let file = NSURL::fileURLWithPath(&NSString::from_str(&report.to_string_lossy()));
                     objc2_app_kit::NSWorkspace::sharedWorkspace()
                         .activateFileViewerSelectingURLs(&NSArray::from_retained_slice(&[file]));
@@ -779,7 +793,7 @@ impl App {
             return;
         }
         for url in &urls {
-            self.open_tab(url, false);
+            self.open_tab_in(false, url, false);
         }
         if !urls.is_empty() && !self.is_on_top() {
             #[allow(deprecated)]
@@ -798,19 +812,25 @@ impl App {
         })
     }
 
-    /// A configuration for a new web view, sharing the profile's engine pieces.
-    pub fn make_config(&self) -> Retained<WKWebViewConfiguration> {
+    /// A configuration for a new web view, sharing the profile's engine
+    /// pieces. Private ones get the private store and no extensions.
+    pub fn make_config(&self, private: bool) -> Retained<WKWebViewConfiguration> {
         let iv = self.ivars();
         let config = unsafe { WKWebViewConfiguration::new(self.mtm()) };
         unsafe {
-            config.setWebsiteDataStore(iv.data_store.get().unwrap());
+            match private {
+                true => config.setWebsiteDataStore(&self.private_store()),
+                false => config.setWebsiteDataStore(iv.data_store.get().unwrap()),
+            }
             config.setUserContentController(iv.content.get().unwrap());
             config.setPreferences(iv.prefs.get().unwrap());
             // No autoplay: media only plays after a click.
             config.setMediaTypesRequiringUserActionForPlayback(WKAudiovisualMediaTypes::All);
             config
                 .setURLSchemeHandler_forURLScheme(Some(ProtocolObject::from_ref(self)), &NSString::from_str(INTERNAL));
-            config.setWebExtensionController(Some(iv.extensions.get().unwrap()));
+            if !private {
+                config.setWebExtensionController(Some(iv.extensions.get().unwrap()));
+            }
             let page = WKWebpagePreferences::new(self.mtm());
             privacy::harden_webpage_preferences(&page, true);
             config.setDefaultWebpagePreferences(Some(&page));
@@ -928,6 +948,22 @@ impl App {
         self.ivars().data_store.get().unwrap()
     }
 
+    /// The private windows' store, made on first use with the same
+    /// protections as the profile's.
+    fn private_store(&self) -> Retained<WKWebsiteDataStore> {
+        let mut slot = self.ivars().private_store.borrow_mut();
+        slot.get_or_insert_with(|| {
+            let store = unsafe { WKWebsiteDataStore::nonPersistentDataStore(self.mtm()) };
+            privacy::harden_data_store(&store);
+            store
+        })
+        .clone()
+    }
+
+    fn is_private_store(&self, store: &WKWebsiteDataStore) -> bool {
+        self.ivars().private_store.borrow().as_deref().is_some_and(|s| std::ptr::eq(s, store))
+    }
+
     // ---- tabs
 
     fn new_tab(&self) {
@@ -938,22 +974,48 @@ impl App {
         }
     }
 
+    /// ⌘N, or ⇧⌘N for a private window.
+    fn new_window(&self, private: bool) {
+        let tab = Tab::create(self, None, &self.new_tab_url(), "", false, private);
+        self.add_tab(&tab, None, true);
+        tab.focus_address_bar();
+    }
+
     /// The chosen homepage; empty means the built-in (native) new tab page.
     fn new_tab_url(&self) -> String {
         self.store().setting("homepage")
     }
 
-    /// Open `url` in a new tab next to the active one.
+    /// Open `url` in a new tab next to the active one (private if it is).
     pub fn open_tab(&self, url: &str, background: bool) -> Retained<Tab> {
-        let tab = Tab::create(self, None, url, "", false);
-        self.add_tab(&tab, self.active().as_deref(), !background);
+        let private = self.active().is_some_and(|t| t.is_private());
+        self.open_tab_in(private, url, background)
+    }
+
+    /// Open `url` in a new tab of a private or a normal window: next to the
+    /// active tab if it's the same kind, else the last used one of that kind,
+    /// else in a new window. Links from other apps, extensions and the
+    /// settings page always open normal tabs.
+    pub fn open_tab_in(&self, private: bool, url: &str, background: bool) -> Retained<Tab> {
+        let tab = Tab::create(self, None, url, "", false, private);
+        self.add_tab(&tab, self.neighbor(private).as_deref(), !background);
         tab
     }
 
-    pub fn open_tab_with_config(&self, config: &WKWebViewConfiguration) -> Retained<Tab> {
-        let tab = Tab::create(self, Some(config), "", "", false);
-        self.add_tab(&tab, self.active().as_deref(), true);
+    /// A popup: WebKit made the configuration (with its opener's store).
+    pub fn open_tab_with_config(&self, config: &WKWebViewConfiguration, private: bool) -> Retained<Tab> {
+        let tab = Tab::create(self, Some(config), "", "", false, private);
+        self.add_tab(&tab, self.neighbor(private).as_deref(), true);
         tab
+    }
+
+    /// Where a new private or normal tab goes.
+    fn neighbor(&self, private: bool) -> Option<Retained<Tab>> {
+        if let Some(a) = self.active().filter(|t| t.is_private() == private) {
+            return Some(a);
+        }
+        let tabs = self.ivars().tabs.borrow();
+        tabs.iter().filter(|t| t.is_private() == private).max_by_key(|t| t.ivars().last_active.get()).cloned()
     }
 
     fn add_tab(&self, tab: &Retained<Tab>, next_to: Option<&Tab>, select: bool) {
@@ -963,7 +1025,10 @@ impl App {
             Some(other) => other.window().addTabbedWindow_ordered(window, NSWindowOrderingMode::Above),
             None => window.center(),
         }
-        unsafe { self.extensions().didOpenTab(ProtocolObject::from_ref(&**tab)) };
+        // Extensions never see private tabs.
+        if !tab.is_private() {
+            unsafe { self.extensions().didOpenTab(ProtocolObject::from_ref(&**tab)) };
+        }
         if select {
             self.select(tab);
         } else {
@@ -997,6 +1062,10 @@ impl App {
         }
         self.ivars().active.replace(Some(tab.retain()));
         tab.wake();
+        if tab.is_private() {
+            return;
+        }
+        let prev = prev.filter(|p| !p.is_private());
         let ext = self.extensions();
         unsafe {
             ext.didActivateTab_previousActiveTab(
@@ -1013,7 +1082,8 @@ impl App {
 
     pub fn tab_closed(&self, tab: &Tab) {
         let url = tab.url();
-        if !url.is_empty() && !url.starts_with(&format!("{INTERNAL}:")) {
+        // Private tabs leave nothing behind, not even Reopen Closed Tab.
+        if !url.is_empty() && !url.starts_with(&format!("{INTERNAL}:")) && !tab.is_private() {
             let mut closed = self.ivars().closed.borrow_mut();
             if closed.len() >= 100 {
                 closed.remove(0);
@@ -1031,12 +1101,19 @@ impl App {
         // Tell extensions; the window closes with its last tab.
         let ext_window = self.ext_window_for(tab);
         let window_closing = next.is_none();
-        unsafe { self.extensions().didCloseTab_windowIsClosing(ProtocolObject::from_ref(tab), window_closing) };
+        if !tab.is_private() {
+            unsafe { self.extensions().didCloseTab_windowIsClosing(ProtocolObject::from_ref(tab), window_closing) };
+        }
         if let (true, Some(w)) = (window_closing, ext_window) {
             unsafe { self.extensions().didCloseWindow(ProtocolObject::from_ref(&*w)) };
             self.ivars().ext_windows.borrow_mut().retain(|_, v| Retained::as_ptr(v) != Retained::as_ptr(&w));
         }
         self.ivars().tabs.borrow_mut().retain(|t| !std::ptr::eq(&**t, tab));
+        // The last private tab took the private session with it: its cookies
+        // and site data were only in memory, and now they're gone.
+        if tab.is_private() && !self.ivars().tabs.borrow().iter().any(|t| t.is_private()) {
+            self.ivars().private_store.replace(None);
+        }
         if self.is_active(tab) {
             self.ivars().active.replace(None);
             if let Some(next) = next.or_else(|| self.ivars().tabs.borrow().last().cloned()) {
@@ -1053,6 +1130,9 @@ impl App {
     // ponytail: a tab dragged into another window isn't reported as moved
     // (tabs.onDetached/onAttached); extensions see it in the new window on next query.
     pub fn ext_window_for(&self, tab: &Tab) -> Option<Retained<ExtWindow>> {
+        if tab.is_private() {
+            return None;
+        }
         let group = tab.window().tabGroup()?;
         let key = Retained::as_ptr(&group) as usize;
         if let Some(w) = self.ivars().ext_windows.borrow().get(&key) {
@@ -1065,7 +1145,9 @@ impl App {
     }
 
     pub fn ext_tab_changed(&self, tab: &Tab, changed: WKWebExtensionTabChangedProperties) {
-        unsafe { self.extensions().didChangeTabProperties_forTab(changed, ProtocolObject::from_ref(tab)) };
+        if !tab.is_private() {
+            unsafe { self.extensions().didChangeTabProperties_forTab(changed, ProtocolObject::from_ref(tab)) };
+        }
     }
 
     pub fn tab_for_window(&self, window: &NSWindow) -> Option<Retained<Tab>> {
@@ -1214,6 +1296,7 @@ impl App {
         let tabs: Vec<(String, String)> = self
             .ordered_tabs()
             .iter()
+            .filter(|t| !t.is_private())
             .map(|t| (t.url(), t.title()))
             .filter(|(u, _)| !u.is_empty() && !u.starts_with(&format!("{INTERNAL}:")))
             .collect();
@@ -1235,14 +1318,15 @@ impl App {
 
     pub fn start_download(&self, download: &WKDownload) {
         unsafe { download.setDelegate(Some(ProtocolObject::from_ref(self))) };
-        self.ivars().downloads.borrow_mut().insert(key(download), (0, download.retain()));
+        self.ivars().downloads.borrow_mut().insert(key(download), (0, download.retain(), String::new()));
     }
 
     fn end_download(&self, download: &WKDownload, status: &str) {
-        let Some((id, _)) = self.ivars().downloads.borrow_mut().remove(&key(download)) else { return };
-        let path = self.store().download(id).map(|d| d.path).unwrap_or_default();
+        let Some((id, _, path)) = self.ivars().downloads.borrow_mut().remove(&key(download)) else { return };
         let bytes = std::fs::metadata(&path).map_or(0, |m| m.len() as i64);
-        self.store().finish_download(id, status, bytes);
+        if id != 0 {
+            self.store().finish_download(id, status, bytes);
+        }
         if self.is_bench() {
             say!("DOWNLOAD {status} {path}");
         }
@@ -1254,7 +1338,7 @@ impl App {
             .downloads
             .borrow()
             .values()
-            .map(|(id, d)| {
+            .map(|(id, d, _)| {
                 // WKDownload.progress (NSProgress), via msg_send: the binding needs an extra feature.
                 let p: Retained<AnyObject> = unsafe { msg_send![&**d, progress] };
                 let done: i64 = unsafe { msg_send![&*p, completedUnitCount] };
@@ -1265,7 +1349,8 @@ impl App {
     }
 
     pub fn cancel_download(&self, id: i64) {
-        let found = self.ivars().downloads.borrow().values().find(|(i, _)| *i == id).map(|(_, d)| d.clone());
+        let found =
+            self.ivars().downloads.borrow().values().find(|(i, ..)| *i == id && id != 0).map(|(_, d, _)| d.clone());
         if let Some(d) = found {
             unsafe { d.cancel(None) };
         }
@@ -1409,6 +1494,7 @@ impl App {
             ("home", Some(t)) => say!("{}", t.home_state()),
             ("netbutton", Some(t)) => say!("NETBUTTON {}", t.net_button_shown() as u8),
             ("star", Some(t)) => say!("{}", t.star_state()),
+            ("private", Some(t)) => say!("{}", t.private_state()),
             // The Bookmarks menu as it would open: `BOOKMARKSMENU a|b|-|Folder/|c`.
             // With an index, picks that item (as a click would) first.
             ("bookmarksmenu", _) => {
@@ -1826,6 +1912,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
             vec![
                 ("New Tab", sel!(newTab:), "t", cmd, true),
                 ("New Window", sel!(newWindow:), "n", cmd, true),
+                ("New Private Window", sel!(newPrivateWindow:), "N", cmd, true),
                 ("Reopen Closed Tab", sel!(reopenClosedTab:), "T", cmd, true),
                 ("Open Location", sel!(focusAddressBar:), "l", cmd, true),
                 ("Close Tab", sel!(closeTab:), "w", cmd, true),

@@ -386,6 +386,26 @@ chooses a path, and current profiles' stores
 (`WebKit/<app>/WebsiteDataStore/<id>`) are never in it. Sizes don't follow
 symlinks.
 
+## Private windows
+
+⇧⌘N opens a window whose tabs (`Tab::is_private`) use a non-persistent
+`WKWebsiteDataStore` (`App::private_store`, with the same tracking
+protections as the profile's). All private windows share it while any is
+open; when the last private tab closes it's dropped, and with it every
+cookie, cache entry and storage the private session made. Private tabs:
+- get no web extension controller and are never reported to extensions
+  (`didOpenTab` and the rest are skipped, `ext_window_for` returns None);
+- add no history, aren't saved in the session, aren't offered by Reopen
+  Closed Tab, and don't list their downloads (the files stay, in the
+  downloads folder);
+- don't remember permission answers (no "Remember" checkbox);
+- open in their own window group (`tabbingIdentifier` "private"), with a dark
+  address bar saying "Private". New tabs, ⌘-clicked links and popups from a
+  private tab stay private (`App::open_tab_in`); links from other apps,
+  extensions and the settings page always open normal tabs.
+
+Test: `private_windows_keep_nothing_and_share_nothing`.
+
 ## Bookmarks
 
 A `bookmarks` table in `browser.db` (url, title, `/`-separated folder).
@@ -518,6 +538,7 @@ key press does.
 | Keys | Action |
 |---|---|
 | ⌘T / ⌘N / ⌘W | New tab / new window / close tab |
+| ⇧⌘N | New private window |
 | ⇧⌘T | Reopen closed tab |
 | ⌘L | Address bar |
 | ⌘R / ⌘. | Reload / stop |
@@ -561,6 +582,7 @@ active tab.
 | `netbutton` | `NETBUTTON <0\|1>`: the blocked-requests button is showing |
 | `openurl <url>` | a `TABS` line: opens it like a link from another app (`application:openURLs:`) |
 | `star` | `STAR on=<0\|1>`: the star shows the page as bookmarked |
+| `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |
 | `crash` | panics (tests the crash reporter) |
 | `quit` or stdin EOF | exits |

@@ -572,6 +572,59 @@ fn cookies_survive_a_restart() {
 }
 
 #[test]
+fn private_windows_keep_nothing_and_share_nothing() {
+    let base = serve();
+    let profile = TempProfile::new("private");
+    let mut b = launch_with(&["--profile", profile.path()]);
+    b.nav(&format!("go {base}/page/normal"));
+    b.key("cmd+shift+n");
+    assert_eq!(b.send("private"), "PRIVATE 1");
+    assert!(b.tabs().ends_with("windows=2"), "private tabs get their own window");
+    // The profile's cookies aren't visible in private, and private ones don't leak out.
+    b.nav(&format!("go {base}/echo"));
+    assert!(b.state_until(|s| s.contains("title=cookie:")).ends_with("title=cookie:none"));
+    b.nav(&format!("go {base}/setcookie"));
+    // Downloaded files stay, but aren't listed.
+    let downloads = TempProfile::new("private-downloads");
+    b.bridge(&["settings.set", "downloads_dir", downloads.path()]);
+    writeln!(b.stdin, "go {base}/file.txt").unwrap();
+    let line = b.wait_for("DOWNLOAD ");
+    assert_eq!(line, format!("DOWNLOAD done {}/file.txt", downloads.path()));
+    assert!(downloads.0.join("file.txt").exists());
+    // (Skipping the interrupted page load's FAILED line, whichever side it lands.)
+    writeln!(b.stdin, "bridge downloads.list").unwrap();
+    assert_eq!(b.wait_for("BRIDGE "), "BRIDGE ok []");
+    // A new tab in the private window shares its session.
+    b.key("cmd+t");
+    assert_eq!(b.send("private"), "PRIVATE 1");
+    b.nav(&format!("go {base}/echo"));
+    assert!(b.state_until(|s| s.contains("title=cookie:")).ends_with("title=cookie:session=abc123"));
+    b.key("cmd+w");
+    b.key("cmd+w");
+    // Back in the normal window, and Reopen Closed Tab doesn't bring private tabs back.
+    assert!(b.tabs().starts_with("TABS count=1 "));
+    b.key("cmd+shift+t");
+    assert!(b.tabs().starts_with("TABS count=1 "));
+    assert_eq!(b.send("private"), "PRIVATE 0");
+    // No private cookie here.
+    b.nav(&format!("go {base}/echo"));
+    assert!(b.state_until(|s| s.contains("title=cookie:")).ends_with("title=cookie:none"));
+    // Closing the last private tab ended the private session.
+    b.key("cmd+shift+n");
+    b.nav(&format!("go {base}/echo"));
+    assert!(b.state_until(|s| s.contains("title=cookie:")).ends_with("title=cookie:none"), "private data was dropped");
+    // Nothing private reached history.
+    let history = b.bridge(&["history.list", ""]);
+    assert!(history.contains("/page/normal") && !history.contains("/setcookie"), "{history}");
+    b.quit();
+    // ...or the restored session.
+    let mut b = launch_with(&["--profile", profile.path()]);
+    assert!(b.tabs().starts_with("TABS count=1 "), "only the normal tab comes back");
+    assert_eq!(b.send("private"), "PRIVATE 0");
+    b.quit();
+}
+
+#[test]
 fn throwaway_profile_keeps_nothing() {
     let base = serve();
     let mut b = launch();

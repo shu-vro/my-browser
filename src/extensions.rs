@@ -242,6 +242,9 @@ impl App {
 
     /// The buttons `tab` shows, in install order.
     pub fn extension_buttons(&self, tab: &Tab) -> Vec<ExtButton> {
+        if tab.is_private() {
+            return Vec::new();
+        }
         let meta = self.ivars().ext_meta.borrow();
         let size = NSSize::new(18.0, 18.0);
         self.store()

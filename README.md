@@ -34,6 +34,9 @@ worse is rejected.
   - popups open as tabs,
   - file upload,
   - JavaScript dialogs.
+- **Private windows** (⇧⌘N): cookies and site data only in memory, gone when
+  the last private tab closes; no history, no session, no extensions.
+  Downloaded files stay.
 - **Bookmarks** (⌘D or the star): in the Bookmarks menu, with folders, and in
   Settings → Bookmarks.
 - **Find in page** (⌘F, ⌘G, ⇧⌘G).

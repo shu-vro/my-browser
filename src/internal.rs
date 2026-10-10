@@ -300,7 +300,7 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
         "default.set" => return make_default_browser(reply),
         "open" => match args.get(1) {
             Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
-                app.open_tab(url, false);
+                app.open_tab_in(false, url, false);
                 ok()
             }
             _ => Err("only http(s) URLs".into()),
