@@ -106,8 +106,10 @@ impl Browser {
     }
 
     /// Ask for `state` until `ok` holds (pages and scripts update asynchronously).
+    /// 20 s: with a browser per core running in parallel, an extension's
+    /// first start can take over 10 s.
     fn state_until(&mut self, ok: impl Fn(&str) -> bool) -> String {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             let s = self.send("state");
             if ok(&s) || Instant::now() > deadline {
@@ -606,12 +608,11 @@ fn private_windows_keep_nothing_and_share_nothing() {
     let downloads = TempProfile::new("private-downloads");
     b.bridge(&["settings.set", "downloads_dir", downloads.path()]);
     writeln!(b.stdin, "go {base}/file.txt").unwrap();
-    let line = b.wait_for("DOWNLOAD ");
+    // The page load that became a download reports FAILED (interrupted), before or after.
+    let line = b.wait_all(&["DOWNLOAD ", "FAILED "]).remove(0);
     assert_eq!(line, format!("DOWNLOAD done {}/file.txt", downloads.path()));
     assert!(downloads.0.join("file.txt").exists());
-    // (Skipping the interrupted page load's FAILED line, whichever side it lands.)
-    writeln!(b.stdin, "bridge downloads.list").unwrap();
-    assert_eq!(b.wait_for("BRIDGE "), "BRIDGE ok []");
+    assert_eq!(b.bridge(&["downloads.list"]), "[]");
     // A new tab in the private window shares its session.
     b.key("cmd+t");
     assert_eq!(b.send("private"), "PRIVATE 1");
