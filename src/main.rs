@@ -91,6 +91,10 @@ pub struct AppIvars {
     /// `TUNE ...` lines printed in bench mode.
     report: RefCell<Vec<String>>,
     timer: OnceCell<Retained<NSTimer>>,
+    /// Startup finished (the blockers are in place); tabs may open.
+    ready: Cell<bool>,
+    /// Links and files macOS asked us to open before then.
+    pending_urls: RefCell<Vec<String>>,
 }
 
 define_class!(
@@ -115,6 +119,14 @@ define_class!(
         #[unsafe(method(applicationWillTerminate:))]
         fn will_terminate(&self, _n: &NSNotification) {
             self.save_session();
+        }
+
+        /// A link clicked in another app (we're the default browser) or an
+        /// HTML file opened with us.
+        #[unsafe(method(application:openURLs:))]
+        fn open_urls(&self, _app: &NSApplication, urls: &NSArray<NSURL>) {
+            let urls = urls.iter().filter_map(|u| u.absoluteString()).map(|u| u.to_string()).collect();
+            self.open_external(urls);
         }
     }
 
@@ -655,7 +667,9 @@ impl App {
     fn ready(&self) {
         let restore = self.profile_dir().is_some() && self.store().flag("restore_session");
         let session = if restore { self.store().session() } else { Vec::new() };
-        let urls = url_args();
+        let mut urls = url_args();
+        urls.extend(self.ivars().pending_urls.take());
+        self.ivars().ready.set(true);
         // Restored tabs open asleep: no page process until clicked.
         let mut prev: Option<Retained<Tab>> = None;
         for (url, title) in &session {
@@ -683,6 +697,24 @@ impl App {
             }
             self.read_commands();
             say!("READY");
+        }
+    }
+
+    /// Open links and files from other apps in new tabs: web pages and local
+    /// files only (other schemes belong to other apps). Held until startup
+    /// finishes, so nothing loads before the tracker blocker is ready.
+    fn open_external(&self, urls: Vec<String>) {
+        let urls: Vec<String> = urls.into_iter().filter(|u| opens_externally(u)).collect();
+        if !self.ivars().ready.get() {
+            self.ivars().pending_urls.borrow_mut().extend(urls);
+            return;
+        }
+        for url in &urls {
+            self.open_tab(url, false);
+        }
+        if !urls.is_empty() && !self.is_on_top() {
+            #[allow(deprecated)]
+            NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
         }
     }
 
@@ -1207,6 +1239,11 @@ impl App {
                 }
             }
             ("tabs", _) => say!("{}", self.tabs_line()),
+            // What macOS does when another app opens a link with us.
+            ("openurl", _) => {
+                self.open_external(vec![arg.to_string()]);
+                say!("{}", self.tabs_line());
+            }
             // Click an extension's toolbar button on the active tab.
             ("extclick", Some(t)) => match self.extension_clicked(arg.parse().unwrap_or(-1), &t) {
                 Ok(()) => say!("EXTCLICK ok"),
@@ -1391,6 +1428,31 @@ fn url_args() -> Vec<String> {
         }
     }
     out
+}
+
+/// Schemes the browser opens for other apps.
+fn opens_externally(url: &str) -> bool {
+    let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
+    matches!(scheme.as_str(), "http" | "https" | "file")
+}
+
+/// Run `f` on the main thread soon. For completion handlers that macOS calls
+/// on another queue: whatever `f` captured is only touched on the main thread.
+pub fn on_main(f: impl FnOnce() + 'static) {
+    unsafe extern "C" {
+        static _dispatch_main_q: std::ffi::c_void;
+        fn dispatch_async_f(
+            queue: *const std::ffi::c_void,
+            context: *mut std::ffi::c_void,
+            work: extern "C" fn(*mut std::ffi::c_void),
+        );
+    }
+    extern "C" fn run(context: *mut std::ffi::c_void) {
+        let f = unsafe { Box::from_raw(context as *mut Box<dyn FnOnce()>) };
+        f();
+    }
+    let f: Box<Box<dyn FnOnce()>> = Box::new(Box::new(f));
+    unsafe { dispatch_async_f(&raw const _dispatch_main_q, Box::into_raw(f).cast(), run) };
 }
 
 /// Characters that make a name display differently from what it is:
@@ -1727,6 +1789,16 @@ mod tests {
         assert_eq!(normalize("rust", "brave"), "https://search.brave.com/search?q=rust");
         assert_eq!(normalize("rust", "google"), "https://www.google.com/search?q=rust");
         assert_eq!(normalize("rust", "startpage"), "https://www.startpage.com/do/search?q=rust");
+    }
+
+    #[test]
+    fn only_web_pages_and_files_open_from_other_apps() {
+        for ok in ["https://a.example/", "HTTP://a.example", "file:///Users/x/page.html"] {
+            assert!(opens_externally(ok), "{ok}");
+        }
+        for bad in ["javascript:alert(1)", "mybrowser://settings", "mailto:a@b", "data:text/html,x", ""] {
+            assert!(!opens_externally(bad), "{bad}");
+        }
     }
 
     #[test]

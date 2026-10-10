@@ -270,6 +270,8 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             }
         }
         "app.uninstall" => return uninstall(app, reply),
+        "default.get" => Ok(default_browser_json()),
+        "default.set" => return make_default_browser(reply),
         "open" => match args.get(1) {
             Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
                 app.open_tab(url, false);
@@ -543,6 +545,37 @@ fn storage_json(app: &App) -> String {
         leftovers.join(","),
         uninstall.join(",")
     )
+}
+
+/// Whether this app opens web links from other apps, and whether it can
+/// (only the .app can: macOS reads the link types it handles from its Info.plist).
+fn default_browser_json() -> String {
+    let probe = NSURL::URLWithString(&NSString::from_str("https://example.com/")).unwrap();
+    let current = NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&probe).and_then(|u| u.path());
+    let bundle = bundle_path();
+    let is_default = matches!((&current, &bundle), (Some(c), Some(b)) if Path::new(&c.to_string()) == b);
+    format!("{{\"default\":{is_default},\"bundled\":{}}}", bundle.is_some())
+}
+
+/// Ask macOS to make this app the default browser. It confirms with the
+/// user itself ("Use my-browser or keep Safari?"), for https too.
+fn make_default_browser(reply: Reply) {
+    let Some(bundle) = bundle_path() else {
+        return reply(Err("Only the installed app (my-browser.app) can be the default browser.".into()));
+    };
+    let app = NSURL::fileURLWithPath(&NSString::from_str(&bundle.to_string_lossy()));
+    let reply = std::cell::RefCell::new(Some(reply));
+    let done = RcBlock::new(move |err: *mut NSError| {
+        let result = unsafe { err.as_ref() }.map_or(ok(), |e| Err(e.localizedDescription().to_string()));
+        if let Some(r) = reply.take() {
+            crate::on_main(move || r(result));
+        }
+    });
+    NSWorkspace::sharedWorkspace().setDefaultApplicationAtURL_toOpenURLsWithScheme_completionHandler(
+        &app,
+        &NSString::from_str("http"),
+        Some(&done),
+    );
 }
 
 /// The app bundle we run from, if any (not when run straight from `cargo`).

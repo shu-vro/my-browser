@@ -1086,7 +1086,14 @@ impl Tab {
         self.ivars().page_downloads.set(0);
         // Focus moves to the page, so the address bar is free to show the real URL.
         self.window().makeFirstResponder(Some(&web));
-        unsafe { web.loadRequest(&NSURLRequest::requestWithURL(&nsurl)) };
+        if nsurl.isFileURL() {
+            // A local page (opened from Finder or typed): it may load the
+            // files next to it, like images and stylesheets.
+            let dir = nsurl.URLByDeletingLastPathComponent().unwrap_or_else(|| nsurl.clone());
+            unsafe { web.loadFileURL_allowingReadAccessToURL(&nsurl, &dir) };
+        } else {
+            unsafe { web.loadRequest(&NSURLRequest::requestWithURL(&nsurl)) };
+        }
     }
 
     /// The blocked-requests button is showing.

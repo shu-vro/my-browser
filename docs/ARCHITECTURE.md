@@ -91,6 +91,21 @@ main thread with `performSelectorOnMainThread`.
    previously active tab. In bench mode it then prints `TUNE …` lines and
    `READY`.
 
+### Default browser and links from other apps
+
+The bundle's Info.plist claims `http`/`https` links (`CFBundleURLTypes`) and
+HTML files (`CFBundleDocumentTypes`, rank Alternate). macOS delivers both to
+`application:openURLs:` (`App::open_external`): only `http`, `https` and
+`file` open, each in a new tab, and links that arrive before `ready` wait in
+`pending_urls` so nothing loads before the blockers. Local files load with
+`loadFileURL:allowingReadAccessToURL:` scoped to the file's folder.
+Settings → General → "Make default" calls
+`NSWorkspace setDefaultApplicationAtURL:toOpenURLsWithScheme:` for `http`;
+macOS asks the user to confirm and sets `https` with it. Only the `.app` can
+be the default (an unbundled binary has no Info.plist), so the bridge's
+`default.get` reports `bundled`. Test: `links_and_files_from_other_apps_open_in_new_tabs`
+(bench `openurl` runs the same path).
+
 ## Tabs
 
 Each tab is an `NSWindow` in a native tab group (`tabbingMode = preferred`).
@@ -508,6 +523,7 @@ active tab.
 | `extbuttons` | `EXTBUTTONS <id>:<on 0\|1> …` for the active tab |
 | `gohome` | presses the home button, then answers like `home` |
 | `netbutton` | `NETBUTTON <0\|1>`: the blocked-requests button is showing |
+| `openurl <url>` | a `TABS` line: opens it like a link from another app (`application:openURLs:`) |
 | `quit` or stdin EOF | exits |
 
 Unprompted events: `CRASHED` (the page process died), `DOWNLOAD

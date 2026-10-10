@@ -58,6 +58,8 @@
 <main>
   <section id="general">
     <h1>General</h1>
+    <div class="row"><div><div>Default browser</div><div class="hint" id="default-hint"></div></div>
+      <button id="make-default">Make default</button></div>
     <div class="row"><div><div>Search engine</div><div class="hint">Used for anything you type that isn't an address.</div></div>
       <select data-setting="search">
         <option value="duckduckgo">DuckDuckGo</option><option value="brave">Brave Search</option>
@@ -198,7 +200,16 @@ document.querySelectorAll("[data-setting]").forEach(input => {
     call("settings.set", input.dataset.setting, v).then(() => toast("Saved"), e => { fail(e); loadSettings(); });
   });
 });
-loaders.general = loaders.privacy = loadSettings;
+async function loadDefault() {
+  const d = await call("default.get");
+  $("default-hint").textContent = d.default ? "my-browser opens links from other apps."
+    : d.bundled ? "Links from other apps open in another browser."
+    : "Only the installed app (my-browser.app) can be the default browser.";
+  $("make-default").disabled = d.default || !d.bundled;
+}
+$("make-default").onclick = () => call("default.set").then(loadDefault, e => { fail(e); loadDefault(); });
+loaders.general = () => { loadSettings(); loadDefault(); };
+loaders.privacy = loadSettings;
 $("clear-data").onclick = () => { if (confirm("Sign out of all sites and delete all cookies, caches and site data?")) call("data.clear").then(() => toast("Cleared"), fail); };
 
 // ---- site permissions

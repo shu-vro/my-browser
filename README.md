@@ -34,6 +34,8 @@ worse is rejected.
   - file upload,
   - JavaScript dialogs.
 - **Find in page** (⌘F, ⌘G, ⇧⌘G).
+- **Can be your default browser** (Settings → General): links from other apps
+  and HTML files from Finder open in new tabs.
 - **Web extensions** (Safari/Chrome format, unpacked) with toolbar buttons
   and popups. Each one is off on every site until you click its button there,
   and doesn't even start (no memory) until its first click. Right-click a

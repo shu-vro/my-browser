@@ -358,6 +358,28 @@ fn back_forward_reload_and_toolbar_state() {
 }
 
 #[test]
+fn links_and_files_from_other_apps_open_in_new_tabs() {
+    let base = serve();
+    let mut b = launch();
+    assert!(b.send(&format!("openurl {base}/page/external")).starts_with("TABS count=2 active=1"));
+    assert!(b.state_until(|s| s.ends_with("title=external")).ends_with("title=external"));
+    // A local HTML file, as when opened from Finder.
+    let dir = TempProfile::new("openfile");
+    std::fs::write(dir.0.join("page.html"), "<title>local file</title><p>hi").unwrap();
+    assert!(b.send(&format!("openurl file://{}/page.html", dir.path())).starts_with("TABS count=3"));
+    let state = b.state_until(|s| s.ends_with("title=local file"));
+    assert!(state.ends_with("title=local file"), "{state}");
+    // Other schemes belong to other apps.
+    for other in ["javascript:alert(1)", "mybrowser://settings", "mailto:a@b.example"] {
+        assert!(b.send(&format!("openurl {other}")).starts_with("TABS count=3"), "{other}");
+    }
+    // Run from cargo, not the installed app: it can't become the default.
+    assert_eq!(b.bridge(&["default.get"]), r#"{"default":false,"bundled":false}"#);
+    assert!(b.send("bridge default.set").starts_with("BRIDGE err Only the installed app"));
+    b.quit();
+}
+
+#[test]
 fn untitled_page_shows_its_url() {
     let mut b = launch();
     b.nav("go about:blank");
