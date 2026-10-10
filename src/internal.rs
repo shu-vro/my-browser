@@ -137,6 +137,32 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             store.delete_visit(id);
             "true".into()
         }),
+        "bookmarks.list" => {
+            let items: Vec<String> = store
+                .bookmarks(args.get(1).map_or("", |s| s))
+                .iter()
+                .map(|b| {
+                    format!(
+                        "{{\"id\":{},\"url\":{},\"title\":{},\"folder\":{}}}",
+                        b.id,
+                        json_str(&b.url),
+                        json_str(&b.title),
+                        json_str(&b.folder)
+                    )
+                })
+                .collect();
+            Ok(format!("[{}]", items.join(",")))
+        }
+        "bookmarks.update" => id_arg(&args, 1).and_then(|id| {
+            store.update_bookmark(id, args.get(2).map_or("", |s| s), args.get(3).map_or("", |s| s))?;
+            app.refresh_toolbars();
+            ok()
+        }),
+        "bookmarks.delete" => id_arg(&args, 1).map(|id| {
+            store.remove_bookmark(id);
+            app.refresh_toolbars();
+            "true".into()
+        }),
         "history.clear" => {
             store.clear_history();
             ok()

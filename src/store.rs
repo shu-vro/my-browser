@@ -57,6 +57,14 @@ pub struct Download {
     pub at: i64,
 }
 
+pub struct Bookmark {
+    pub id: i64,
+    pub url: String,
+    pub title: String,
+    /// `/`-separated path, e.g. `Imported from Chrome/Work`; empty = top level.
+    pub folder: String,
+}
+
 pub struct Extension {
     pub id: i64,
     pub path: String,
@@ -114,7 +122,11 @@ impl Store {
              CREATE TABLE IF NOT EXISTS permissions (
                  site TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (site, kind)) WITHOUT ROWID;
              CREATE TABLE IF NOT EXISTS net_allowed (
-                 ext INTEGER NOT NULL, rule TEXT NOT NULL, UNIQUE (ext, rule));",
+                 ext INTEGER NOT NULL, rule TEXT NOT NULL, UNIQUE (ext, rule));
+             CREATE TABLE IF NOT EXISTS bookmarks (
+                 id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
+                 folder TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL);
+             CREATE INDEX IF NOT EXISTS bookmarks_url ON bookmarks(url);",
         )?;
         // Added after the first release: extensions run only where clicked unless set to "always".
         let has_access: bool = db.prepare("SELECT access FROM extensions LIMIT 0").is_ok();
@@ -401,6 +413,78 @@ impl Store {
         let _ = self.db.execute("DELETE FROM permissions WHERE site = ?1", [site]);
     }
 
+    // ---- bookmarks
+
+    /// Bookmark `url` in `folder`; an existing bookmark of it there is kept.
+    pub fn add_bookmark(&self, url: &str, title: &str, folder: &str) -> i64 {
+        let existing: Option<i64> = self
+            .db
+            .query_row("SELECT id FROM bookmarks WHERE url = ?1 AND folder = ?2", [url, folder], |r| r.get(0))
+            .optional()
+            .ok()
+            .flatten();
+        if let Some(id) = existing {
+            return id;
+        }
+        let _ = self.db.execute(
+            "INSERT INTO bookmarks (url, title, folder, at) VALUES (?1, ?2, ?3, ?4)",
+            params![url, title, folder, now()],
+        );
+        self.db.last_insert_rowid()
+    }
+
+    /// A bookmark of exactly this address, if any.
+    pub fn bookmark_of(&self, url: &str) -> Option<i64> {
+        self.db
+            .query_row("SELECT id FROM bookmarks WHERE url = ?1 LIMIT 1", [url], |r| r.get(0))
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    pub fn bookmark(&self, id: i64) -> Option<Bookmark> {
+        self.db
+            .query_row("SELECT id, url, title, folder FROM bookmarks WHERE id = ?1", [id], |r| {
+                Ok(Bookmark { id: r.get(0)?, url: r.get(1)?, title: r.get(2)?, folder: r.get(3)? })
+            })
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// By folder, then in the order they were added. `query` matches title,
+    /// address or folder.
+    pub fn bookmarks(&self, query: &str) -> Vec<Bookmark> {
+        let like = format!("%{}%", query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        let Ok(mut stmt) = self.db.prepare(
+            "SELECT id, url, title, folder FROM bookmarks
+             WHERE url LIKE ?1 ESCAPE '\\' OR title LIKE ?1 ESCAPE '\\' OR folder LIKE ?1 ESCAPE '\\'
+             ORDER BY folder, id",
+        ) else {
+            return Vec::new();
+        };
+        stmt.query_map([like], |r| Ok(Bookmark { id: r.get(0)?, url: r.get(1)?, title: r.get(2)?, folder: r.get(3)? }))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
+    }
+
+    /// Rename or move a bookmark. Validated: the settings page is web content.
+    pub fn update_bookmark(&self, id: i64, title: &str, folder: &str) -> Result<(), String> {
+        let empty_part = !folder.is_empty() && folder.split('/').any(|p| p.trim().is_empty());
+        if title.len() > 1000 || folder.len() > 1000 || empty_part {
+            return Err("invalid title or folder".into());
+        }
+        let _ = self.db.execute(
+            "UPDATE bookmarks SET title = ?2, folder = ?3 WHERE id = ?1",
+            params![id, title.trim(), folder.trim()],
+        );
+        Ok(())
+    }
+
+    pub fn remove_bookmark(&self, id: i64) {
+        let _ = self.db.execute("DELETE FROM bookmarks WHERE id = ?1", [id]);
+    }
+
     // ---- session (open tabs, for restore at launch)
 
     pub fn save_session(&self, tabs: &[(String, String)]) {
@@ -534,6 +618,23 @@ mod tests {
         assert!(s.extensions().is_empty());
         s.save_session(&[("https://a/".into(), "A".into()), ("https://b/".into(), "B".into())]);
         assert_eq!(s.session()[1].0, "https://b/");
+    }
+
+    #[test]
+    fn bookmarks_add_find_update_and_remove() {
+        let s = Store::open(None).unwrap();
+        let a = s.add_bookmark("https://a.example/", "A", "");
+        assert_eq!(s.add_bookmark("https://a.example/", "A again", ""), a, "no duplicates in a folder");
+        let b = s.add_bookmark("https://b.example/", "B", "Work/Docs");
+        assert_eq!(s.bookmark_of("https://a.example/"), Some(a));
+        assert_eq!(s.bookmark_of("https://c.example/"), None);
+        assert_eq!(s.bookmarks("").iter().map(|b| b.id).collect::<Vec<_>>(), [a, b], "top level first");
+        assert_eq!(s.bookmarks("work").len(), 1, "folders are searched");
+        s.update_bookmark(b, "Docs", "Work").unwrap();
+        assert_eq!(s.bookmark(b).unwrap().folder, "Work");
+        assert!(s.update_bookmark(b, "x", "Work//Docs").is_err(), "no empty folder names");
+        s.remove_bookmark(a);
+        assert_eq!(s.bookmarks("").len(), 1);
     }
 
     #[test]

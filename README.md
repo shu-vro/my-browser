@@ -34,6 +34,8 @@ worse is rejected.
   - popups open as tabs,
   - file upload,
   - JavaScript dialogs.
+- **Bookmarks** (⌘D or the star): in the Bookmarks menu, with folders, and in
+  Settings → Bookmarks.
 - **Find in page** (⌘F, ⌘G, ⇧⌘G).
 - **Can be your default browser** (Settings → General): links from other apps
   and HTML files from Finder open in new tabs.

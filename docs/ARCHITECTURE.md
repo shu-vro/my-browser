@@ -386,6 +386,19 @@ chooses a path, and current profiles' stores
 (`WebKit/<app>/WebsiteDataStore/<id>`) are never in it. Sizes don't follow
 symlinks.
 
+## Bookmarks
+
+A `bookmarks` table in `browser.db` (url, title, `/`-separated folder).
+⌘D (`Tab::toggle_bookmark`) or the star right of the address bar adds the
+page, or removes its bookmark. The star follows the page in
+`refresh_toolbar` (one indexed lookup per toolbar refresh). The Bookmarks
+menu keeps two fixed items (so ⌘D and ⌥⌘B always match) and fills the rest in
+`menuNeedsUpdate:`, only when it opens: folders become submenus, at most 500
+bookmarks per folder. ⌘ while choosing one opens a new tab. Settings →
+Bookmarks lists, searches, renames, moves and deletes them through the
+`bookmarks.*` bridge ops, which validate titles and folders. Test:
+`bookmarks_toggle_with_cmd_d_and_fill_the_menu`.
+
 ## Find in page
 
 `Tab::show_find` adds a find row under the toolbar, built on first use, and
@@ -513,6 +526,7 @@ key press does.
 | ⌃Tab / ⌃⇧Tab / ⇧⌘] / ⇧⌘[ | Next / previous tab |
 | ⌘= ⌘+ / ⌘- / ⌘0 | Zoom in / out / actual size |
 | ⌘, / ⌘Y / ⌥⌘L | Settings / history / downloads |
+| ⌘D / ⌥⌘B | Bookmark this page (or remove it) / all bookmarks |
 | ⌘F / ⌘G / ⇧⌘G | Find in page / next match / previous match (Enter and ⇧Enter in the field too, Esc closes) |
 | ⌘M | Minimize |
 | Right-click an extension button | Only when clicked / On every site / Manage |
@@ -546,6 +560,8 @@ active tab.
 | `gohome` | presses the home button, then answers like `home` |
 | `netbutton` | `NETBUTTON <0\|1>`: the blocked-requests button is showing |
 | `openurl <url>` | a `TABS` line: opens it like a link from another app (`application:openURLs:`) |
+| `star` | `STAR on=<0\|1>`: the star shows the page as bookmarked |
+| `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |
 | `crash` | panics (tests the crash reporter) |
 | `quit` or stdin EOF | exits |
 

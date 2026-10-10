@@ -49,6 +49,7 @@
   <a href="#general">General</a>
   <a href="#privacy">Privacy</a>
   <a href="#permissions">Site settings</a>
+  <a href="#bookmarks">Bookmarks</a>
   <a href="#history">History</a>
   <a href="#downloads">Downloads</a>
   <a href="#storage">Storage</a>
@@ -107,6 +108,13 @@
     <h1>Site settings</h1>
     <p class="note">What each site may use. Sites ask the first time; your answer is remembered here. Change it below or from the site button left of the address bar.</p>
     <ul class="list" id="perm-list"></ul>
+  </section>
+
+  <section id="bookmarks">
+    <h1>Bookmarks</h1>
+    <p class="note">Bookmark a page with ⌘D or the star next to the address bar. They're also in the Bookmarks menu.</p>
+    <input type="search" id="bookmarks-q" placeholder="Search bookmarks">
+    <ul class="list" id="bookmarks-list"></ul>
   </section>
 
   <section id="history">
@@ -263,6 +271,29 @@ async function loadHistory() {
 $("history-q").addEventListener("input", () => { clearTimeout(loadHistory.t); loadHistory.t = setTimeout(loadHistory, 150); });
 $("clear-history").onclick = () => { if (confirm("Delete all history?")) call("history.clear").then(loadHistory, fail); };
 loaders.history = loadHistory;
+
+// ---- bookmarks
+async function loadBookmarks() {
+  const rows = await call("bookmarks.list", $("bookmarks-q").value);
+  const list = $("bookmarks-list"); list.replaceChildren();
+  if (!rows.length) list.append(el("li", "empty", $("bookmarks-q").value ? "No matches." : "No bookmarks yet."));
+  for (const b of rows) {
+    const li = el("li");
+    const main = el("div", "main");
+    const link = el("a", "title", b.title || b.url); link.href = "#"; link.onclick = e => { e.preventDefault(); call("open", b.url).catch(fail); };
+    main.append(link, el("div", "sub", (b.folder ? b.folder + " · " : "") + b.url));
+    const edit = el("button", null, "Edit"); edit.onclick = () => {
+      const title = prompt("Name", b.title); if (title === null) return;
+      const folder = prompt("Folder (use / for folders inside folders; empty for the top level)", b.folder); if (folder === null) return;
+      call("bookmarks.update", b.id, title, folder).then(loadBookmarks, fail);
+    };
+    const del = el("button", null, "Delete"); del.onclick = () => call("bookmarks.delete", b.id).then(loadBookmarks, fail);
+    li.append(main, edit, del);
+    list.append(li);
+  }
+}
+$("bookmarks-q").addEventListener("input", () => { clearTimeout(loadBookmarks.t); loadBookmarks.t = setTimeout(loadBookmarks, 150); });
+loaders.bookmarks = loadBookmarks;
 
 // ---- downloads
 async function loadDownloads() {

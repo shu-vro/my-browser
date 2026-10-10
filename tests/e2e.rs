@@ -623,6 +623,40 @@ fn session_is_restored_asleep() {
 }
 
 #[test]
+fn bookmarks_toggle_with_cmd_d_and_fill_the_menu() {
+    let base = serve();
+    let mut b = launch();
+    b.nav(&format!("go {base}/page/saved"));
+    assert_eq!(b.send("star"), "STAR on=0");
+    b.key("cmd+d");
+    assert_eq!(b.send("star"), "STAR on=1");
+    let list = b.bridge(&["bookmarks.list", ""]);
+    assert!(list.contains(&format!("\"url\":\"{base}/page/saved\",\"title\":\"saved\",\"folder\":\"\"")), "{list}");
+    let id: String = list.split("\"id\":").nth(1).unwrap().chars().take_while(char::is_ascii_digit).collect();
+    assert_eq!(b.send("bookmarksmenu"), "BOOKMARKSMENU Remove Bookmark|Show All Bookmarks|-|saved");
+    // Folders become submenus, listed before the bookmarks beside them.
+    b.nav(&format!("go {base}/page/second"));
+    b.key("cmd+d");
+    b.bridge(&["bookmarks.update", &id, "Saved page", "Work/Docs"]);
+    assert_eq!(b.send("bookmarksmenu"), "BOOKMARKSMENU Remove Bookmark|Show All Bookmarks|-|Work/|second");
+    // Picking a bookmark opens it in the tab.
+    b.nav(&format!("go {base}/page/elsewhere"));
+    assert_eq!(b.send("star"), "STAR on=0");
+    assert!(b.send("bookmarksmenu 4").starts_with("BOOKMARKSMENU Bookmark This Page|"));
+    assert!(b.state_until(|s| s.ends_with("title=second")).ends_with("title=second"));
+    assert_eq!(b.send("star"), "STAR on=1");
+    // ⌘D on a bookmarked page removes it; so does deleting it in Settings.
+    b.key("cmd+d");
+    assert_eq!(b.send("star"), "STAR on=0");
+    b.bridge(&["bookmarks.delete", &id]);
+    assert_eq!(b.bridge(&["bookmarks.list", ""]), "[]");
+    assert_eq!(b.send("bookmarksmenu"), "BOOKMARKSMENU Bookmark This Page|Show All Bookmarks");
+    // Invalid input from the settings page is refused.
+    assert!(b.send("bridge bookmarks.update\t1\tx\tA//B").starts_with("BRIDGE err"));
+    b.quit();
+}
+
+#[test]
 fn history_is_recorded_searchable_and_clearable() {
     let base = serve();
     let mut b = launch();

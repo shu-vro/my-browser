@@ -78,6 +78,9 @@ pub struct TabIvars {
     /// Site button left of the address bar: security state and the site menu.
     site_button: OnceCell<Retained<NSButton>>,
     shown_site_symbol: Cell<&'static str>,
+    /// Star right of the address bar: bookmark this page (⌘D).
+    star: OnceCell<Retained<NSButton>>,
+    shown_star: Cell<Option<bool>>,
     /// JavaScript dialogs on the current page, and whether the user blocked more.
     dialogs: Cell<u32>,
     dialogs_blocked: Cell<bool>,
@@ -609,6 +612,11 @@ define_class!(
             self.app().open_settings_page("settings#network");
         }
 
+        #[unsafe(method(toggleBookmark:))]
+        fn toggle_bookmark_action(&self, _s: Option<&AnyObject>) {
+            self.toggle_bookmark();
+        }
+
         #[unsafe(method(goHome:))]
         fn go_home_action(&self, _s: Option<&AnyObject>) {
             self.go_home();
@@ -782,6 +790,18 @@ impl Tab {
         }
         content.addSubview(&bar);
         let _ = self.ivars().bar.set(bar);
+        let star = unsafe {
+            NSButton::buttonWithImage_target_action(
+                &symbol_image("star", "Bookmark this page"),
+                Some(self),
+                Some(sel!(toggleBookmark:)),
+                mtm,
+            )
+        };
+        star.setBordered(false);
+        star.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin | pin_top);
+        content.addSubview(&star);
+        let _ = self.ivars().star.set(star);
         let _ = self.ivars().window.set(window);
         self.set_extension_buttons(&self.app().extension_buttons(self));
     }
@@ -1096,6 +1116,37 @@ impl Tab {
         }
     }
 
+    /// Bookmark this page, or remove its bookmark (⌘D, the star).
+    pub fn toggle_bookmark(&self) {
+        let url = self.web().and_then(|w| unsafe { w.URL() }).and_then(|u| u.absoluteString()).map(|u| u.to_string());
+        let url = url.unwrap_or_else(|| self.url());
+        if !bookmarkable(&url) {
+            return;
+        }
+        let store = self.app().store();
+        match store.bookmark_of(&url) {
+            Some(id) => store.remove_bookmark(id),
+            None => {
+                let title =
+                    self.web().and_then(|w| unsafe { w.title() }).map(|t| t.to_string()).unwrap_or(self.title());
+                store.add_bookmark(&url, &title, "");
+            }
+        }
+        self.app().refresh_toolbars();
+    }
+
+    /// `STAR on=<0|1>`, read from the star's image.
+    pub fn star_state(&self) -> String {
+        let on = self
+            .ivars()
+            .star
+            .get()
+            .and_then(|s| s.image())
+            .and_then(|i| i.accessibilityDescription())
+            .is_some_and(|d| d.to_string() == "Bookmarked");
+        format!("STAR on={}", on as u8)
+    }
+
     /// The blocked-requests button is showing.
     pub fn net_button_shown(&self) -> bool {
         self.ivars().net_button.borrow().is_some()
@@ -1239,6 +1290,19 @@ impl Tab {
                 b.setToolTip(Some(&NSString::from_str(label)));
             }
             b.setEnabled(crate::store::site_of(&url).is_some() && !url.starts_with(&format!("{INTERNAL}:")));
+        }
+        if let Some(star) = iv.star.get() {
+            let on = bookmarkable(&url) && self.app().store().bookmark_of(&url).is_some();
+            if iv.shown_star.replace(Some(on)) != Some(on) {
+                let (symbol, label) = if on { ("star.fill", "Bookmarked") } else { ("star", "Bookmark this page") };
+                star.setImage(Some(&symbol_image(symbol, label)));
+                star.setToolTip(Some(&NSString::from_str(if on {
+                    "Remove bookmark (⌘D)"
+                } else {
+                    "Bookmark (⌘D)"
+                })));
+            }
+            star.setEnabled(bookmarkable(&url));
         }
         // Don't clobber what the user is typing.
         if bar.currentEditor().is_none() {
@@ -1472,8 +1536,13 @@ impl Tab {
             content.addSubview(&b);
             iv.net_button.replace(Some(b));
         }
+        // The star sits between the address bar and those buttons.
+        let right = n + waiting as u8 as f64 + 1.0;
+        if let Some(star) = iv.star.get() {
+            star.setFrame(NSRect::new(NSPoint::new(width - 4.0 - right * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
+        }
         let mut frame = bar.frame();
-        frame.size.width = width - frame.origin.x - 8.0 - (n + waiting as u8 as f64) * BUTTON_W;
+        frame.size.width = width - frame.origin.x - 8.0 - right * BUTTON_W;
         bar.setFrame(frame);
         for (i, item) in items.iter().enumerate() {
             let b = unsafe {
@@ -1660,6 +1729,11 @@ impl Tab {
 /// Text safe to put in HTML.
 pub fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+}
+
+/// Pages that can be bookmarked: web pages and local files.
+pub fn bookmarkable(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://") || url.starts_with("file://")
 }
 
 /// Extensions may point tabs at web pages and their own pages, never at the

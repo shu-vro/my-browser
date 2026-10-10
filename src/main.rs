@@ -30,7 +30,7 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAlert, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSEvent, NSEventModifierFlags,
-    NSEventType, NSMenu, NSMenuItem, NSWindow, NSWindowOcclusionState, NSWindowOrderingMode,
+    NSEventType, NSMenu, NSMenuDelegate, NSMenuItem, NSWindow, NSWindowOcclusionState, NSWindowOrderingMode,
 };
 use objc2_foundation::{
     NSArray, NSData, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSString, NSTimer, NSURL,
@@ -105,6 +105,14 @@ define_class!(
     pub struct App;
 
     unsafe impl NSObjectProtocol for App {}
+
+    /// The Bookmarks menu is filled when it opens: no cost until then.
+    unsafe impl NSMenuDelegate for App {
+        #[unsafe(method(menuNeedsUpdate:))]
+        fn menu_needs_update(&self, menu: &NSMenu) {
+            self.fill_bookmarks_menu(menu);
+        }
+    }
 
     unsafe impl NSApplicationDelegate for App {
         #[unsafe(method(applicationDidFinishLaunching:))]
@@ -456,6 +464,32 @@ define_class!(
         #[unsafe(method(showDownloads:))]
         fn show_downloads_action(&self, _s: Option<&AnyObject>) {
             self.open_internal("settings#downloads");
+        }
+
+        #[unsafe(method(toggleBookmark:))]
+        fn toggle_bookmark_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.toggle_bookmark());
+        }
+
+        #[unsafe(method(showBookmarks:))]
+        fn show_bookmarks_action(&self, _s: Option<&AnyObject>) {
+            self.open_internal("settings#bookmarks");
+        }
+
+        /// A bookmark in the Bookmarks menu (tag = its id): opens in this tab,
+        /// or a new one with ⌘ held.
+        #[unsafe(method(openBookmark:))]
+        fn open_bookmark_action(&self, sender: &NSMenuItem) {
+            let Some(b) = self.store().bookmark(sender.tag() as i64) else { return };
+            let cmd = NSApplication::sharedApplication(self.mtm())
+                .currentEvent()
+                .is_some_and(|e| e.modifierFlags().contains(NSEventModifierFlags::Command));
+            match self.active() {
+                Some(t) if !cmd => t.load(&b.url),
+                _ => {
+                    self.open_tab(&b.url, false);
+                }
+            }
         }
 
         #[unsafe(method(goBack:))]
@@ -1039,6 +1073,72 @@ impl App {
     }
 
     /// Tabs of the active window, in tab-bar order.
+    /// Redraw every tab's toolbar (a bookmark changed, say).
+    pub fn refresh_toolbars(&self) {
+        for t in self.ivars().tabs.borrow().clone() {
+            t.refresh_toolbar();
+        }
+    }
+
+    /// The Bookmarks menu: its two fixed items, then every bookmark, folders
+    /// as submenus. Rebuilt each time it opens.
+    fn fill_bookmarks_menu(&self, menu: &NSMenu) {
+        while menu.numberOfItems() > 2 {
+            menu.removeItemAtIndex(2);
+        }
+        let url = self.active().map(|t| t.url()).unwrap_or_default();
+        let on = self.store().bookmark_of(&url).is_some();
+        if let Some(first) = menu.itemAtIndex(0) {
+            first.setTitle(&NSString::from_str(if on { "Remove Bookmark" } else { "Bookmark This Page" }));
+        }
+        let all = self.store().bookmarks("");
+        if !all.is_empty() {
+            menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
+            self.add_bookmark_items(menu, &all, "");
+        }
+    }
+
+    /// Items for the bookmarks directly in `folder`, after a submenu for each
+    /// folder inside it.
+    fn add_bookmark_items(&self, menu: &NSMenu, all: &[store::Bookmark], folder: &str) {
+        let mtm = self.mtm();
+        let mut children: Vec<&str> = Vec::new();
+        for b in all {
+            let rest =
+                if folder.is_empty() { Some(b.folder.as_str()) } else { b.folder.strip_prefix(&format!("{folder}/")) };
+            if let Some(child) =
+                rest.filter(|r| !r.is_empty() && b.folder != folder).map(|r| r.split('/').next().unwrap())
+                && !children.contains(&child)
+            {
+                children.push(child);
+            }
+        }
+        for child in children {
+            let path = if folder.is_empty() { child.to_string() } else { format!("{folder}/{child}") };
+            let sub = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(child));
+            self.add_bookmark_items(&sub, all, &path);
+            let item = NSMenuItem::new(mtm);
+            item.setTitle(&NSString::from_str(child));
+            item.setSubmenu(Some(&sub));
+            menu.addItem(&item);
+        }
+        // ponytail: a huge folder shows its first 500; the rest are in Settings → Bookmarks.
+        for b in all.iter().filter(|b| b.folder == folder).take(500) {
+            let title: String = if b.title.is_empty() { &b.url } else { &b.title }.chars().take(70).collect();
+            let item = menu_item(mtm, &title, sel!(openBookmark:), "", NSEventModifierFlags::empty());
+            item.setTag(b.id as isize);
+            item.setToolTip(Some(&NSString::from_str(&b.url)));
+            unsafe { item.setTarget(Some(self)) };
+            menu.addItem(&item);
+        }
+    }
+
+    /// The menu bar's Bookmarks menu.
+    fn bookmarks_menu(&self) -> Option<Retained<NSMenu>> {
+        let main = NSApplication::sharedApplication(self.mtm()).mainMenu()?;
+        main.itemArray().iter().filter_map(|i| i.submenu()).find(|m| m.title().to_string() == "Bookmarks")
+    }
+
     pub fn ordered_tabs(&self) -> Vec<Retained<Tab>> {
         let Some(active) = self.active() else { return self.ivars().tabs.borrow().clone() };
         match active.window().tabbedWindows() {
@@ -1308,6 +1408,26 @@ impl App {
             ("findbar", Some(t)) => say!("{}", t.find_state()),
             ("home", Some(t)) => say!("{}", t.home_state()),
             ("netbutton", Some(t)) => say!("NETBUTTON {}", t.net_button_shown() as u8),
+            ("star", Some(t)) => say!("{}", t.star_state()),
+            // The Bookmarks menu as it would open: `BOOKMARKSMENU a|b|-|Folder/|c`.
+            // With an index, picks that item (as a click would) first.
+            ("bookmarksmenu", _) => {
+                let Some(menu) = self.bookmarks_menu() else { return say!("ERR no menu") };
+                self.fill_bookmarks_menu(&menu);
+                if let Ok(i) = arg.parse::<isize>() {
+                    menu.performActionForItemAtIndex(i);
+                }
+                let titles: Vec<String> = menu
+                    .itemArray()
+                    .iter()
+                    .map(|i| match (i.isSeparatorItem(), i.hasSubmenu()) {
+                        (true, _) => "-".into(),
+                        (_, true) => format!("{}/", i.title()),
+                        _ => i.title().to_string(),
+                    })
+                    .collect();
+                say!("BOOKMARKSMENU {}", titles.join("|"));
+            }
             // The toolbar's home button.
             ("gohome", Some(t)) => {
                 t.go_home();
@@ -1746,6 +1866,13 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
             ],
         ),
         (
+            "Bookmarks",
+            vec![
+                ("Bookmark This Page", sel!(toggleBookmark:), "d", cmd, true),
+                ("Show All Bookmarks", sel!(showBookmarks:), "b", cmd_alt, true),
+            ],
+        ),
+        (
             "Window",
             vec![
                 ("Minimize", sel!(minimizeWindow:), "m", cmd, true),
@@ -1783,6 +1910,9 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
         if title == "Window" {
             // Lets AppKit list open windows and handle Window-menu conventions.
             app.setWindowsMenu(Some(&menu));
+        }
+        if title == "Bookmarks" {
+            menu.setDelegate(Some(ProtocolObject::from_ref(delegate)));
         }
     }
     app.setMainMenu(Some(&main));
