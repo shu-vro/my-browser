@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- my-browser app icon: a feather (the lightest browser) on a sky squircle.
+       Source of resources/AppIcon.icns; regenerate with `swift scripts/icon.swift`. -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7FD3FF"/>
+      <stop offset="0.55" stop-color="#4C7DF0"/>
+      <stop offset="1" stop-color="#3B3FC4"/>
+    </linearGradient>
+    <linearGradient id="vane" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DCE6FF"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.35"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <!-- macOS icon grid: 824 pt squircle centred in 1024 -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#sky)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#glow)"/>
+  <g transform="rotate(38 512 520)">
+    <!-- shadow -->
+    <path transform="translate(14 18)" fill="#1E2380" fill-opacity="0.25"
+      d="M512 190 C566 236 612 300 622 380 C628 430 620 470 606 500 L572 520 L612 528
+         C596 600 562 660 520 712 L504 712 C470 676 444 640 430 600 L470 588 L424 572
+         C404 510 400 440 414 370 C430 300 466 236 512 190 Z"/>
+    <!-- vane -->
+    <path fill="url(#vane)"
+      d="M512 190 C566 236 612 300 622 380 C628 430 620 470 606 500 L572 520 L612 528
+         C596 600 562 660 520 712 L504 712 C470 676 444 640 430 600 L470 588 L424 572
+         C404 510 400 440 414 370 C430 300 466 236 512 190 Z"/>
+    <!-- shaft and quill -->
+    <path fill="#3B3FC4" fill-opacity="0.55"
+      d="M510 236 L514 236 L519 700 L516 846 C516 852 508 852 508 846 L505 700 Z"/>
+    <!-- barbs -->
+    <g stroke="#9DB3F5" stroke-width="5" stroke-linecap="round" fill="none" opacity="0.8">
+      <path d="M514 300 C540 310 566 330 586 352"/>
+      <path d="M514 380 C548 392 578 414 600 440"/>
+      <path d="M512 330 C488 340 466 360 450 384"/>
+      <path d="M512 430 C482 444 458 468 440 496"/>
+      <path d="M514 590 C536 600 556 616 572 634"/>
+      <path d="M512 640 C496 648 482 660 470 676"/>
+    </g>
+  </g>
+</svg>

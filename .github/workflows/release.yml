@@ -1,0 +1,63 @@
+name: Release
+# Every push to the `release` branch publishes the next version:
+# v<major.minor from Cargo.toml>.<patch>, the patch counting up from 0 with
+# each release (0.2.0, 0.2.1, ...). Bump the minor in Cargo.toml to start
+# 0.3.0. Assets: a universal (Apple Silicon + Intel) DMG, its SHA-256, and the
+# debug symbols for symbolicating crash reports.
+on:
+  push:
+    branches: [release]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags, to find the last patch
+      - name: Rust
+        run: rustup update stable && rustup default stable && rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Test
+        run: cargo test --release
+      - name: Version
+        id: version
+        run: |
+          base=$(sed -n 's/^version = "\([0-9]*\.[0-9]*\)\..*"/\1/p' Cargo.toml | head -1)
+          last=$(git tag -l "v$base.*" | sed "s/^v$base\.//" | grep -E '^[0-9]+$' | sort -n | tail -1)
+          echo "version=$base.$(( ${last:--1} + 1 ))" >> "$GITHUB_OUTPUT"
+      - name: Build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          UNIVERSAL: "1"
+          # Symbols go to a separate .dSYM (published, not shipped in the app):
+          # the binary stays the same size and crash reports can be symbolicated.
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+          CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
+        run: |
+          ./scripts/bundle.sh
+          ./scripts/dmg.sh
+          mkdir -p dist
+          cp "target/release/my-browser-$VERSION.dmg" dist/
+          (cd dist && shasum -a 256 "my-browser-$VERSION.dmg" > SHA256SUMS)
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cp -RL "target/$t/release/my-browser.dSYM" "dist/my-browser-$VERSION-$t.dSYM"
+            ditto -c -k --keepParent "dist/my-browser-$VERSION-$t.dSYM" "dist/my-browser-$VERSION-$t.dSYM.zip"
+          done
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" dist/*.dmg dist/*.dSYM.zip dist/SHA256SUMS \
+            --target "$GITHUB_SHA" --title "my-browser $VERSION" --generate-notes \
+            --notes "Open the DMG and drag my-browser to Applications.
+
+          This build isn't notarized by Apple, so macOS blocks its first launch: open it once, then choose **Open Anyway** in System Settings → Privacy & Security. (Or run \`xattr -dr com.apple.quarantine /Applications/my-browser.app\`.)"

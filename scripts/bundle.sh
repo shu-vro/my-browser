@@ -7,14 +7,26 @@
 #
 # Note: WebKit keeps site data per app identity, so the bundled app and
 # `cargo run` have separate cookie stores. Use one or the other.
+#
+# VERSION=x.y.z overrides Cargo.toml's version (the release workflow sets it).
+# UNIVERSAL=1 builds for Apple Silicon and Intel and joins them (releases).
 set -eu
 cd "$(dirname "$0")/.."
-cargo build --release
 APP=target/release/my-browser.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
-cp target/release/my-browser "$APP/Contents/MacOS/my-browser"
-VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+if [ "${UNIVERSAL:-0}" = 1 ]; then
+  for t in aarch64-apple-darwin x86_64-apple-darwin; do
+    cargo build --release --bin my-browser --target $t
+  done
+  lipo -create -output "$APP/Contents/MacOS/my-browser" \
+    target/aarch64-apple-darwin/release/my-browser target/x86_64-apple-darwin/release/my-browser
+else
+  cargo build --release --bin my-browser
+  cp target/release/my-browser "$APP/Contents/MacOS/my-browser"
+fi
+cp resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+VERSION=${VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -26,6 +38,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>15.4</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSHighResolutionCapable</key><true/>

@@ -137,6 +137,21 @@ WebKit rejects the whole list if one rule is invalid, and only says "error 6".
 The generator keeps exception lists to lowercase hostnames. The list is CC
 BY-NC-SA 4.0 (non-commercial).
 
+## Releasing
+
+Push to the `release` branch (`git push origin main:release`).
+[.github/workflows/release.yml](.github/workflows/release.yml) runs the tests,
+builds a universal app (`UNIVERSAL=1 scripts/bundle.sh`), packs it with
+`scripts/dmg.sh` and publishes a GitHub release with the DMG, its SHA-256 and
+the debug symbols (`.dSYM`, for crash reports). Versions are
+`<major.minor from Cargo.toml>.<patch>`, the patch counting up with each
+release: bump the minor in Cargo.toml to start a new series.
+
+Builds are signed ad hoc, not notarized (that needs a paid Apple Developer
+account), so macOS blocks the first launch until the user chooses **Open
+Anyway** in System Settings → Privacy & Security. The app icon is
+`resources/icon.svg`; `scripts/icon.sh` regenerates `resources/AppIcon.icns`.
+
 ## Getting a change reviewed
 
 Include:

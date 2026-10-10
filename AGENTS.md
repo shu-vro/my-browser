@@ -43,7 +43,8 @@ cargo test --release                   # 73 tests, ~5 s, opens windows (needs GU
 ./target/release/bench                 # ~4 min, compare against benchmark/bars.tsv
 BENCH_VERBOSE=1 ./target/release/bench # per-process footprint at every measurement
 MYB_TUNE=jit=0,pagecache=1 ./target/release/bench --runs 2   # engine experiment
-./scripts/bundle.sh                    # signed .app
+./scripts/bundle.sh                    # signed .app (UNIVERSAL=1 for both CPUs)
+./scripts/dmg.sh                       # DMG from the .app; releases: push to `release`
 python3 scripts/update-trackers.py     # regenerate tracker rules (network)
 ```
 

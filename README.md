@@ -56,12 +56,20 @@ worse is rejected.
   Intel.
 - Rust 1.89 or later (`File::try_lock`). Edition 2024.
 
+## Install
+
+Download the DMG from the [releases](https://github.com/shu-vro/my-browser/releases),
+open it and drag my-browser to Applications. It isn't notarized by Apple, so
+the first launch is blocked: open it once, then choose **Open Anyway** in
+System Settings → Privacy & Security.
+
 ## Run it
 
 ```sh
 cargo run --release                   # opens with your profile
 cargo run --release -- example.com    # opens a URL
 ./scripts/bundle.sh                   # builds target/release/my-browser.app
+./scripts/dmg.sh                      # packs it into target/release/my-browser-<version>.dmg
 ```
 
 Use the `.app` for daily browsing. Camera and microphone (video calls) only
