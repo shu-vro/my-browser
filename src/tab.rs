@@ -620,6 +620,43 @@ define_class!(
             self.toggle_bookmark();
         }
 
+        /// Right-click menu (WKUIDelegate, private): links get "Open Link in
+        /// New Tab", "…New Window" and "…Private Window". Built only when
+        /// the menu opens; nothing runs in the page.
+        #[unsafe(method(_webView:getContextMenuFromProposedMenu:forElement:userInfo:completionHandler:))]
+        fn context_menu(
+            &self,
+            _web: &WKWebView,
+            menu: &NSMenu,
+            element: &AnyObject,
+            _info: Option<&AnyObject>,
+            done: &DynBlock<dyn Fn(*mut NSMenu)>,
+        ) {
+            self.link_menu(menu, link_url(element).as_deref());
+            done.call((menu as *const NSMenu as *mut NSMenu,));
+        }
+
+        #[unsafe(method(openLinkInNewTab:))]
+        fn open_link_in_new_tab(&self, sender: &NSMenuItem) {
+            if let Some(url) = represented_url(sender) {
+                self.app().open_tab_in(self.is_private(), &url, true);
+            }
+        }
+
+        #[unsafe(method(openLinkInNewWindow:))]
+        fn open_link_in_new_window(&self, sender: &NSMenuItem) {
+            if let Some(url) = represented_url(sender) {
+                self.app().open_window(self.is_private(), &url);
+            }
+        }
+
+        #[unsafe(method(openLinkInPrivateWindow:))]
+        fn open_link_in_private_window(&self, sender: &NSMenuItem) {
+            if let Some(url) = represented_url(sender) {
+                self.app().open_tab_in(true, &url, false);
+            }
+        }
+
         /// The print operation ended (printed, saved, or cancelled).
         #[unsafe(method(printOperationDidRun:success:contextInfo:))]
         fn print_done(&self, _op: &AnyObject, ok: Bool, _ctx: *mut c_void) {
@@ -1146,6 +1183,41 @@ impl Tab {
             unsafe { web.loadFileURL_allowingReadAccessToURL(&nsurl, &dir) };
         } else {
             unsafe { web.loadRequest(&NSURLRequest::requestWithURL(&nsurl)) };
+        }
+    }
+
+    /// Put our link items in place of WebKit's "Open Link in New Window"
+    /// (which would open a tab anyway). Other items stay as WebKit made them.
+    pub fn link_menu(&self, menu: &NSMenu, link: Option<&str>) {
+        let Some(link) = link.filter(|l| bookmarkable(l)) else { return };
+        let is_new_window = |i: isize| {
+            let id =
+                menu.itemAtIndex(i).and_then(|m| objc2_app_kit::NSUserInterfaceItemIdentification::identifier(&*m));
+            id.is_some_and(|id| id.to_string() == "WKMenuItemIdentifierOpenLinkInNewWindow")
+        };
+        let Some(at) = (0..menu.numberOfItems()).find(|&i| is_new_window(i)) else { return };
+        menu.removeItemAtIndex(at);
+        let mut items = vec![
+            ("Open Link in New Tab", sel!(openLinkInNewTab:)),
+            ("Open Link in New Window", sel!(openLinkInNewWindow:)),
+        ];
+        if !self.is_private() {
+            items.push(("Open Link in Private Window", sel!(openLinkInPrivateWindow:)));
+        }
+        for (k, (title, action)) in items.into_iter().enumerate() {
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(self.mtm()),
+                    &NSString::from_str(title),
+                    Some(action),
+                    &NSString::from_str(""),
+                )
+            };
+            unsafe {
+                item.setTarget(Some(self));
+                item.setRepresentedObject(Some(&NSString::from_str(link)));
+            }
+            menu.insertItem_atIndex(&item, at + k as isize);
         }
     }
 
@@ -1807,6 +1879,23 @@ impl Tab {
 /// Text safe to put in HTML.
 pub fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+}
+
+/// The link under the pointer, from WebKit's context-menu element info.
+fn link_url(element: &AnyObject) -> Option<String> {
+    let responds = |o: &AnyObject, s| -> bool { unsafe { msg_send![o, respondsToSelector: s] } };
+    if !responds(element, sel!(hitTestResult)) {
+        return None;
+    }
+    let hit: Option<Retained<AnyObject>> = unsafe { msg_send![element, hitTestResult] };
+    let hit = hit.filter(|h| responds(h, sel!(absoluteLinkURL)))?;
+    let url: Option<Retained<NSURL>> = unsafe { msg_send![&*hit, absoluteLinkURL] };
+    url?.absoluteString().map(|s| s.to_string())
+}
+
+/// The address a link menu item carries.
+fn represented_url(item: &NSMenuItem) -> Option<String> {
+    item.representedObject()?.downcast::<NSString>().ok().map(|s| s.to_string())
 }
 
 /// Pages that can be bookmarked: web pages and local files.

@@ -981,9 +981,14 @@ impl App {
 
     /// ⌘N, or ⇧⌘N for a private window.
     fn new_window(&self, private: bool) {
-        let tab = Tab::create(self, None, &self.new_tab_url(), "", false, private);
+        self.open_window(private, &self.new_tab_url()).focus_address_bar();
+    }
+
+    /// A new window with `url` in its one tab.
+    pub fn open_window(&self, private: bool, url: &str) -> Retained<Tab> {
+        let tab = Tab::create(self, None, url, "", false, private);
         self.add_tab(&tab, None, true);
-        tab.focus_address_bar();
+        tab
     }
 
     /// The chosen homepage; empty means the built-in (native) new tab page.
@@ -1500,6 +1505,31 @@ impl App {
             ("netbutton", Some(t)) => say!("NETBUTTON {}", t.net_button_shown() as u8),
             ("star", Some(t)) => say!("{}", t.star_state()),
             ("private", Some(t)) => say!("{}", t.private_state()),
+            // `linkmenu <url> [i]`: WebKit's link menu after our changes (and
+            // picking item i): `LINKMENU <title>|…`.
+            ("linkmenu", Some(t)) => {
+                let (url, pick) = arg.split_once(' ').map_or((arg, None), |(u, i)| (u, i.parse::<isize>().ok()));
+                let menu = NSMenu::new(self.mtm());
+                for (title, id) in [
+                    ("Open Link", "OpenLink"),
+                    ("Open Link in New Window", "OpenLinkInNewWindow"),
+                    ("Download Linked File", "DownloadLinkedFile"),
+                    ("Copy Link", "CopyLink"),
+                ] {
+                    let item = menu_item(self.mtm(), title, sel!(copy:), "", NSEventModifierFlags::empty());
+                    objc2_app_kit::NSUserInterfaceItemIdentification::setIdentifier(
+                        &*item,
+                        Some(&NSString::from_str(&format!("WKMenuItemIdentifier{id}"))),
+                    );
+                    menu.addItem(&item);
+                }
+                t.link_menu(&menu, Some(url));
+                if let Some(i) = pick {
+                    menu.performActionForItemAtIndex(i);
+                }
+                let titles: Vec<String> = menu.itemArray().iter().map(|i| i.title().to_string()).collect();
+                say!("LINKMENU {}", titles.join("|"));
+            }
             // Print the page to a PDF file, through the print panel's own path.
             ("printpdf", Some(t)) => t.print(Some(arg)),
             // The Bookmarks menu as it would open: `BOOKMARKSMENU a|b|-|Folder/|c`.

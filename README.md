@@ -40,6 +40,8 @@ worse is rejected.
 - **Bookmarks** (⌘D or the star): in the Bookmarks menu, with folders, and in
   Settings → Bookmarks.
 - **Print and save as PDF** (⌘P).
+- **Link menu**: right-click a link to open it in a new tab, window or
+  private window.
 - **Find in page** (⌘F, ⌘G, ⇧⌘G).
 - **Can be your default browser** (Settings → General): links from other apps
   and HTML files from Finder open in new tabs.

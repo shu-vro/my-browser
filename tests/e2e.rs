@@ -735,6 +735,36 @@ fn pages_print_to_pdf_and_window_print_opens_the_panel() {
 }
 
 #[test]
+fn link_menu_opens_links_in_tabs_windows_and_private_windows() {
+    let base = serve();
+    let mut b = launch();
+    b.nav(&format!("go {base}/page/start"));
+    let link = format!("{base}/page/linked");
+    let menu = "LINKMENU Open Link|Open Link in New Tab|Open Link in New Window|Open Link in Private Window|Download Linked File|Copy Link";
+    assert_eq!(b.send(&format!("linkmenu {link}")), menu);
+    // Not a web link (javascript:, mailto:): WebKit's menu as it was.
+    assert!(b.send("linkmenu javascript:alert(1)").contains("|Open Link in New Window|Download"));
+    // New tab: in the background, next to this one.
+    assert_eq!(b.send(&format!("linkmenu {link} 1")), menu);
+    assert!(b.tabs().starts_with("TABS count=2 active=0 asleep=0 windows=1"));
+    // New window: a second window, in front.
+    b.send(&format!("linkmenu {link} 2"));
+    assert!(b.tabs().starts_with("TABS count=1 active=0 asleep=0 windows=2"));
+    assert!(b.state_until(|s| s.ends_with("title=linked")).ends_with("title=linked"));
+    // Private window: a third, private.
+    b.send(&format!("linkmenu {link} 3"));
+    assert!(b.tabs().ends_with("windows=3"));
+    assert_eq!(b.send("private"), "PRIVATE 1");
+    // From a private tab, new tabs and windows stay private (no "Private Window" item).
+    assert_eq!(
+        b.send(&format!("linkmenu {link} 1")),
+        "LINKMENU Open Link|Open Link in New Tab|Open Link in New Window|Download Linked File|Copy Link"
+    );
+    assert!(b.tabs().starts_with("TABS count=2 active=0"));
+    b.quit();
+}
+
+#[test]
 fn history_is_recorded_searchable_and_clearable() {
     let base = serve();
     let mut b = launch();

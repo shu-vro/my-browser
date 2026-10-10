@@ -386,6 +386,23 @@ chooses a path, and current profiles' stores
 (`WebKit/<app>/WebsiteDataStore/<id>`) are never in it. Sizes don't follow
 symlinks.
 
+## Link context menu
+
+WebKit builds the right-click menu; the private UI-delegate method
+`_webView:getContextMenuFromProposedMenu:forElement:userInfo:completionHandler:`
+hands it over just before it opens (`Tab::link_menu`). For an http(s) or
+file link, WebKit's "Open Link in New Window" item (found by its identifier,
+`WKMenuItemIdentifierOpenLinkInNewWindow`) is replaced with "Open Link in
+New Tab" (background), "Open Link in New Window" and "Open Link in Private
+Window" (left out in private tabs, whose new tabs and windows are private
+anyway). The link comes from the element's `hitTestResult.absoluteLinkURL`.
+Nothing runs in the page and nothing is built until a right-click. On a
+WebKit without the method, WebKit's own menu shows (its new-window item
+still opens a tab). The method's type encoding was checked against the
+runtime (`v56@0:8@16@24@32@40@?48`); the menu rewrite and the three actions
+are tested with a stand-in menu (`link_menu_opens_links_in_tabs_windows_and_private_windows`,
+bench `linkmenu`), since a real right-click opens a modal menu.
+
 ## Printing
 
 ⌘P (`Tab::print`) runs `WKWebView printOperationWithPrintInfo:` as a sheet;
@@ -596,6 +613,7 @@ active tab.
 | `star` | `STAR on=<0\|1>`: the star shows the page as bookmarked |
 | `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |
 | `printpdf <path>` | `PRINTED <0\|1>` once the page is saved there as a PDF (also printed when any print panel closes) |
+| `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |
 | `crash` | panics (tests the crash reporter) |
 | `quit` or stdin EOF | exits |
