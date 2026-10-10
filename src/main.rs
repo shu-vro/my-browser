@@ -1,5 +1,17 @@
+/// A line on stdout for the bench harness. A harness that has stopped
+/// reading (a failed test) must not crash the browser, as `println!` would.
+macro_rules! say {
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        let _ = writeln!(std::io::stdout(), $($arg)*);
+    }};
+}
+
+mod extensions;
 mod extwindow;
+mod home;
 mod internal;
+mod netgate;
 mod privacy;
 mod store;
 mod tab;
@@ -26,10 +38,10 @@ use objc2_web_kit::WKProcessPool;
 use objc2_web_kit::{
     WKAudiovisualMediaTypes, WKContentRuleList, WKContentWorld, WKDownload, WKDownloadDelegate, WKPreferences,
     WKScriptMessage, WKScriptMessageHandlerWithReply, WKURLSchemeHandler, WKURLSchemeTask, WKUserContentController,
-    WKWebExtension, WKWebExtensionContext, WKWebExtensionContextPermissionStatus, WKWebExtensionController,
+    WKWebExtension, WKWebExtensionAction, WKWebExtensionContext, WKWebExtensionController, WKWebExtensionMatchPattern,
     WKWebExtensionControllerConfiguration, WKWebExtensionControllerDelegate, WKWebExtensionTab,
     WKWebExtensionTabChangedProperties, WKWebExtensionTabConfiguration, WKWebExtensionWindow, WKWebView,
-    WKWebViewConfiguration, WKWebsiteDataStore,
+    WKWebViewConfiguration, WKWebpagePreferences, WKWebsiteDataStore,
 };
 
 use extwindow::ExtWindow;
@@ -50,10 +62,22 @@ pub struct AppIvars {
     #[allow(deprecated)]
     pool: OnceCell<Option<Retained<WKProcessPool>>>,
     extensions: OnceCell<Retained<WKWebExtensionController>>,
+    /// Running extensions (started on first click, or at launch if "always").
     ext_contexts: RefCell<HashMap<i64, Retained<WKWebExtensionContext>>>,
+    /// Every enabled extension's manifest and icons, read at launch.
+    ext_meta: RefCell<HashMap<i64, Retained<WKWebExtension>>>,
+    /// Hidden windows holding background pages that play audio (see
+    /// `host_extension_audio`).
+    ext_audio_windows: RefCell<HashMap<i64, Retained<NSWindow>>>,
+    /// Requests the gate blocked this session (Settings → Network).
+    net_blocked: RefCell<Vec<netgate::Blocked>>,
     /// Extension-facing window objects, one per native tab group (keyed by its pointer).
     ext_windows: RefCell<HashMap<usize, Retained<ExtWindow>>>,
     trackers: RefCell<Option<Retained<WKContentRuleList>>>,
+    /// Blocks websites from reaching this Mac and the local network.
+    local: RefCell<Option<Retained<WKContentRuleList>>>,
+    /// `Version/<n> Safari/605.1.15`, so the browser blends in with Safari.
+    user_agent: OnceCell<Option<String>>,
     tabs: RefCell<Vec<Retained<Tab>>>,
     active: RefCell<Option<Retained<Tab>>>,
     /// URLs of closed tabs, for Reopen Closed Tab.
@@ -213,9 +237,150 @@ define_class!(
             done: &DynBlock<dyn Fn(*mut ProtocolObject<dyn WKWebExtensionTab>, *mut NSError)>,
         ) {
             let url = unsafe { config.url() }.and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default();
+            if !tab::extension_may_load(&url) {
+                let err = NSError::new(1, &NSString::from_str("my-browser"));
+                return done.call((std::ptr::null_mut(), Retained::as_ptr(&err) as *mut _));
+            }
             let tab = self.open_tab(&url, !unsafe { config.shouldBeActive() });
             let tab: Retained<ProtocolObject<dyn WKWebExtensionTab>> = ProtocolObject::from_retained(tab);
             done.call((Retained::as_ptr(&tab) as *mut _, std::ptr::null_mut()));
+        }
+
+        /// `runtime.sendNativeMessage`. The only app here is the offscreen
+        /// stand-in asking for its background page to be able to play audio.
+        #[unsafe(method(webExtensionController:sendMessage:toApplicationWithIdentifier:forExtensionContext:replyHandler:))]
+        fn ext_native_message(
+            &self,
+            _c: &WKWebExtensionController,
+            message: &AnyObject,
+            app: Option<&NSString>,
+            ctx: &WKWebExtensionContext,
+            reply: &DynBlock<dyn Fn(*mut AnyObject, *mut NSError)>,
+        ) {
+            // `{ userAgent: string | undefined }`; anything else is ignored.
+            let user_agent = message
+                .downcast_ref::<objc2_foundation::NSDictionary>()
+                .and_then(|m| m.objectForKey(&NSString::from_str("userAgent")))
+                .and_then(|ua| ua.downcast::<NSString>().ok())
+                .map(|ua| ua.to_string());
+            if app.is_some_and(|a| a.to_string() == extensions::OFFSCREEN_APP)
+                && self.host_extension_audio(ctx, user_agent.as_deref())
+            {
+                let ok = objc2_foundation::NSNumber::new_bool(true);
+                return reply.call((Retained::as_ptr(&ok) as *mut AnyObject, std::ptr::null_mut()));
+            }
+            let err = NSError::new(1, &NSString::from_str("my-browser"));
+            reply.call((std::ptr::null_mut(), Retained::as_ptr(&err) as *mut _));
+        }
+
+        /// `runtime.connectNative`: an extension page's WebSocket going
+        /// through the network gate (netgate.rs).
+        #[unsafe(method(webExtensionController:connectUsingMessagePort:forExtensionContext:completionHandler:))]
+        fn ext_native_port(
+            &self,
+            _c: &WKWebExtensionController,
+            port: &objc2_web_kit::WKWebExtensionMessagePort,
+            ctx: &WKWebExtensionContext,
+            done: &DynBlock<dyn Fn(*mut NSError)>,
+        ) {
+            if unsafe { port.applicationIdentifier() }.is_some_and(|a| a.to_string() == extensions::OFFSCREEN_APP) {
+                self.net_connect(port, ctx);
+                return done.call((std::ptr::null_mut(),));
+            }
+            let err = NSError::new(1, &NSString::from_str("my-browser"));
+            done.call((Retained::as_ptr(&err) as *mut _,));
+        }
+
+        /// The extension's popup, under its toolbar button.
+        #[unsafe(method(webExtensionController:presentPopupForAction:forExtensionContext:completionHandler:))]
+        fn ext_present_popup(
+            &self,
+            _c: &WKWebExtensionController,
+            action: &WKWebExtensionAction,
+            ctx: &WKWebExtensionContext,
+            done: &DynBlock<dyn Fn(*mut NSError)>,
+        ) {
+            let tab = unsafe { action.associatedTab() }.and_then(|t| self.tab_of(&t)).or_else(|| self.active());
+            let (Some(popover), Some(tab)) = (unsafe { action.popupPopover() }, tab) else {
+                let err = NSError::new(1, &NSString::from_str("my-browser"));
+                return done.call((Retained::as_ptr(&err) as *mut _,));
+            };
+            let id = self.extension_id_of(ctx).unwrap_or(0);
+            match tab.extension_button(id) {
+                Some(b) => popover.showRelativeToRect_ofView_preferredEdge(b.bounds(), &b, objc2_foundation::NSRectEdge::MinY),
+                None => {
+                    let content = tab.window().contentView().unwrap();
+                    let f = content.frame();
+                    let corner = objc2_foundation::NSRect::new(NSPoint::new(f.size.width - 40.0, f.size.height - 30.0), objc2_foundation::NSSize::new(30.0, 28.0));
+                    popover.showRelativeToRect_ofView_preferredEdge(corner, &content, objc2_foundation::NSRectEdge::MinY);
+                }
+            }
+            if self.is_bench() {
+                say!("POPUP {id} shown={}", popover.isShown() as u8);
+            }
+            done.call((std::ptr::null_mut(),));
+        }
+
+        /// Icon, title or badge changed: redraw the buttons.
+        #[unsafe(method(webExtensionController:didUpdateAction:forExtensionContext:))]
+        fn ext_action_updated(&self, _c: &WKWebExtensionController, _a: &WKWebExtensionAction, _ctx: &WKWebExtensionContext) {
+            self.refresh_extension_buttons();
+        }
+
+        /// A running extension asks for more API permissions: ask the user.
+        #[unsafe(method(webExtensionController:promptForPermissions:inTab:forExtensionContext:completionHandler:))]
+        fn ext_prompt_permissions(
+            &self,
+            _c: &WKWebExtensionController,
+            permissions: &objc2_foundation::NSSet<NSString>,
+            tab: Option<&ProtocolObject<dyn WKWebExtensionTab>>,
+            ctx: &WKWebExtensionContext,
+            done: &DynBlock<dyn Fn(std::ptr::NonNull<objc2_foundation::NSSet<NSString>>, *mut objc2_foundation::NSDate)>,
+        ) {
+            let items: Vec<String> = permissions.iter().map(|p| p.to_string()).collect();
+            let all = permissions.retain();
+            let done = done.copy();
+            self.prompt_extension(ctx, tab, &format!("use {}", items.join(", ")), move |ok| {
+                let set = if ok { all.clone() } else { objc2_foundation::NSSet::new() };
+                done.call((std::ptr::NonNull::from(&*set), std::ptr::null_mut()));
+            });
+        }
+
+        /// A running extension asks to access sites: ask the user.
+        #[unsafe(method(webExtensionController:promptForPermissionToAccessURLs:inTab:forExtensionContext:completionHandler:))]
+        fn ext_prompt_urls(
+            &self,
+            _c: &WKWebExtensionController,
+            urls: &objc2_foundation::NSSet<NSURL>,
+            tab: Option<&ProtocolObject<dyn WKWebExtensionTab>>,
+            ctx: &WKWebExtensionContext,
+            done: &DynBlock<dyn Fn(std::ptr::NonNull<objc2_foundation::NSSet<NSURL>>, *mut objc2_foundation::NSDate)>,
+        ) {
+            let items: Vec<String> = urls.iter().filter_map(|u| u.host().map(|h| h.to_string())).collect();
+            let all = urls.retain();
+            let done = done.copy();
+            self.prompt_extension(ctx, tab, &format!("read and change {}", items.join(", ")), move |ok| {
+                let set = if ok { all.clone() } else { objc2_foundation::NSSet::new() };
+                done.call((std::ptr::NonNull::from(&*set), std::ptr::null_mut()));
+            });
+        }
+
+        #[unsafe(method(webExtensionController:promptForPermissionMatchPatterns:inTab:forExtensionContext:completionHandler:))]
+        fn ext_prompt_patterns(
+            &self,
+            _c: &WKWebExtensionController,
+            patterns: &objc2_foundation::NSSet<WKWebExtensionMatchPattern>,
+            tab: Option<&ProtocolObject<dyn WKWebExtensionTab>>,
+            ctx: &WKWebExtensionContext,
+            done: &DynBlock<dyn Fn(std::ptr::NonNull<objc2_foundation::NSSet<WKWebExtensionMatchPattern>>, *mut objc2_foundation::NSDate)>,
+        ) {
+            let items: Vec<String> = patterns.iter().map(|p| unsafe { p.string() }.to_string()).collect();
+            let all = patterns.retain();
+            let done = done.copy();
+            self.prompt_extension(ctx, tab, &format!("read and change {}", items.join(", ")), move |ok| {
+                let set = if ok { all.clone() } else { objc2_foundation::NSSet::new() };
+                done.call((std::ptr::NonNull::from(&*set), std::ptr::null_mut()));
+            });
         }
     }
 
@@ -243,7 +408,7 @@ define_class!(
 
         #[unsafe(method(newWindow:))]
         fn new_window_action(&self, _s: Option<&AnyObject>) {
-            let tab = Tab::create(self, None, "", "", false);
+            let tab = Tab::create(self, None, &self.new_tab_url(), "", false);
             self.add_tab(&tab, None, true);
             tab.focus_address_bar();
         }
@@ -410,16 +575,14 @@ impl App {
             None if self.is_bench() => None,
             None => std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/my-browser")),
         };
-        let lock = match &profile {
-            Some(dir) => Some(lock_profile(dir).unwrap_or_else(|e| fatal(mtm, &e))),
-            None => None,
-        };
+        let lock = profile.as_ref().map(|dir| lock_profile(dir).unwrap_or_else(|e| fatal(mtm, &e)));
         let db = profile.as_ref().map(|d| d.join("browser.db"));
         let store = Store::open(db.as_deref()).unwrap_or_else(|e| fatal(mtm, &format!("Can't open the profile: {e}")));
         store.fail_stale_downloads();
         let _ = self.ivars()._lock.set(lock);
         let _ = self.ivars().profile.set(profile.clone());
         let _ = self.ivars().store.set(store);
+        self.apply_theme();
 
         // Cookies and site data: WebKit's store for this profile, or memory only.
         let data_store = match &profile {
@@ -433,6 +596,13 @@ impl App {
         for (n, ok) in privacy::harden_preferences(&prefs, self.store().flag("safe_browsing")) {
             report.push(line(n, true, ok));
         }
+        for (n, ok) in privacy::harden_webpage_preferences(&*unsafe { WKWebpagePreferences::new(mtm) }, true) {
+            report.push(line(n, true, ok));
+        }
+        // The address bar shows the committed address (anti-spoofing).
+        report.push(line("committed_url", true, WKWebView::class().responds_to(sel!(_committedURL))));
+        // Extensions' background pages can play audio (see `host_extension_audio`).
+        report.push(line("ext_background_view", true, WKWebExtensionContext::class().responds_to(sel!(_backgroundWebView))));
         let (pool, tuning) = engine_tuning(&prefs, self.store().flag("jit"), mtm);
         report.extend(tuning.into_iter().map(|(n, v, ok)| line(n, v, ok)));
 
@@ -460,16 +630,13 @@ impl App {
         let _ = self.ivars().extensions.set(extensions);
         self.ivars().report.replace(report);
 
-        for ext in self.store().extensions().into_iter().filter(|e| e.enabled) {
-            self.load_extension(ext.id, &ext.path, Box::new(|_| {}));
-        }
+        self.start_extensions();
 
-        let this = self.retain();
-        privacy::load_tracker_rules(mtm, move |list| {
-            let ok = list.is_some();
-            this.ivars().trackers.replace(list);
-            this.apply_trackers();
-            this.ivars().report.borrow_mut().push(line("trackers", true, ok));
+        self.load_shields(move |this, trackers, local| {
+            let mut report = this.ivars().report.borrow_mut();
+            report.push(line("trackers", true, trackers));
+            report.push(line("local_network_shield", true, local));
+            drop(report);
             this.ready();
         });
         self.start_timer();
@@ -503,10 +670,10 @@ impl App {
         }
         if self.is_bench() {
             for line in self.ivars().report.borrow().iter() {
-                println!("{line}");
+                say!("{line}");
             }
             self.read_commands();
-            println!("READY");
+            say!("READY");
         }
     }
 
@@ -533,6 +700,12 @@ impl App {
             config.setMediaTypesRequiringUserActionForPlayback(WKAudiovisualMediaTypes::All);
             config.setURLSchemeHandler_forURLScheme(Some(ProtocolObject::from_ref(self)), &NSString::from_str(INTERNAL));
             config.setWebExtensionController(Some(iv.extensions.get().unwrap()));
+            let page = WKWebpagePreferences::new(self.mtm());
+            privacy::harden_webpage_preferences(&page, true);
+            config.setDefaultWebpagePreferences(Some(&page));
+            if let Some(ua) = self.user_agent() {
+                config.setApplicationNameForUserAgent(Some(&NSString::from_str(ua)));
+            }
             if let Some(pool) = iv.pool.get().unwrap() {
                 #[allow(deprecated)]
                 config.setProcessPool(pool);
@@ -541,17 +714,93 @@ impl App {
         config
     }
 
-    /// Add or remove the tracker blocker on every tab (it's shared).
+    /// Compile (or look up) the tracker blocker and the local-network shield
+    /// with the current per-site exceptions, and put them on every tab.
+    /// `done(app, trackers_ok, local_ok)`.
+    pub fn load_shields(&self, done: impl FnOnce(&App, bool, bool) + 'static) {
+        let mtm = self.mtm();
+        let store = self.store();
+        let exempt = store.sites_with("shields", "off");
+        let allowed = store.sites_with("local_network", "allow");
+        let this = self.retain();
+        privacy::load_tracker_rules(mtm, exempt, move |trackers| {
+            let this2 = this.clone();
+            privacy::load_local_rules(mtm, allowed, move |local| {
+                let (t, l) = (trackers.is_some(), local.is_some());
+                this2.set_rule_lists(trackers, local);
+                done(&this2, t, l);
+            });
+        });
+    }
+
+    fn set_rule_lists(&self, trackers: Option<Retained<WKContentRuleList>>, local: Option<Retained<WKContentRuleList>>) {
+        let content = self.ivars().content.get().unwrap();
+        for old in [self.ivars().trackers.borrow().clone(), self.ivars().local.borrow().clone()].into_iter().flatten() {
+            unsafe { content.removeContentRuleList(&old) };
+        }
+        // Keep an old list if the new one failed to compile: fail closed.
+        if trackers.is_some() {
+            self.ivars().trackers.replace(trackers);
+        }
+        if local.is_some() {
+            self.ivars().local.replace(local);
+        }
+        self.apply_trackers();
+    }
+
+    /// Add or remove the shared blockers on every tab, following the settings.
     pub fn apply_trackers(&self) {
         let content = self.ivars().content.get().unwrap();
-        if let Some(list) = self.ivars().trackers.borrow().as_ref() {
-            unsafe {
-                content.removeContentRuleList(list);
-                if self.store().flag("block_trackers") {
-                    content.addContentRuleList(list);
+        let lists = [
+            (self.ivars().trackers.borrow().clone(), self.store().flag("block_trackers")),
+            (self.ivars().local.borrow().clone(), self.store().flag("block_local_network")),
+        ];
+        for (list, on) in lists {
+            if let Some(list) = list {
+                unsafe {
+                    content.removeContentRuleList(&list);
+                    if on {
+                        content.addContentRuleList(&list);
+                    }
                 }
             }
         }
+    }
+
+    /// Whether this address gets the full protections: false where the user
+    /// turned Shields down for the site (or a parent domain of it).
+    pub fn shields_up(&self, url: &str) -> bool {
+        let Some(host) = store::site_of(url) else { return true };
+        !self.store().sites_with("shields", "off").iter().any(|s| host == *s || host.ends_with(&format!(".{s}")))
+    }
+
+    /// Safari's own user-agent suffix: sites treat the browser like Safari
+    /// (same engine), and it doesn't stand out as a rare user agent.
+    fn user_agent(&self) -> Option<&str> {
+        self.ivars()
+            .user_agent
+            .get_or_init(|| {
+                let safari = objc2_foundation::NSBundle::bundleWithPath(&NSString::from_str("/Applications/Safari.app"))?;
+                let version = safari.objectForInfoDictionaryKey(&NSString::from_str("CFBundleShortVersionString"))?;
+                let version = version.downcast_ref::<NSString>()?.to_string();
+                version
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '.')
+                    .then(|| format!("Version/{version} Safari/605.1.15"))
+            })
+            .as_deref()
+    }
+
+    /// The browser's look. Web views follow it, so pages see it as
+    /// `prefers-color-scheme`.
+    pub fn apply_theme(&self) {
+        let name = match self.store().setting("theme").as_str() {
+            "light" => Some(unsafe { objc2_app_kit::NSAppearanceNameAqua }),
+            "dark" => Some(unsafe { objc2_app_kit::NSAppearanceNameDarkAqua }),
+            _ => None,
+        };
+        let appearance = name.and_then(objc2_app_kit::NSAppearance::appearanceNamed);
+        NSApplication::sharedApplication(self.mtm()).setAppearance(appearance.as_deref());
     }
 
     pub fn apply_safe_browsing(&self) {
@@ -567,10 +816,15 @@ impl App {
 
     fn new_tab(&self) {
         let home = self.store().setting("homepage");
-        let tab = self.open_tab(&home, false);
+        let tab = self.open_tab(&self.new_tab_url(), false);
         if home.is_empty() {
             tab.focus_address_bar();
         }
+    }
+
+    /// The chosen homepage; empty means the built-in (native) new tab page.
+    fn new_tab_url(&self) -> String {
+        self.store().setting("homepage")
     }
 
     /// Open `url` in a new tab next to the active one.
@@ -631,7 +885,7 @@ impl App {
         unsafe { ext.didActivateTab_previousActiveTab(ProtocolObject::from_ref(tab), prev.as_deref().map(ProtocolObject::from_ref)) };
         let window = self.ext_window_for(tab);
         let prev_window = prev.as_deref().and_then(|p| self.ext_window_for(p));
-        if window.as_ref().map(|w| Retained::as_ptr(w)) != prev_window.as_ref().map(|w| Retained::as_ptr(w)) {
+        if window.as_ref().map(Retained::as_ptr) != prev_window.as_ref().map(Retained::as_ptr) {
             unsafe { ext.didFocusWindow(window.as_deref().map(ProtocolObject::from_ref)) };
         }
     }
@@ -639,7 +893,11 @@ impl App {
     pub fn tab_closed(&self, tab: &Tab) {
         let url = tab.url();
         if !url.is_empty() && !url.starts_with(&format!("{INTERNAL}:")) {
-            self.ivars().closed.borrow_mut().push(url);
+            let mut closed = self.ivars().closed.borrow_mut();
+            if closed.len() >= 100 {
+                closed.remove(0);
+            }
+            closed.push(url);
         }
         // macOS picks the next selected tab in the group; follow it, since
         // "became key" isn't sent when the app isn't frontmost.
@@ -713,6 +971,10 @@ impl App {
         let Some(pos) = tabs.iter().position(|t| self.is_active(t)) else { return };
         let n = tabs.len() as isize;
         self.select_index((pos as isize + delta).rem_euclid(n) as usize);
+    }
+
+    pub fn open_settings_page(&self, page: &str) {
+        self.open_internal(page);
     }
 
     fn open_internal(&self, page: &str) {
@@ -791,7 +1053,7 @@ impl App {
         let bytes = std::fs::metadata(&path).map_or(0, |m| m.len() as i64);
         self.store().finish_download(id, status, bytes);
         if self.is_bench() {
-            println!("DOWNLOAD {status} {path}");
+            say!("DOWNLOAD {status} {path}");
         }
     }
 
@@ -831,53 +1093,17 @@ impl App {
 
     // ---- extensions
 
-    /// Load an unpacked extension and grant what its manifest asks for (the
-    /// user chose to install it). `done` gets its name or an error.
-    pub fn load_extension(&self, id: i64, path: &str, done: Box<dyn FnOnce(Result<String, String>)>) {
-        let mtm = self.mtm();
-        let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(path), true);
-        let this = self.retain();
-        let done = RefCell::new(Some(done));
-        let block = RcBlock::new(move |ext: *mut WKWebExtension, err: *mut NSError| {
-            let Some(done) = done.take() else { return };
-            let Some(ext) = (unsafe { Retained::retain(ext) }) else {
-                let msg = unsafe { err.as_ref() }
-                    .map_or("Couldn't read the extension.".into(), |e| e.localizedDescription().to_string());
-                return done(Err(msg));
-            };
-            let granted = WKWebExtensionContextPermissionStatus::GrantedExplicitly;
-            let ctx = unsafe { WKWebExtensionContext::contextForExtension(&ext) };
-            unsafe {
-                // Stable id: the extension keeps its storage across launches.
-                ctx.setUniqueIdentifier(&NSString::from_str(&format!("ext-{id}")));
-                for p in ext.requestedPermissions().iter() {
-                    ctx.setPermissionStatus_forPermission(granted, &p);
-                }
-                for m in ext.allRequestedMatchPatterns().iter() {
-                    ctx.setPermissionStatus_forMatchPattern(granted, &m);
-                }
-            }
-            let controller = this.ivars().extensions.get().unwrap();
-            match unsafe { controller.loadExtensionContext_error(&ctx) } {
-                Ok(()) => {
-                    let name = unsafe { ext.displayName() }.map(|n| n.to_string()).unwrap_or_else(|| "Extension".into());
-                    this.ivars().ext_contexts.borrow_mut().insert(id, ctx);
-                    done(Ok(name));
-                }
-                Err(e) => done(Err(e.localizedDescription().to_string())),
-            }
-        });
-        unsafe { WKWebExtension::extensionWithResourceBaseURL_completionHandler(&url, &block, mtm) };
-    }
-
-    pub fn unload_extension(&self, id: i64) {
-        if let Some(ctx) = self.ivars().ext_contexts.borrow_mut().remove(&id) {
-            let _ = unsafe { self.ivars().extensions.get().unwrap().unloadExtensionContext_error(&ctx) };
-        }
-    }
-
-    pub fn extension_context(&self, id: i64) -> Option<Retained<WKWebExtensionContext>> {
-        self.ivars().ext_contexts.borrow().get(&id).cloned()
+    /// Ask the user whether an extension may `what` (a sheet on the tab).
+    fn prompt_extension(
+        &self,
+        ctx: &WKWebExtensionContext,
+        tab: Option<&ProtocolObject<dyn WKWebExtensionTab>>,
+        what: &str,
+        done: impl Fn(bool) + 'static,
+    ) {
+        let name = extensions::extension_name(&*unsafe { ctx.webExtension() });
+        let Some(tab) = tab.and_then(|t| self.tab_of(t)).or_else(|| self.active()) else { return done(false) };
+        tab.confirm(&format!("“{name}” wants to {what}"), &["Allow", "Don't Allow"], done);
     }
 
     // ---- bench protocol (benchmark/bench.rs, tests/e2e.rs)
@@ -918,14 +1144,14 @@ impl App {
                 start(&t);
                 t.reload();
             }
-            ("state", Some(t)) => println!("{}", t.state()),
+            ("state", Some(t)) => say!("{}", t.state()),
             ("visible", Some(t)) => {
                 let visible = t.window().occlusionState().contains(NSWindowOcclusionState::Visible);
-                println!("VISIBLE {}", visible as u8);
+                say!("VISIBLE {}", visible as u8);
             }
             ("window", Some(t)) => {
                 let app_active = NSApplication::sharedApplication(self.mtm()).isActive();
-                println!(
+                say!(
                     "WINDOW minimized={} key={} app_active={}",
                     t.window().isMiniaturized() as u8,
                     t.window().isKeyWindow() as u8,
@@ -935,7 +1161,7 @@ impl App {
             ("newtab", _) => {
                 let t = self.open_tab("", false);
                 if arg.is_empty() {
-                    println!("{}", self.tabs_line());
+                    say!("{}", self.tabs_line());
                 } else {
                     start(&t);
                     t.load(arg);
@@ -951,17 +1177,27 @@ impl App {
                     }
                     Some(t) => {
                         self.select(&t);
-                        println!("{}", self.tabs_line());
+                        say!("{}", self.tabs_line());
                     }
-                    None => println!("ERR no tab {i}"),
+                    None => say!("ERR no tab {i}"),
                 }
             }
-            ("tabs", _) => println!("{}", self.tabs_line()),
+            ("tabs", _) => say!("{}", self.tabs_line()),
+            // Click an extension's toolbar button on the active tab.
+            ("extclick", Some(t)) => match self.extension_clicked(arg.parse().unwrap_or(-1), &t) {
+                Ok(()) => say!("EXTCLICK ok"),
+                Err(e) => say!("EXTCLICK err {e}"),
+            },
+            // `EXTBUTTONS <id>:<on 0|1> ...` for the active tab.
+            ("extbuttons", Some(t)) => {
+                let items: Vec<String> = t.extension_buttons().iter().map(|(id, on)| format!("{id}:{}", *on as u8)).collect();
+                say!("EXTBUTTONS {}", items.join(" "));
+            }
             ("sleep", _) => {
                 self.sleep_background_tabs(true);
-                println!("{}", self.tabs_line());
+                say!("{}", self.tabs_line());
             }
-            ("key", _) => println!("KEY {}", if self.press(arg) { "ok" } else { "none" }),
+            ("key", _) => say!("KEY {}", if self.press(arg) { "ok" } else { "none" }),
             ("find", Some(t)) => {
                 t.show_find();
                 t.set_find_text(arg);
@@ -972,7 +1208,19 @@ impl App {
                 t.ivars().find_report.set(true);
                 self.find_in(&t, name == "findprev");
             }
-            ("findbar", Some(t)) => println!("{}", t.find_state()),
+            ("findbar", Some(t)) => say!("{}", t.find_state()),
+            ("home", Some(t)) => say!("{}", t.home_state()),
+            ("netbutton", Some(t)) => say!("NETBUTTON {}", t.net_button_shown() as u8),
+            // The toolbar's home button.
+            ("gohome", Some(t)) => {
+                t.go_home();
+                say!("{}", t.home_state());
+            }
+            // Answer the sheet on screen: `dialog ok|cancel [check]`.
+            ("dialog", Some(t)) => {
+                let ok = arg.starts_with("ok");
+                say!("ANSWERED {}", t.answer_dialog(ok, arg.ends_with("check")) as u8);
+            }
             // Where the selection (the current find match) starts in its text node.
             ("selection", Some(t)) => match t.web() {
                 Some(web) => {
@@ -980,7 +1228,7 @@ impl App {
                         let n = unsafe { r.as_ref() }
                             .and_then(|o| o.downcast_ref::<objc2_foundation::NSNumber>())
                             .map_or(-1, |n| n.integerValue());
-                        println!("SELECTION {n}");
+                        say!("SELECTION {n}");
                     });
                     unsafe {
                         web.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
@@ -991,7 +1239,7 @@ impl App {
                         )
                     };
                 }
-                None => println!("SELECTION -1"),
+                None => say!("SELECTION -1"),
             },
             // Esc in the find field, through the field's own key handling.
             ("findesc", Some(t)) => {
@@ -1002,18 +1250,18 @@ impl App {
                     }
                     None => t.hide_find(),
                 }
-                println!("{}", t.find_state());
+                say!("{}", t.find_state());
             }
             ("bridge", _) => internal::handle(
                 self,
                 arg.split('\t').map(str::to_string).collect(),
                 Box::new(|r| match r {
-                    Ok(json) => println!("BRIDGE ok {json}"),
-                    Err(e) => println!("BRIDGE err {e}"),
+                    Ok(json) => say!("BRIDGE ok {json}"),
+                    Err(e) => say!("BRIDGE err {e}"),
                 }),
             ),
             ("quit", _) => NSApplication::sharedApplication(self.mtm()).terminate(None),
-            _ => println!("ERR unknown command: {cmd}"),
+            _ => say!("ERR unknown command: {cmd}"),
         }
     }
 
@@ -1118,10 +1366,18 @@ fn url_args() -> Vec<String> {
     out
 }
 
-/// Keep only a plain file name: no directories, no hidden-file tricks.
+/// Characters that make a name display differently from what it is:
+/// right-to-left overrides turn "photo\u{202E}gpj.app" into "photoppa.jpg".
+fn is_spoofing_char(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{061C}' | '\u{FEFF}')
+}
+
+/// Keep only a plain file name: no directories, no hidden-file tricks, no
+/// direction overrides.
 fn sanitize_filename(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or("");
-    let clean: String = base.chars().map(|c| if c == ':' || c.is_control() { '_' } else { c }).collect();
+    let clean: String =
+        base.chars().filter(|c| !is_spoofing_char(*c)).map(|c| if c == ':' || c.is_control() { '_' } else { c }).collect();
     let clean = clean.trim().trim_start_matches('.').to_string();
     if clean.is_empty() { "download".into() } else { clean }
 }
@@ -1143,6 +1399,9 @@ fn unique_path(dir: &Path, name: &str) -> PathBuf {
 /// history files and corrupt them.
 fn lock_profile(dir: &Path) -> Result<std::fs::File, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("Can't create the profile folder {}: {e}", dir.display()))?;
+    // History, logins' metadata and extensions: readable by this user only.
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
     let file = std::fs::File::create(dir.join("lock")).map_err(|e| format!("Can't lock the profile: {e}"))?;
     match file.try_lock() {
         Ok(()) => Ok(file),
@@ -1447,6 +1706,8 @@ mod tests {
         assert_eq!(sanitize_filename(".hidden"), "hidden");
         assert_eq!(sanitize_filename("a:b\u{7}.txt"), "a_b_.txt");
         assert_eq!(sanitize_filename("   "), "download");
+        assert_eq!(sanitize_filename("photo\u{202E}gpj.app"), "photogpj.app", "no right-to-left tricks");
+        assert_eq!(sanitize_filename("\u{2067}x.txt"), "x.txt");
         let dir = std::env::temp_dir().join(format!("mybrowser-dl-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(unique_path(&dir, "f.zip"), dir.join("f.zip"));
@@ -1463,6 +1724,8 @@ mod tests {
     fn profile_lock_is_exclusive() {
         let dir = std::env::temp_dir().join(format!("mybrowser-lock-{}", std::process::id()));
         let first = lock_profile(&dir).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700, "private to this user");
         assert!(lock_profile(&dir).is_err(), "second lock must fail");
         drop(first);
         assert!(lock_profile(&dir).is_ok(), "lock is released with the file");

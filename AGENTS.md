@@ -22,7 +22,9 @@ no devtools; extensions yes. Full vision and rules:
   Support/my-browser`) from tests, scripts or experiments. Use `--bench`
   (throwaway) or `--profile <temp dir>`. Parallel instances on one profile
   erased the owner's logins once.
-- **No network requests from the browser's own code.**
+- **No network requests from the browser's own code**, except through the
+  network gate (`src/netgate.rs`): blocked until the owner allows the address
+  in Settings → Network. Never add another path that connects.
 - **Private WebKit selectors:** check `respondsToSelector:` first, report in
   `TUNE` lines, keep the e2e test in sync.
 - **Ask the owner before:**
@@ -36,7 +38,7 @@ no devtools; extensions yes. Full vision and rules:
 
 ```sh
 cargo build --release                  # always test release builds
-cargo test --release                   # 49 tests, ~5 s, opens windows (needs GUI session)
+cargo test --release                   # 73 tests, ~5 s, opens windows (needs GUI session)
 ./target/release/bench --runs 1        # ~2 min quick benchmark (floating window)
 ./target/release/bench                 # ~4 min, compare against benchmark/bars.tsv
 BENCH_VERBOSE=1 ./target/release/bench # per-process footprint at every measurement

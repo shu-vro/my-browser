@@ -6,6 +6,7 @@
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::ffi::c_void;
+use std::ptr::NonNull;
 use std::time::Instant;
 
 use block2::{DynBlock, RcBlock};
@@ -13,7 +14,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{
-    NSApplication, NSControl, NSControlTextEditingDelegate, NSSearchField, NSSearchFieldDelegate, NSTextFieldDelegate,
+    NSMenu, NSMenuItem, NSApplication, NSControl, NSControlTextEditingDelegate, NSSearchField, NSSearchFieldDelegate, NSTextFieldDelegate,
     NSTextView, NSView, NSAlert, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSEventModifierFlags, NSImage,
     NSModalResponseOK, NSOpenPanel, NSTextField, NSWindow, NSWindowCollectionBehavior, NSWindowDelegate,
     NSWindowStyleMask, NSWindowTabbingMode, NSFloatingWindowLevel,
@@ -27,7 +28,8 @@ use objc2_web_kit::{
     WKWebExtensionContext, WKWebExtensionTab, WKWebExtensionTabChangedProperties, WKWebExtensionWindow,
     WKDownload, WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
     WKNavigationResponse, WKNavigationResponsePolicy, WKNavigationType, WKOpenPanelParameters, WKUIDelegate,
-    WKWebView, WKWebViewConfiguration, WKWindowFeatures,
+    WKMediaCaptureType, WKPermissionDecision, WKSecurityOrigin,
+    WKWebView, WKWebViewConfiguration, WKWebpagePreferences, WKWindowFeatures,
 };
 
 use crate::App;
@@ -50,6 +52,7 @@ pub struct TabIvars {
     back: OnceCell<Retained<NSButton>>,
     forward: OnceCell<Retained<NSButton>>,
     reload: OnceCell<Retained<NSButton>>,
+    home_button: OnceCell<Retained<NSButton>>,
     /// None while asleep (or before the first load).
     web: RefCell<Option<Retained<WKWebView>>>,
     /// Last known URL and title; what an asleep tab shows and reloads.
@@ -61,8 +64,9 @@ pub struct TabIvars {
     shown_loading: Cell<Option<bool>>,
     /// When the pending bench navigation started.
     pub nav_start: Cell<Option<Instant>>,
-    /// Set by our own loads; web pages may not navigate to internal pages.
-    allow_internal: Cell<bool>,
+    /// Web pages may not navigate to internal pages. The internal page the browser itself is loading; allowed until it
+    /// commits or fails (WebKit may ask about one navigation more than once).
+    allow_internal: RefCell<Option<String>>,
     /// Find bar (Cmd+F): built on first use.
     find_row: OnceCell<Retained<NSView>>,
     find_field: OnceCell<Retained<NSSearchField>>,
@@ -72,7 +76,44 @@ pub struct TabIvars {
     find_last: RefCell<String>,
     /// Bench: print the next find result.
     pub find_report: Cell<bool>,
+    /// Site button left of the address bar: security state and the site menu.
+    site_button: OnceCell<Retained<NSButton>>,
+    shown_site_symbol: Cell<&'static str>,
+    /// JavaScript dialogs on the current page, and whether the user blocked more.
+    dialogs: Cell<u32>,
+    dialogs_blocked: Cell<bool>,
+    /// The sheet on screen (answered by the bench `dialog` command in tests).
+    alert: RefCell<Option<Retained<NSAlert>>>,
+    /// Recent page-process crashes: (count, last), to stop a crash-reload loop.
+    crashes: Cell<(u32, Option<Instant>)>,
+    /// The next finished load is our error page, not a visit.
+    error_page: Cell<bool>,
+    /// Extension buttons at the right of the toolbar, and (id, on) for each.
+    ext_buttons: RefCell<Vec<(Retained<NSButton>, bool)>>,
+    /// Shown while a network request waits for an answer (netgate.rs).
+    net_button: RefCell<Option<Retained<NSButton>>>,
+    /// Extensions clicked on in this tab: (extension id, site). They turn off
+    /// when the tab leaves that site.
+    pub ext_on: RefCell<Vec<(i64, String)>>,
+    /// An extension waiting for the reload its click caused, to open its popup.
+    pub pending_ext_action: Cell<Option<i64>>,
+    /// An address the user (or the browser) asked for, shown until it commits.
+    requested: RefCell<Option<String>>,
+    /// Downloads this page started; the second one needs the site's permission.
+    page_downloads: Cell<u32>,
+    /// The native new tab page, while the tab has no page.
+    home: RefCell<Option<Retained<NSView>>>,
+    /// What it shows, for the bench `home` command.
+    home_state: RefCell<String>,
 }
+
+/// Permissions a site asks for: (kind, site menu label, what the prompt says it wants to do).
+const SITE_PERMISSIONS: [(&str, &str, &str); 4] = [
+    ("camera", "Camera", "use your camera"),
+    ("microphone", "Microphone", "use your microphone"),
+    ("location", "Location", "see your location"),
+    ("downloads", "Automatic downloads", "download multiple files"),
+];
 
 define_class!(
     #[unsafe(super(NSObject))]
@@ -90,20 +131,36 @@ define_class!(
 
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _n: &NSNotification) {
+            self.app().extensions_leave_site(self, None);
             self.destroy_web();
             self.app().tab_closed(self);
         }
     }
 
     unsafe impl WKNavigationDelegate for Tab {
-        #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
+        /// Every navigation: the safety checks in `action_policy`, then this
+        /// site's protections (off only where the user turned Shields down).
+        #[unsafe(method(webView:decidePolicyForNavigationAction:preferences:decisionHandler:))]
         fn decide_action(
             &self,
             _web: &WKWebView,
             action: &WKNavigationAction,
-            decide: &DynBlock<dyn Fn(WKNavigationActionPolicy)>,
+            prefs: &WKWebpagePreferences,
+            decide: &DynBlock<dyn Fn(WKNavigationActionPolicy, NonNull<WKWebpagePreferences>)>,
         ) {
-            decide.call((self.action_policy(action),));
+            let policy = self.action_policy(action);
+            let url = unsafe { action.request() }.URL().and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default();
+            if is_main_frame(action) && !self.app().shields_up(&url) {
+                crate::privacy::harden_webpage_preferences(prefs, false);
+            }
+            if policy == WKNavigationActionPolicy::Download {
+                let (decide, prefs) = (decide.copy(), prefs.retain());
+                return self.allow_download(move |ok| {
+                    let policy = if ok { WKNavigationActionPolicy::Download } else { WKNavigationActionPolicy::Cancel };
+                    decide.call((policy, NonNull::from(&*prefs)))
+                });
+            }
+            decide.call((policy, NonNull::from(prefs)));
         }
 
         #[unsafe(method(webView:decidePolicyForNavigationResponse:decisionHandler:))]
@@ -114,7 +171,13 @@ define_class!(
             decide: &DynBlock<dyn Fn(WKNavigationResponsePolicy)>,
         ) {
             let download = unsafe { !response.canShowMIMEType() || is_attachment(response) };
-            decide.call((if download { WKNavigationResponsePolicy::Download } else { WKNavigationResponsePolicy::Allow },));
+            if !download {
+                return decide.call((WKNavigationResponsePolicy::Allow,));
+            }
+            let decide = decide.copy();
+            self.allow_download(move |ok| {
+                decide.call((if ok { WKNavigationResponsePolicy::Download } else { WKNavigationResponsePolicy::Cancel },))
+            });
         }
 
         #[unsafe(method(webView:navigationAction:didBecomeDownload:))]
@@ -131,6 +194,12 @@ define_class!(
         #[unsafe(method(webView:didCommitNavigation:))]
         fn did_commit_navigation(&self, _web: &WKWebView, _nav: Option<&WKNavigation>) {
             self.ivars().visit.set(None);
+            self.ivars().requested.replace(None);
+            self.ivars().allow_internal.replace(None);
+            // A new page starts with a clean slate for dialogs and downloads.
+            self.ivars().dialogs.set(0);
+            self.ivars().page_downloads.set(0);
+            self.ivars().dialogs_blocked.set(false);
         }
 
         #[unsafe(method(webView:didFinishNavigation:))]
@@ -139,11 +208,15 @@ define_class!(
             // The title notification can arrive after this; show the final title now.
             self.refresh_toolbar();
             let url = self.url();
-            if url.starts_with("http://") || url.starts_with("https://") {
+            let error_page = self.ivars().error_page.replace(false);
+            if !error_page && (url.starts_with("http://") || url.starts_with("https://")) {
                 let id = self.app().store().add_visit(&url, &self.ivars().title.borrow());
                 self.ivars().visit.set(Some(id));
             }
             self.report_nav("LOADED", &url);
+            if let Some(id) = self.ivars().pending_ext_action.take() {
+                self.app().perform_extension_action(id, self);
+            }
         }
 
         #[unsafe(method(webView:didFailNavigation:withError:))]
@@ -153,16 +226,51 @@ define_class!(
 
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
         fn did_fail_provisional(&self, _web: &WKWebView, _nav: Option<&WKNavigation>, err: &NSError) {
+            // Cancelled (-999): another load replaced this one, and that one
+            // is what the user (and the bench timer) is waiting for.
+            if err.code() == -999 {
+                return;
+            }
             self.report_nav("FAILED", &err.localizedDescription().to_string());
+            self.ivars().requested.replace(None);
+            self.ivars().allow_internal.replace(None);
+            self.refresh_toolbar();
+            // "Interrupted" (102, e.g. it became a download) isn't a failure to show.
+            if err.code() == 102 {
+                return;
+            }
+            let url = err
+                .userInfo()
+                .objectForKey(&NSString::from_str("NSErrorFailingURLStringKey"))
+                .and_then(|u| u.downcast::<NSString>().ok())
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| self.url());
+            let certificate = err.domain().to_string() == "NSURLErrorDomain" && (-1206..=-1200).contains(&err.code());
+            let detail = if certificate {
+                "The site's security certificate isn't valid, so someone could be pretending to be it or reading what you send. The page wasn't opened.".to_string()
+            } else {
+                err.localizedDescription().to_string()
+            };
+            self.show_error(&url, "Can't open this page", &detail);
         }
 
         #[unsafe(method(webViewWebContentProcessDidTerminate:))]
         fn content_process_terminated(&self, web: &WKWebView) {
             if self.app().is_bench() {
-                println!("CRASHED");
+                say!("CRASHED");
             }
-            // The page's process died (crash or memory kill): bring the page back.
-            unsafe { web.reload() };
+            // The page's process died (crash or memory kill): bring the page
+            // back, but not forever: a page that keeps crashing would burn CPU.
+            let (count, last) = self.ivars().crashes.get();
+            let recent = last.is_some_and(|t| t.elapsed().as_secs() < 30);
+            let count = if recent { count + 1 } else { 1 };
+            self.ivars().crashes.set((count, Some(Instant::now())));
+            if count >= 3 {
+                let url = self.url();
+                self.show_error(&url, "This page keeps crashing", "It stopped three times in a row, so it wasn't reloaded again. Reload to try once more.");
+            } else {
+                unsafe { web.reload() };
+            }
         }
     }
 
@@ -190,13 +298,13 @@ define_class!(
         #[unsafe(method(webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:))]
         fn js_alert(&self, _web: &WKWebView, message: &NSString, _frame: &WKFrameInfo, done: &DynBlock<dyn Fn()>) {
             let done = done.copy();
-            self.sheet(message, &["OK"], None, move |_, _| done.call(()));
+            self.page_dialog(message, &["OK"], None, move |_, _| done.call(()));
         }
 
         #[unsafe(method(webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:))]
         fn js_confirm(&self, _web: &WKWebView, message: &NSString, _frame: &WKFrameInfo, done: &DynBlock<dyn Fn(Bool)>) {
             let done = done.copy();
-            self.sheet(message, &["OK", "Cancel"], None, move |ok, _| done.call((Bool::new(ok),)));
+            self.page_dialog(message, &["OK", "Cancel"], None, move |ok, _| done.call((Bool::new(ok),)));
         }
 
         #[unsafe(method(webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:))]
@@ -209,10 +317,30 @@ define_class!(
             done: &DynBlock<dyn Fn(*mut NSString)>,
         ) {
             let done = done.copy();
-            self.sheet(prompt, &["OK", "Cancel"], Some(default.map(|d| d.to_string()).unwrap_or_default()), move |ok, text| {
+            self.page_dialog(prompt, &["OK", "Cancel"], Some(default.map(|d| d.to_string()).unwrap_or_default()), move |ok, text| {
                 let text = text.map(|t| NSString::from_str(&t));
                 done.call((if ok { text.map_or(std::ptr::null_mut(), |t| Retained::as_ptr(&t) as *mut _) } else { std::ptr::null_mut() },));
             });
+        }
+
+        /// Camera and microphone: the site's saved choice, else ask.
+        #[unsafe(method(webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:))]
+        fn media_permission(
+            &self,
+            _web: &WKWebView,
+            origin: &WKSecurityOrigin,
+            _frame: &WKFrameInfo,
+            kind: WKMediaCaptureType,
+            decide: &DynBlock<dyn Fn(WKPermissionDecision)>,
+        ) {
+            let kinds: &[&str] = match kind {
+                WKMediaCaptureType::Camera => &["camera"],
+                WKMediaCaptureType::Microphone => &["microphone"],
+                _ => &["camera", "microphone"],
+            };
+            let decide = decide.copy();
+            let site = unsafe { origin.host() }.to_string().to_ascii_lowercase();
+            self.ask_permission(&site, kinds, move |ok| decide.call((if ok { WKPermissionDecision::Grant } else { WKPermissionDecision::Deny },)));
         }
 
         /// <input type=file>: a native file picker.
@@ -303,9 +431,12 @@ define_class!(
 
         #[unsafe(method(loadURL:forWebExtensionContext:completionHandler:))]
         fn ext_load(&self, url: &NSURL, _c: &WKWebExtensionContext, done: &DynBlock<dyn Fn(*mut NSError)>) {
-            if let Some(u) = url.absoluteString() {
-                self.load(&u.to_string());
+            let url = url.absoluteString().map(|u| u.to_string()).unwrap_or_default();
+            if !extension_may_load(&url) {
+                let err = NSError::new(1, &NSString::from_str("my-browser"));
+                return done.call((Retained::as_ptr(&err) as *mut _,));
             }
+            self.load(&url);
             done.call((std::ptr::null_mut(),));
         }
 
@@ -341,6 +472,101 @@ define_class!(
     }
 
     impl Tab {
+        /// Location (WKUIDelegate, newer than our bindings): saved choice, else ask.
+        #[unsafe(method(webView:requestGeolocationPermissionForOrigin:initiatedByFrame:decisionHandler:))]
+        fn location_permission(
+            &self,
+            _web: &WKWebView,
+            origin: &WKSecurityOrigin,
+            _frame: &WKFrameInfo,
+            decide: &DynBlock<dyn Fn(WKPermissionDecision)>,
+        ) {
+            let decide = decide.copy();
+            let site = unsafe { origin.host() }.to_string().to_ascii_lowercase();
+            self.ask_permission(&site, &["location"], move |ok| decide.call((if ok { WKPermissionDecision::Grant } else { WKPermissionDecision::Deny },)));
+        }
+
+        /// The site button: a menu with this site's protections and permissions.
+        #[unsafe(method(showSiteMenu:))]
+        fn show_site_menu_action(&self, _s: Option<&AnyObject>) {
+            self.show_site_menu();
+        }
+
+        /// Site menu: tag = permission index * 10 + choice (0 ask, 1 allow, 2 block).
+        #[unsafe(method(sitePermission:))]
+        fn site_permission_action(&self, sender: &NSMenuItem) {
+            let Some(site) = crate::store::site_of(&self.url()) else { return };
+            let (kind, choice) = (sender.tag() / 10, sender.tag() % 10);
+            let Some((kind, ..)) = SITE_PERMISSIONS.get(kind as usize) else { return };
+            let value = ["ask", "allow", "deny"][choice as usize % 3];
+            let _ = self.app().store().set_permission(&site, kind, value);
+        }
+
+        /// Site menu: Shields (tag 0) or local network access (tag 1) toggled.
+        #[unsafe(method(siteToggle:))]
+        fn site_toggle_action(&self, sender: &NSMenuItem) {
+            let Some(site) = crate::store::site_of(&self.url()) else { return };
+            let store = self.app().store();
+            let _ = if sender.tag() == 0 {
+                let off = store.permission(&site, "shields").as_deref() == Some("off");
+                store.set_permission(&site, "shields", if off { "ask" } else { "off" })
+            } else {
+                let allowed = store.permission(&site, "local_network").as_deref() == Some("allow");
+                store.set_permission(&site, "local_network", if allowed { "ask" } else { "allow" })
+            };
+            // The blockers are recompiled with the new exception, then the page reloads under them.
+            let this = self.retain();
+            self.app().load_shields(move |_, _, _| this.reload());
+        }
+
+        /// An extension's toolbar button (tag = extension id).
+        #[unsafe(method(extensionClicked:))]
+        fn extension_clicked_action(&self, sender: &NSButton) {
+            if let Err(e) = self.app().extension_clicked(sender.tag() as i64, self) {
+                self.confirm(&e, &["OK"], |_| {});
+            }
+        }
+
+        /// Right-click menu of an extension button: tag = id * 2 + (0 click, 1 always).
+        #[unsafe(method(extensionAccess:))]
+        fn extension_access_action(&self, sender: &NSMenuItem) {
+            let (id, always) = (sender.tag() as i64 / 2, sender.tag() % 2 == 1);
+            let _ = self.app().set_extension_access(id, if always { "always" } else { "click" });
+        }
+
+        #[unsafe(method(manageExtensions:))]
+        fn manage_extensions_action(&self, _s: Option<&AnyObject>) {
+            self.app().open_settings_page("settings#extensions");
+        }
+
+        /// New tab page: Enter in its search field.
+        #[unsafe(method(homeSearch:))]
+        fn home_search_action(&self, sender: &NSTextField) {
+            let text = sender.stringValue().to_string();
+            if !text.trim().is_empty() {
+                let url = self.app().normalize(&text);
+                self.load(&url);
+            }
+        }
+
+        /// New tab page: a most visited site (its address is the button's tooltip).
+        #[unsafe(method(homeSite:))]
+        fn home_site_action(&self, sender: &NSButton) {
+            if let Some(url) = sender.toolTip() {
+                self.load(&url.to_string());
+            }
+        }
+
+        #[unsafe(method(openHomeSettings:))]
+        fn open_home_settings_action(&self, _s: Option<&AnyObject>) {
+            self.app().open_settings_page("settings#general");
+        }
+
+        #[unsafe(method(openSiteSettings:))]
+        fn open_site_settings_action(&self, _s: Option<&AnyObject>) {
+            self.app().open_settings_page("settings#permissions");
+        }
+
         /// KVO on the web view: keep toolbar, title and history in sync.
         #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
         fn observe_value(&self, key: Option<&NSString>, _o: Option<&AnyObject>, _c: Option<&AnyObject>, _ctx: *mut c_void) {
@@ -377,6 +603,16 @@ define_class!(
         #[unsafe(method(goBack:))]
         fn go_back_action(&self, _s: Option<&AnyObject>) {
             self.go_back();
+        }
+
+        #[unsafe(method(showNetworkSettings:))]
+        fn show_network_settings(&self, _s: Option<&AnyObject>) {
+            self.app().open_settings_page("settings#network");
+        }
+
+        #[unsafe(method(goHome:))]
+        fn go_home_action(&self, _s: Option<&AnyObject>) {
+            self.go_home();
         }
 
         #[unsafe(method(goForward:))]
@@ -439,6 +675,8 @@ impl Tab {
             this.attach_web(config);
         } else if !asleep && !url.is_empty() {
             this.load(url);
+        } else if url.is_empty() {
+            this.show_home();
         }
         this.refresh_toolbar();
         this
@@ -500,13 +738,14 @@ impl Tab {
         }
         let content = window.contentView().unwrap();
 
-        // Toolbar row: back, forward, reload/stop, address bar.
+        // Toolbar row: back, forward, reload/stop, home, site button, address bar.
         let top = h - TOOLBAR_H + 2.0;
         let pin_top = NSAutoresizingMaskOptions::ViewMinYMargin;
         let buttons = [
             ("chevron.left", "Back", sel!(goBack:), &self.ivars().back),
             ("chevron.right", "Forward", sel!(goForward:), &self.ivars().forward),
             ("arrow.clockwise", "Reload", sel!(reload:), &self.ivars().reload),
+            ("house", "Home", sel!(goHome:), &self.ivars().home_button),
         ];
         for (i, (symbol, label, action, slot)) in buttons.into_iter().enumerate() {
             let button =
@@ -517,7 +756,17 @@ impl Tab {
             content.addSubview(&button);
             let _ = slot.set(button);
         }
-        let bar_x = 8.0 + 3.0 * BUTTON_W;
+        let site = unsafe {
+            NSButton::buttonWithImage_target_action(&symbol_image("info.circle", "Site settings"), Some(self), Some(sel!(showSiteMenu:)), mtm)
+        };
+        site.setBordered(false);
+        site.setFrame(NSRect::new(NSPoint::new(4.0 + 4.0 * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
+        site.setAutoresizingMask(pin_top);
+        site.setToolTip(Some(&NSString::from_str("Site settings: protections and permissions")));
+        content.addSubview(&site);
+        let _ = self.ivars().site_button.set(site);
+        self.ivars().shown_site_symbol.set("info.circle");
+        let bar_x = 8.0 + 5.0 * BUTTON_W;
         let bar = NSTextField::textFieldWithString(&NSString::from_str(""), mtm);
         bar.setFrame(NSRect::new(NSPoint::new(bar_x, top + 3.0), NSSize::new(w - bar_x - 8.0, 22.0)));
         bar.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | pin_top);
@@ -529,10 +778,42 @@ impl Tab {
         content.addSubview(&bar);
         let _ = self.ivars().bar.set(bar);
         let _ = self.ivars().window.set(window);
+        self.set_extension_buttons(&self.app().extension_buttons(self));
+    }
+
+    /// The native new tab page, filling the page area.
+    fn show_home(&self) {
+        let app = self.app();
+        let store = app.store();
+        let home = crate::home::Home {
+            art: store.flag("home_art"),
+            search: store.flag("home_search"),
+            sites: if store.flag("home_top_sites") { store.top_sites(8) } else { Vec::new() },
+        };
+        self.ivars().home_state.replace(format!(
+            "HOME shown=1 art={} search={} sites={}",
+            home.art as u8,
+            home.search as u8,
+            home.sites.join(",")
+        ));
+        let view = crate::home::build(self, &home, self.web_frame(), self.mtm());
+        view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
+        self.window().contentView().unwrap().addSubview(&view);
+        if let Some(old) = self.ivars().home.replace(Some(view)) {
+            old.removeFromSuperview();
+        }
+    }
+
+    /// `HOME shown=<0|1> art=<0|1> search=<0|1> sites=<urls>`
+    pub fn home_state(&self) -> String {
+        if self.ivars().home.borrow().is_some() { self.ivars().home_state.borrow().clone() } else { "HOME shown=0".into() }
     }
 
     /// Create the web view (waking the tab). Uses `config` for popups.
     fn attach_web(&self, config: &WKWebViewConfiguration) -> Retained<WKWebView> {
+        if let Some(home) = self.ivars().home.take() {
+            home.removeFromSuperview();
+        }
         let content = self.window().contentView().unwrap();
         let web = unsafe { WKWebView::initWithFrame_configuration(WKWebView::alloc(self.mtm()), self.web_frame(), config) };
         web.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
@@ -687,7 +968,7 @@ impl Tab {
                 let label = if found { "" } else { "No matches" };
                 tab.ivars().find_status.get().unwrap().setStringValue(&NSString::from_str(label));
                 if tab.ivars().find_report.replace(false) {
-                    println!("FIND found={}", found as u8);
+                    say!("FIND found={}", found as u8);
                 }
             });
             if let Some(web) = this.web() {
@@ -768,12 +1049,38 @@ impl Tab {
 
     pub fn load(&self, url: &str) {
         let Some(nsurl) = NSURL::URLWithString(&NSString::from_str(url)) else { return };
-        self.ivars().allow_internal.set(url.starts_with(&format!("{INTERNAL}:")));
+        self.ivars().allow_internal.replace(url.starts_with(&format!("{INTERNAL}:")).then(|| url.to_string()));
         let web = self.ensure_web();
         self.ivars().url.replace(url.to_string());
+        self.ivars().requested.replace(Some(url.to_string()));
+        // The user's own load: the page's download count starts over.
+        self.ivars().page_downloads.set(0);
         // Focus moves to the page, so the address bar is free to show the real URL.
         self.window().makeFirstResponder(Some(&web));
         unsafe { web.loadRequest(&NSURLRequest::requestWithURL(&nsurl)) };
+    }
+
+    /// The blocked-requests button is showing.
+    pub fn net_button_shown(&self) -> bool {
+        self.ivars().net_button.borrow().is_some()
+    }
+
+    /// Home button: the new tab page in place of the page. The web view goes
+    /// (and with it the page's memory), like a new tab.
+    pub fn go_home(&self) {
+        if self.web().is_none() && self.ivars().home.borrow().is_some() {
+            return;
+        }
+        self.app().extensions_leave_site(self, None);
+        self.destroy_web();
+        self.ivars().url.replace(String::new());
+        self.ivars().title.replace(String::new());
+        self.show_home();
+        self.refresh_toolbar();
+        self.app().ext_tab_changed(
+            self,
+            WKWebExtensionTabChangedProperties::URL | WKWebExtensionTabChangedProperties::Title,
+        );
     }
 
     pub fn go_back(&self) {
@@ -822,20 +1129,40 @@ impl Tab {
     fn action_policy(&self, action: &WKNavigationAction) -> WKNavigationActionPolicy {
         let request = unsafe { action.request() };
         let url = request.URL().and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default();
-        let link = unsafe { action.navigationType() } == WKNavigationType::LinkActivated;
+        let kind = unsafe { action.navigationType() };
+        let link = kind == WKNavigationType::LinkActivated;
+        let main = is_main_frame(action);
         if url.starts_with(&format!("{INTERNAL}:")) {
             let from_internal = unsafe { action.sourceFrame() }
                 .is_some_and(|f| unsafe { f.securityOrigin().protocol() }.to_string() == INTERNAL);
-            if !(self.ivars().allow_internal.replace(false) || from_internal) {
+            // Internal pages never load in a frame: a site could overlay one
+            // and trick clicks into it (clickjacking "Clear data" or "Uninstall").
+            let ours = self.ivars().allow_internal.borrow().as_deref() == Some(url.as_str());
+            if !(ours || from_internal) || !main {
                 return WKNavigationActionPolicy::Cancel;
             }
         }
+        // Tracking parameters (fbclid, gclid, ...) are dropped before the page
+        // loads, like Brave does. Only plain page loads: a form POST or a
+        // back/forward step is left alone.
+        let get = request.HTTPMethod().is_none_or(|m| m.to_string() == "GET");
+        let fresh = kind != WKNavigationType::BackForward && kind != WKNavigationType::Reload;
+        if main && get && fresh && self.app().shields_up(&url)
+            && let Some(clean) = crate::privacy::strip_tracking_params(&url) {
+                self.load(&clean);
+                return WKNavigationActionPolicy::Cancel;
+            }
         if unsafe { action.shouldPerformDownload() } {
             return WKNavigationActionPolicy::Download;
         }
         if link && unsafe { action.modifierFlags() }.contains(NSEventModifierFlags::Command) {
             self.app().open_tab(&url, true);
             return WKNavigationActionPolicy::Cancel;
+        }
+        // Leaving the site turns off extensions that were clicked on for it,
+        // before the next page can load their scripts.
+        if main && !self.ivars().ext_on.borrow().is_empty() {
+            self.app().extensions_leave_site(self, crate::store::site_of(&url).as_deref());
         }
         WKNavigationActionPolicy::Allow
     }
@@ -858,9 +1185,24 @@ impl Tab {
             unsafe { reload.setAction(Some(action)) };
         }
         let url = match &web {
-            Some(w) => unsafe { w.URL() }.and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default(),
+            Some(w) => self.shown_url(w),
             None => self.url(),
         };
+        // Lock for HTTPS, a warning for plain HTTP, neutral for everything else.
+        let (symbol, label) = if url.starts_with("https://") {
+            ("lock.fill", "Secure connection. Site settings")
+        } else if url.starts_with("http://") {
+            ("exclamationmark.triangle", "Not secure: this page is sent unencrypted. Site settings")
+        } else {
+            ("info.circle", "Site settings")
+        };
+        if let Some(b) = iv.site_button.get() {
+            if iv.shown_site_symbol.replace(symbol) != symbol {
+                b.setImage(Some(&symbol_image(symbol, label)));
+                b.setToolTip(Some(&NSString::from_str(label)));
+            }
+            b.setEnabled(crate::store::site_of(&url).is_some() && !url.starts_with(&format!("{INTERNAL}:")));
+        }
         // Don't clobber what the user is typing.
         if bar.currentEditor().is_none() {
             bar.setStringValue(&NSString::from_str(&url));
@@ -879,6 +1221,33 @@ impl Tab {
         window.setTitle(&NSString::from_str(&shown));
     }
 
+    /// The address to show: what the user asked for while it loads, otherwise
+    /// the page actually on screen. WKWebView.URL switches to a page-started
+    /// navigation's target before it commits, so a page could send itself to
+    /// a slow bank address and keep showing its own fake login under it.
+    fn shown_url(&self, web: &WKWebView) -> String {
+        if let Some(r) = self.ivars().requested.borrow().clone() {
+            return r;
+        }
+        // None if this WebKit lacks the method, Some("") if it has no address.
+        let get = |sel: objc2::runtime::Sel| -> Option<String> {
+            let responds: bool = unsafe { msg_send![web, respondsToSelector: sel] };
+            if !responds {
+                return None;
+            }
+            let u: Option<Retained<NSURL>> = unsafe { msg_send![web, performSelector: sel] };
+            Some(u.and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default())
+        };
+        // An error page shows the address that failed.
+        if let Some(failed) = get(sel!(_unreachableURL)).filter(|u| !u.is_empty()) {
+            return failed;
+        }
+        // Nothing committed yet (a new popup its opener can still write
+        // into) shows as blank, not as the address it's heading to.
+        get(sel!(_committedURL))
+            .unwrap_or_else(|| unsafe { web.URL() }.and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default())
+    }
+
     /// `STATE back=<0|1> forward=<0|1> url=<address bar> title=<window title>`, read from the UI itself.
     pub fn state(&self) -> String {
         let iv = self.ivars();
@@ -894,12 +1263,20 @@ impl Tab {
     /// Print `<kind> <ms> <detail>` for the pending bench navigation, once.
     fn report_nav(&self, kind: &str, detail: &str) {
         if let Some(start) = self.ivars().nav_start.take() {
-            println!("{kind} {:.1} {detail}", start.elapsed().as_secs_f64() * 1000.0);
+            say!("{kind} {:.1} {detail}", start.elapsed().as_secs_f64() * 1000.0);
         }
     }
 
-    /// A sheet on this tab's window. `input` adds a text field. `done(ok, text)`.
-    fn sheet(&self, message: &NSString, buttons: &[&str], input: Option<String>, done: impl Fn(bool, Option<String>) + 'static) {
+    /// A sheet on this tab's window. `input` adds a text field; `checkbox`
+    /// (title, initially on) adds a checkbox. `done(ok, text, checked)`.
+    fn sheet(
+        &self,
+        message: &NSString,
+        buttons: &[&str],
+        input: Option<String>,
+        checkbox: Option<(&str, bool)>,
+        done: impl Fn(bool, Option<String>, bool) + 'static,
+    ) {
         let mtm = self.mtm();
         let alert = NSAlert::new(mtm);
         alert.setMessageText(message);
@@ -912,12 +1289,301 @@ impl Tab {
             alert.setAccessoryView(Some(&f));
             f
         });
+        if let Some((title, on)) = checkbox {
+            alert.setShowsSuppressionButton(true);
+            if let Some(b) = alert.suppressionButton() {
+                b.setTitle(&NSString::from_str(title));
+                b.setState(if on { 1 } else { 0 });
+            }
+        }
+        if self.app().is_bench() {
+            say!("DIALOG {message}");
+        }
+        let this = self.retain();
+        let a = alert.clone();
         let handler = RcBlock::new(move |response: isize| {
+            this.ivars().alert.replace(None);
+            let checked = a.suppressionButton().is_some_and(|b| b.state() == 1);
             // First button is NSAlertFirstButtonReturn (1000).
-            done(response == 1000, field.as_ref().map(|f| f.stringValue().to_string()));
+            done(response == 1000, field.as_ref().map(|f| f.stringValue().to_string()), checked);
         });
+        self.ivars().alert.replace(Some(alert.clone()));
         alert.beginSheetModalForWindow_completionHandler(self.window(), Some(&handler));
     }
+
+    /// alert/confirm/prompt from the page. From the second one on, the user
+    /// can block the rest: an endless alert() loop would otherwise trap the
+    /// tab, since a tab can't close while a sheet is up.
+    fn page_dialog(&self, message: &NSString, buttons: &[&str], input: Option<String>, done: impl Fn(bool, Option<String>) + 'static) {
+        let iv = self.ivars();
+        if iv.dialogs_blocked.get() {
+            return done(false, None);
+        }
+        let n = iv.dialogs.get() + 1;
+        iv.dialogs.set(n);
+        let checkbox = (n >= 2).then_some(("Don't allow more dialogs from this page", false));
+        let this = self.retain();
+        self.sheet(message, buttons, input, checkbox, move |ok, text, block| {
+            if block {
+                this.ivars().dialogs_blocked.set(true);
+            }
+            done(ok, text)
+        });
+    }
+
+    /// Answer the sheet on screen (bench `dialog ok|cancel [check]`).
+    pub fn answer_dialog(&self, ok: bool, check: bool) -> bool {
+        let Some(alert) = self.ivars().alert.borrow().clone() else { return false };
+        if let Some(b) = alert.suppressionButton() {
+            b.setState(if check { 1 } else { 0 });
+        }
+        self.window().endSheet_returnCode(&alert.window(), if ok { 1000 } else { 1001 });
+        true
+    }
+
+    /// A site asked for `kinds` (camera, microphone, location): use the
+    /// saved choice, else ask, remembering the answer unless unticked.
+    fn ask_permission(&self, site: &str, kinds: &[&str], done: impl Fn(bool) + 'static) {
+        let store = self.app().store();
+        let saved: Vec<Option<String>> = kinds.iter().map(|k| store.permission(site, k)).collect();
+        if saved.iter().any(|v| v.as_deref() == Some("deny")) {
+            return done(false);
+        }
+        if saved.iter().all(|v| v.as_deref() == Some("allow")) {
+            return done(true);
+        }
+        let what = if kinds == ["camera", "microphone"] {
+            "use your camera and microphone".to_string()
+        } else {
+            let phrases: Vec<&str> =
+                kinds.iter().filter_map(|k| SITE_PERMISSIONS.iter().find(|(n, ..)| n == k)).map(|(.., p)| *p).collect();
+            phrases.join(" and ")
+        };
+        let message = NSString::from_str(&format!("{site} wants to {what}"));
+        let (this, site, kinds) = (self.retain(), site.to_string(), kinds.iter().map(|k| k.to_string()).collect::<Vec<_>>());
+        self.sheet(&message, &["Allow", "Don't Allow"], None, Some(("Remember for this site", true)), move |ok, _, remember| {
+            if remember {
+                for k in &kinds {
+                    let _ = this.app().store().set_permission(&site, k, if ok { "allow" } else { "deny" });
+                }
+            }
+            done(ok)
+        });
+    }
+
+    /// A question as a sheet on this tab; `done(true)` for the first button.
+    pub fn confirm(&self, message: &str, buttons: &[&str], done: impl Fn(bool) + 'static) {
+        self.sheet(&NSString::from_str(message), buttons, None, None, move |ok, _, _| done(ok));
+    }
+
+    /// Show these extension buttons at the right of the toolbar, shrinking
+    /// the address bar to make room.
+    pub fn set_extension_buttons(&self, items: &[crate::extensions::ExtButton]) {
+        let mtm = self.mtm();
+        let iv = self.ivars();
+        let (Some(window), Some(bar)) = (iv.window.get(), iv.bar.get()) else { return };
+        let content = window.contentView().unwrap();
+        for (b, _) in iv.ext_buttons.borrow_mut().drain(..) {
+            b.removeFromSuperview();
+        }
+        let width = content.frame().size.width;
+        let top = content.frame().size.height - TOOLBAR_H + 2.0;
+        let n = items.len() as f64;
+        // Left of the extension buttons: blocked requests waiting for an answer.
+        let waiting = self.app().net_waiting();
+        if let Some(old) = iv.net_button.take() {
+            old.removeFromSuperview();
+        }
+        if waiting {
+            let b = unsafe {
+                NSButton::buttonWithImage_target_action(
+                    &symbol_image("network.badge.shield.half.filled", "Blocked network requests"),
+                    Some(self),
+                    Some(sel!(showNetworkSettings:)),
+                    mtm,
+                )
+            };
+            b.setBordered(false);
+            b.setContentTintColor(Some(&objc2_app_kit::NSColor::systemOrangeColor()));
+            b.setToolTip(Some(&NSString::from_str("An extension's network request was blocked. Click to allow or deny it.")));
+            b.setFrame(NSRect::new(NSPoint::new(width - 4.0 - (n + 1.0) * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
+            b.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin);
+            content.addSubview(&b);
+            iv.net_button.replace(Some(b));
+        }
+        let mut frame = bar.frame();
+        frame.size.width = width - frame.origin.x - 8.0 - (n + waiting as u8 as f64) * BUTTON_W;
+        bar.setFrame(frame);
+        for (i, item) in items.iter().enumerate() {
+            let b = unsafe { NSButton::buttonWithImage_target_action(&item.image, Some(self), Some(sel!(extensionClicked:)), mtm) };
+            b.setBordered(false);
+            b.setImageScaling(objc2_app_kit::NSImageScaling::ScaleProportionallyDown);
+            b.setTag(item.id as isize);
+            b.setFrame(NSRect::new(NSPoint::new(width - 4.0 - (n - i as f64) * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
+            b.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin);
+            // Dimmed while it's off on this site.
+            b.setAlphaValue(if item.on { 1.0 } else { 0.45 });
+            let hint = if item.always {
+                "runs on every site"
+            } else if item.on {
+                "on for this site"
+            } else {
+                "off; click to turn it on for this site"
+            };
+            b.setToolTip(Some(&NSString::from_str(&format!("{}: {hint}", item.label))));
+            let menu = NSMenu::new(mtm);
+            for (title, tag, on) in [
+                ("Only when clicked", item.id * 2, !item.always),
+                ("On every site", item.id * 2 + 1, item.always),
+            ] {
+                let m = unsafe {
+                    NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str(title), Some(sel!(extensionAccess:)), &NSString::from_str(""))
+                };
+                unsafe { m.setTarget(Some(self)) };
+                m.setTag(tag as isize);
+                m.setState(if on { 1 } else { 0 });
+                menu.addItem(&m);
+            }
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
+            let manage = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str("Manage Extensions…"), Some(sel!(manageExtensions:)), &NSString::from_str(""))
+            };
+            unsafe { manage.setTarget(Some(self)) };
+            menu.addItem(&manage);
+            unsafe { b.setMenu(Some(&menu)) };
+            content.addSubview(&b);
+            iv.ext_buttons.borrow_mut().push((b, item.on));
+        }
+    }
+
+    /// The toolbar button of extension `id`.
+    pub fn extension_button(&self, id: i64) -> Option<Retained<NSButton>> {
+        self.ivars().ext_buttons.borrow().iter().find(|(b, _)| b.tag() as i64 == id).map(|(b, _)| b.clone())
+    }
+
+    /// (extension id, on) for each button, for the bench.
+    pub fn extension_buttons(&self) -> Vec<(i64, bool)> {
+        self.ivars().ext_buttons.borrow().iter().map(|(b, on)| (b.tag() as i64, *on)).collect()
+    }
+
+    /// A page's first download goes ahead; more downloads from the same page
+    /// need the site's permission, so a page can't flood the Downloads folder.
+    fn allow_download(&self, done: impl Fn(bool) + 'static) {
+        let n = self.ivars().page_downloads.get();
+        self.ivars().page_downloads.set(n + 1);
+        match crate::store::site_of(&self.url()) {
+            Some(site) if n > 0 => self.ask_permission(&site, &["downloads"], done),
+            _ => done(true),
+        }
+    }
+
+    /// The site menu under the site button: protections, permissions, settings.
+    fn show_site_menu(&self) {
+        let mtm = self.mtm();
+        let url = self.url();
+        let Some(site) = crate::store::site_of(&url) else { return };
+        let store = self.app().store();
+        let menu = NSMenu::new(mtm);
+        menu.setAutoenablesItems(false);
+        let add = |title: &str, action: Option<objc2::runtime::Sel>, tag: isize, on: bool| {
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str(title), action, &NSString::from_str(""))
+            };
+            if action.is_some() {
+                unsafe { item.setTarget(Some(self)) };
+            } else {
+                item.setEnabled(false);
+            }
+            item.setTag(tag);
+            item.setState(if on { 1 } else { 0 });
+            menu.addItem(&item);
+            item
+        };
+        add(&site, None, 0, false);
+        add(if url.starts_with("https://") { "Connection is secure" } else { "Connection is not secure" }, None, 0, false);
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        let shields = store.permission(&site, "shields").as_deref() != Some("off");
+        add("Block trackers and fingerprinting", Some(sel!(siteToggle:)), 0, shields);
+        let local = store.permission(&site, "local_network").as_deref() == Some("allow");
+        add("Allow access to the local network", Some(sel!(siteToggle:)), 1, local);
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        for (i, (kind, label, _)) in SITE_PERMISSIONS.iter().enumerate() {
+            let current = match store.permission(&site, kind).as_deref() {
+                Some("allow") => 1,
+                Some("deny") => 2,
+                _ => 0,
+            };
+            let item = add(label, None, 0, false);
+            item.setEnabled(true);
+            let sub = NSMenu::new(mtm);
+            for (j, choice) in ["Ask", "Allow", "Block"].iter().enumerate() {
+                let c = unsafe {
+                    NSMenuItem::initWithTitle_action_keyEquivalent(
+                        NSMenuItem::alloc(mtm),
+                        &NSString::from_str(choice),
+                        Some(sel!(sitePermission:)),
+                        &NSString::from_str(""),
+                    )
+                };
+                unsafe { c.setTarget(Some(self)) };
+                c.setTag((i * 10 + j) as isize);
+                c.setState(if j == current { 1 } else { 0 });
+                sub.addItem(&c);
+            }
+            item.setSubmenu(Some(&sub));
+        }
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        add("All site settings…", Some(sel!(openSiteSettings:)), 0, false);
+        let Some(button) = self.ivars().site_button.get() else { return };
+        let below = NSPoint::new(0.0, button.bounds().size.height + 4.0);
+        menu.popUpMenuPositioningItem_atLocation_inView(None, below, Some(button));
+    }
+
+    /// Replace the page with a short explanation, keeping the failed address
+    /// in the address bar (and for Reload). Everything shown is escaped.
+    fn show_error(&self, url: &str, title: &str, detail: &str) {
+        let Some(web) = self.web() else { return };
+        let html = format!(
+            "<!doctype html><meta charset=utf-8><meta http-equiv=Content-Security-Policy content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>{t}</title>\
+             <style>body{{font:15px -apple-system,sans-serif;max-width:560px;margin:18vh auto;padding:0 24px;color:#333}}\
+             @media(prefers-color-scheme:dark){{body{{background:#1c1c1e;color:#ddd}}}}h1{{font-size:22px}}p{{line-height:1.5}}code{{word-break:break-all;opacity:.7}}</style>\
+             <h1>{t}</h1><p>{d}</p><p><code>{u}</code></p>",
+            t = escape_html(title),
+            d = escape_html(detail),
+            u = escape_html(url)
+        );
+        self.ivars().error_page.set(true);
+        let html = NSString::from_str(&html);
+        let unreachable = NSURL::URLWithString(&NSString::from_str(url));
+        let private = sel!(_loadAlternateHTMLString:baseURL:forUnreachableURL:);
+        let responds: bool = unsafe { msg_send![&*web, respondsToSelector: private] };
+        match unreachable {
+            Some(u) if responds => {
+                let _: () = unsafe { msg_send![&*web, _loadAlternateHTMLString: &*html, baseURL: Option::<&NSURL>::None, forUnreachableURL: &*u] };
+            }
+            _ => {
+                unsafe { web.loadHTMLString_baseURL(&html, None) };
+            }
+        }
+    }
+}
+
+/// Text safe to put in HTML.
+pub fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+}
+
+/// Extensions may point tabs at web pages and their own pages, never at the
+/// browser's internal pages (which hold the settings bridge) or local files.
+pub fn extension_may_load(url: &str) -> bool {
+    let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
+    !matches!(scheme.as_str(), "mybrowser" | "file" | "javascript" | "")
+}
+
+/// Whether a navigation replaces the whole page (not a frame inside it). A new
+/// window has no target frame yet; it's a page too.
+fn is_main_frame(action: &WKNavigationAction) -> bool {
+    unsafe { action.targetFrame() }.is_none_or(|f| unsafe { f.isMainFrame() })
 }
 
 /// `Content-Disposition: attachment` means "save this", even for viewable types.
@@ -935,4 +1601,24 @@ unsafe fn is_attachment(response: &WKNavigationResponse) -> bool {
 fn symbol_image(symbol: &str, label: &str) -> Retained<NSImage> {
     NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(symbol), Some(&NSString::from_str(label)))
         .expect("SF Symbol missing")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extensions_cannot_open_internal_pages_or_files() {
+        assert!(extension_may_load("https://example.com/"));
+        assert!(extension_may_load("webkit-extension://abc/options.html"));
+        assert!(extension_may_load("about:blank"));
+        for bad in ["mybrowser://settings", "MyBrowser://settings#extensions", "file:///etc/passwd", "javascript:alert(1)", ""] {
+            assert!(!extension_may_load(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn error_pages_escape_what_they_show() {
+        assert_eq!(escape_html(r#"<img src=x onerror="a('b')">&"#), "&lt;img src=x onerror=&quot;a(&#39;b&#39;)&quot;&gt;&amp;");
+    }
 }

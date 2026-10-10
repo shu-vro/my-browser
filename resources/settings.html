@@ -48,10 +48,12 @@
 <nav>
   <a href="#general">General</a>
   <a href="#privacy">Privacy</a>
+  <a href="#permissions">Site settings</a>
   <a href="#history">History</a>
   <a href="#downloads">Downloads</a>
   <a href="#storage">Storage</a>
   <a href="#extensions">Extensions</a>
+  <a href="#network">Network</a>
 </nav>
 <main>
   <section id="general">
@@ -61,8 +63,18 @@
         <option value="duckduckgo">DuckDuckGo</option><option value="brave">Brave Search</option>
         <option value="startpage">Startpage</option><option value="google">Google</option>
       </select></div>
-    <div class="row"><div><div>New tab page</div><div class="hint">An http(s) address, or leave empty for a blank page.</div></div>
-      <input type="text" data-setting="homepage" placeholder="Blank page" size="32"></div>
+    <div class="row"><div><div>Appearance</div><div class="hint">Websites that support dark mode follow it too.</div></div>
+      <select data-setting="theme">
+        <option value="system">Match macOS</option><option value="light">Light</option><option value="dark">Dark</option>
+      </select></div>
+    <div class="row"><div><div>New tab page</div><div class="hint">An http(s) address, or leave empty for the built-in page below.</div></div>
+      <input type="text" data-setting="homepage" placeholder="Built-in page" size="32"></div>
+    <div class="row"><div><div>Show the banner</div><div class="hint">On the built-in new tab page.</div></div>
+      <input type="checkbox" data-setting="home_art"></div>
+    <div class="row"><div><div>Show a search bar</div><div class="hint">On the built-in new tab page.</div></div>
+      <input type="checkbox" data-setting="home_search"></div>
+    <div class="row"><div><div>Show most visited sites</div><div class="hint">Counted from your history on this Mac. Clearing history clears them.</div></div>
+      <input type="checkbox" data-setting="home_top_sites"></div>
     <div class="row"><div><div>Put background tabs to sleep after</div><div class="hint">A sleeping tab frees its memory and reloads when you click it. 0 = never. All background tabs sleep at once when macOS runs low on memory.</div></div>
       <span><input type="number" min="0" max="1440" data-setting="tab_sleep_minutes" style="width:70px"> minutes</span></div>
     <div class="row"><div><div>Reopen tabs from last time</div><div class="hint">They come back asleep, so they cost almost nothing until clicked.</div></div>
@@ -79,12 +91,20 @@
     <p class="note">This browser sends nothing about you anywhere: no telemetry, no crash reports, no sync. History stays on this Mac.</p>
     <div class="row"><div><div>Block trackers</div><div class="hint">Blocks advertising, analytics, social and fingerprinting trackers (Disconnect's list, also used by Firefox) when they're loaded by other sites.</div></div>
       <input type="checkbox" data-setting="block_trackers"></div>
-    <div class="row"><div><div>Always on</div><div class="hint">Third-party cookies are blocked, WebKit's Intelligent Tracking Prevention is on, and ad-click attribution is off.</div></div>
+    <div class="row"><div><div>Block access to the local network</div><div class="hint">Stops websites from reaching this Mac (localhost) and devices on your network such as routers and printers. Local pages themselves still work, and you can allow single sites from the site menu.</div></div>
+      <input type="checkbox" data-setting="block_local_network"></div>
+    <div class="row"><div><div>Always on</div><div class="hint">HTTPS first (plain HTTP only when a site has no HTTPS), Global Privacy Control, fingerprinting protection, tracking parameters removed from links (fbclid, gclid…), third-party cookies blocked, Intelligent Tracking Prevention, and no ad-click attribution. Turn protections down for one site from its site menu.</div></div>
       <span class="tag">on</span></div>
     <div class="row"><div><div>Fraudulent website warnings</div><div class="hint">Warns about known phishing sites, by sending shortened URL fingerprints to Apple's Safe Browsing service. Off keeps every visit private.</div></div>
       <input type="checkbox" data-setting="safe_browsing"></div>
     <div class="row"><div><div>Clear cookies and site data</div><div class="hint">Signs you out of every site and deletes caches and site storage.</div></div>
       <button class="danger" id="clear-data">Clear…</button></div>
+  </section>
+
+  <section id="permissions">
+    <h1>Site settings</h1>
+    <p class="note">What each site may use. Sites ask the first time; your answer is remembered here. Change it below or from the site button left of the address bar.</p>
+    <ul class="list" id="perm-list"></ul>
   </section>
 
   <section id="history">
@@ -114,13 +134,30 @@
     <p class="note">Earlier builds kept cookies and site data in one shared place. Your profile doesn't use it anymore, so it's safe to delete.</p>
     <ul class="list" id="st-leftovers"></ul>
     <p><button class="danger" id="st-clear-leftovers">Delete leftovers…</button></p>
+    <div id="st-uninstall-box" hidden>
+      <h2>Uninstall</h2>
+      <p class="note">Deletes this browser and everything it keeps (logins, history, downloads list, extensions, settings), then quits. Downloaded files stay. This can't be undone.</p>
+      <ul class="list" id="st-uninstall"></ul>
+      <p><button class="danger" id="st-uninstall-btn">Uninstall my-browser…</button></p>
+    </div>
   </section>
 
   <section id="extensions">
     <h1>Extensions</h1>
-    <p class="note">Install a Safari/Chrome-style web extension from its unpacked folder (the one containing manifest.json). Installing grants it the permissions it lists.</p>
+    <p class="note">Install a Safari/Chrome-style web extension from its unpacked folder (the one containing manifest.json). You'll see what it asks for first.</p>
+    <p class="note">Extensions are off on every site until you click their button in the toolbar there, and turn off again when you leave the site. Choose "On every site" for ones that must always run, like blockers. Right-click a button for the same choice.</p>
     <p><button class="primary" id="install-ext">Install extension…</button></p>
     <ul class="list" id="ext-list"></ul>
+  </section>
+
+  <section id="network">
+    <h1>Network</h1>
+    <p class="note">The browser itself connects to nothing on its own. When an extension needs the browser to connect for it (because WebKit can't), the request is blocked and listed here until you allow it. Requests you don't answer stay blocked, and this list is cleared when you quit.</p>
+    <p class="note">"Allow address" covers that address whatever its query (<code>?…</code>) says; "Allow site" covers every address on that host. Allowed requests are remembered until you remove them.</p>
+    <h2>Blocked this session</h2>
+    <ul class="list" id="net-blocked"></ul>
+    <h2>Allowed</h2>
+    <ul class="list" id="net-allowed"></ul>
   </section>
 </main>
 <div id="toast"></div>
@@ -163,6 +200,39 @@ document.querySelectorAll("[data-setting]").forEach(input => {
 });
 loaders.general = loaders.privacy = loadSettings;
 $("clear-data").onclick = () => { if (confirm("Sign out of all sites and delete all cookies, caches and site data?")) call("data.clear").then(() => toast("Cleared"), fail); };
+
+// ---- site permissions
+const PERM_LABELS = { camera: "Camera", microphone: "Microphone", location: "Location", downloads: "Multiple downloads" };
+async function loadPermissions() {
+  const rows = await call("perm.list");
+  const sites = {};
+  for (const r of rows) (sites[r.site] = sites[r.site] || {})[r.kind] = r.value;
+  const list = $("perm-list"); list.replaceChildren();
+  if (!rows.length) list.append(el("li", "empty", "No site has asked for anything yet."));
+  for (const [site, perms] of Object.entries(sites)) {
+    const li = el("li"); li.style.flexWrap = "wrap";
+    const main = el("div", "main"); main.append(el("div", "title", site)); li.append(main);
+    const set = (kind, value) => call("perm.set", site, kind, value).then(() => { toast("Saved"); loadPermissions(); }, fail);
+    for (const [kind, label] of Object.entries(PERM_LABELS)) {
+      const sel = el("select"); sel.title = label;
+      for (const [v, t] of [["ask", label + ": ask"], ["allow", label + ": allow"], ["deny", label + ": block"]]) {
+        const o = el("option", null, t); o.value = v; sel.append(o);
+      }
+      sel.value = perms[kind] || "ask"; sel.onchange = () => set(kind, sel.value);
+      li.append(sel);
+    }
+    const toggle = (kind, on, label, set_on, set_off) => {
+      const l = el("label", "sub"); const c = el("input"); c.type = "checkbox"; c.checked = on;
+      c.onchange = () => set(kind, c.checked ? set_on : set_off); l.append(c, " " + label); li.append(l);
+    };
+    toggle("shields", perms.shields !== "off", "Protections", "ask", "off");
+    toggle("local_network", perms.local_network === "allow", "Local network", "allow", "ask");
+    const forget = el("button", null, "Reset"); forget.title = "Forget everything about this site";
+    forget.onclick = () => call("perm.forget", site).then(loadPermissions, fail); li.append(forget);
+    list.append(li);
+  }
+}
+loaders.permissions = loadPermissions;
 
 // ---- history
 async function loadHistory() {
@@ -228,12 +298,16 @@ async function loadStorage() {
     main.append(el("div", "sub", l.path)); li.append(main, el("span", "time", size(l.bytes))); list.append(li);
   }
   $("st-clear-leftovers").disabled = !s.leftovers.length;
+  // Only offered from the main profile; the list is exactly what gets deleted.
+  $("st-uninstall-box").hidden = !s.uninstall.length;
+  $("st-uninstall").replaceChildren(...s.uninstall.map(p => { const li = el("li"); li.append(el("div", "sub", p)); return li; }));
 }
 $("st-clear-site").onclick = () => { if (confirm("Sign out of all sites and delete all cookies, caches and site data?")) call("data.clear").then(() => { toast("Cleared"); loadStorage(); }, fail); };
 $("st-clear-cache").onclick = () => call("storage.clear_cache").then(() => { toast("Cache cleared"); loadStorage(); }, fail);
 $("st-clear-history").onclick = () => { if (confirm("Delete all history?")) call("history.clear").then(() => { toast("History cleared"); loadStorage(); }, fail); };
 $("st-clear-downloads").onclick = () => call("downloads.clear").then(() => { toast("List cleared"); loadStorage(); }, fail);
 $("st-clear-leftovers").onclick = () => { if (confirm("Delete the leftover data listed here? This can't be undone.")) call("legacy.clear").then(r => { toast("Freed " + size(r.bytes)); loadStorage(); }, fail); };
+$("st-uninstall-btn").onclick = () => { if (confirm("Delete my-browser and all of its data, then quit? Logins, history and extensions will be gone. This can't be undone.")) call("app.uninstall").catch(fail); };
 loaders.storage = loadStorage;
 
 // ---- extensions
@@ -247,17 +321,49 @@ async function loadExtensions() {
     main.append(el("div", "title", (x.name || x.path.split("/").pop()) + (x.version ? "  " + x.version : "")));
     if (x.description) main.append(el("div", "sub", x.description));
     if (x.permissions.length) main.append(el("div", "sub", "Can access: " + x.permissions.join(", ")));
-    if (x.enabled && !x.loaded) main.append(el("div", "sub", "Failed to load"));
+    if (x.enabled && !x.read) main.append(el("div", "sub", "Couldn't be read"));
+    else if (x.enabled) main.append(el("div", "sub", x.running ? "Running" : "Not running: starts when you first click its button (uses no memory until then)"));
     for (const e of x.errors) main.append(el("div", "sub", "⚠ " + e));
+    const access = el("select"); access.title = "Where it runs";
+    for (const [v, t] of [["click", "Only when clicked"], ["always", "On every site"]]) { const o = el("option", null, t); o.value = v; access.append(o); }
+    access.value = x.access; access.disabled = !x.enabled;
+    access.onchange = () => call("ext.access", x.id, access.value).then(() => { toast("Saved"); loadExtensions(); }, e => { fail(e); loadExtensions(); });
     const toggle = el("input"); toggle.type = "checkbox"; toggle.checked = x.enabled; toggle.title = "Enabled";
     toggle.onchange = () => call("ext.toggle", x.id, toggle.checked ? "1" : "0").then(loadExtensions, e => { fail(e); loadExtensions(); });
     const rm = el("button", "danger", "Remove"); rm.onclick = () => { if (confirm("Remove " + (x.name || "this extension") + "?")) call("ext.remove", x.id).then(loadExtensions, fail); };
-    li.append(main, toggle, rm);
+    li.append(main, access, toggle, rm);
     list.append(li);
   }
 }
 $("install-ext").onclick = () => call("ext.install").then(r => { toast("Installed " + r.name); loadExtensions(); }, e => { if (String(e.message || e) !== "cancelled") fail(e); });
 loaders.extensions = loadExtensions;
+
+// ---- network gate
+async function loadNetwork() {
+  const n = await call("net.list");
+  const blocked = $("net-blocked"); blocked.replaceChildren();
+  if (!n.blocked.length) blocked.append(el("li", "empty", "Nothing blocked this session."));
+  for (const b of n.blocked) {
+    const li = el("li"); const main = el("div", "main");
+    main.append(el("div", "title", b.address), el("div", "sub", b.name + " · " + b.count + (b.count === 1 ? " request" : " requests") + (b.denied ? " · denied" : "")));
+    li.append(main);
+    const allow = (rule) => call("net.allow", b.ext, rule).then(() => { toast("Allowed"); loadNetwork(); }, fail);
+    const one = el("button", "primary", "Allow address"); one.title = b.address + " (any query)"; one.onclick = () => allow(b.address);
+    const site = el("button", null, "Allow site"); site.title = b.site; site.onclick = () => allow(b.site);
+    li.append(one, site);
+    if (!b.denied) { const no = el("button", null, "Deny"); no.onclick = () => call("net.deny", b.ext, b.address).then(loadNetwork, fail); li.append(no); }
+    blocked.append(li);
+  }
+  const allowed = $("net-allowed"); allowed.replaceChildren();
+  if (!n.allowed.length) allowed.append(el("li", "empty", "Nothing allowed."));
+  for (const a of n.allowed) {
+    const li = el("li"); const main = el("div", "main");
+    main.append(el("div", "title", a.rule), el("div", "sub", a.name || "Removed extension"));
+    const rm = el("button", null, "Remove"); rm.onclick = () => call("net.forget", a.ext, a.rule).then(loadNetwork, fail);
+    li.append(main, rm); allowed.append(li);
+  }
+}
+loaders.network = loadNetwork;
 
 show();
 </script>

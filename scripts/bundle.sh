@@ -35,6 +35,21 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+# Hardened runtime: no injected libraries (DYLD_INSERT_LIBRARIES), no
+# debugger attaching, no unsigned code. With it on, macOS only lets the app
+# use the camera, microphone and location if it says so in its entitlements.
+ENT=target/release/entitlements.plist
+cat > "$ENT" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.device.camera</key><true/>
+  <key>com.apple.security.device.audio-input</key><true/>
+  <key>com.apple.security.personal-information.location</key><true/>
+</dict>
+</plist>
+PLIST
 # Ad-hoc signature: required for macOS to remember permission grants.
-codesign --force --sign - "$APP"
+codesign --force --options runtime --entitlements "$ENT" --sign - "$APP"
 echo "built $APP"

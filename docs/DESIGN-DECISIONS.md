@@ -217,6 +217,50 @@ Messenger. Cross-site cookies are the main tracking mechanism.
 
 ---
 
+### How does this compare with Brave, and why use WebKit's switches instead of writing our own?
+
+Brave's Shields: ad and tracker blocking, HTTPS by default, fingerprinting
+"farbling" (noise in canvas, audio and WebGL readback, per site and session),
+tracking-parameter stripping and debouncing, Global Privacy Control, blocking
+sites from localhost, third-party cookie blocking, and per-site Shields down.
+Each has a counterpart here:
+
+| Brave | Here |
+|---|---|
+| Ad/tracker blocking | Disconnect list in WebKit's content blocker (trackers, not cosmetic ad hiding) |
+| HTTPS by default | WebKit's `preferredHTTPSNavigationPolicy`, automatic fallback |
+| Farbling | Safari's Advanced Tracking and Fingerprinting Protection, the same idea in WebKit |
+| Query filtering | Brave's default parameter list, plus WebKit's link decoration filtering |
+| Debouncing (skip bounce trackers) | Not done: needs a maintained list |
+| GPC | WebKit's `globalPrivacyControlEnabled` |
+| Localhost permission | Local-network shield with per-site allow |
+| Shields down per site | Site menu toggle |
+| Safe browsing through a proxy | Off by default (no proxy without a server of our own) |
+
+WebKit's versions run in the engine (network process, page process), cost
+nothing in our code and get Apple's fixes. Writing farbling ourselves would
+mean injecting scripts into every page, which sites can detect and which
+costs memory per frame. The private ones follow the usual rule: checked with
+`respondsToSelector:` and reported in `TUNE` lines that the e2e test checks.
+
+### Why block the local network, and why with a second rule list?
+
+A website can make your browser send requests to `localhost` or `192.168.1.1`:
+attacks on routers, printers, dev servers and apps that listen on localhost.
+Brave and Chrome guard against it. A content-blocker list blocks those
+requests unless the top page is itself local. It's a separate list because
+per-site exemptions use `ignore-previous-rules`, which only reaches rules in
+the same list: one list would make "Shields down" also open the local network.
+Content-blocker regexes have no `|`, hence one rule per address range.
+
+### Why does the address bar show the committed address?
+
+Tested attack: a page sets `location` to a slow site and keeps showing its own
+content. `WKWebView.URL` already shows the new address, so a fake login sat
+under the bank's address for seconds. Browsers show the committed address for
+page-started navigations and the typed one for the user's own. WebKit's
+`_committedURL` gives exactly that; it's private, so it's reported in `TUNE`.
+
 ## Internal pages and extensions
 
 ### Why is the settings page HTML instead of native AppKit?
@@ -275,6 +319,121 @@ current profiles' stores aren't in the list, and a unit test checks that they
 and other apps' files survive.
 
 ---
+
+### Why is the new tab page native AppKit and not HTML?
+
+Measured with `--bench` (total footprint, browser plus WebKit processes):
+
+| New tab | Total |
+|---|---|
+| Blank (no web view) | 28.8 MB |
+| HTML page (`mybrowser://home`, first version) | 72.5 MB |
+| Native page | ~0.5 MB over blank, once per launch |
+
+An HTML page needs a page process per new tab. The native one is a few views.
+Its first version used Auto Layout, stack views, a search field and a
+monospaced font, and cost +2 MB in the app process (30.1 → 32.1 MB); plain
+frames, a text field and drawing the banner as rectangles brought it to
+~+0.5 MB. Drawing the banner layer at 1x was tried and was worse (+1 MB: a
+layer of its own costs more than it saves).
+
+### Why are extensions off until clicked, and started only on first click?
+
+The owner asked for it, and it's the safest default: an extension with
+`<all_urls>` can read every page, including banking. Chrome's "on click" site
+access works the same way. Not starting them until the first click also
+saves memory: an extension's background page or service worker runs in a
+WebKit process.
+
+The page reloads after the first click when the extension has content
+scripts for it: WebKit adds content scripts as user scripts, which only run
+when a document loads. The popup opens after the reload, so it talks to the
+new page. Extensions that must always run (blockers) can be set to "On every
+site" (right-click its button, or Settings).
+
+### How do extensions that need `chrome.offscreen` work?
+
+The system WebKit (macOS 27.0.1) has no `offscreen` API: upstream WebKit has
+one behind the `WebExtensionOffscreenEnabled` setting, but it isn't in this
+build's feature list. Read-aloud extensions (Edge Read Aloud) play their audio
+from an offscreen document, so pressing play did nothing.
+
+For an extension whose manifest asks for `offscreen`, the browser changes its
+copy in the profile (never the folder it was installed from): the background
+service worker becomes a background page that loads
+`resources/offscreen.js` first. That stands in for `chrome.offscreen` with an
+iframe in the background page. Messages and ports from content scripts reach
+the iframe (a port from the background page to its own iframe doesn't).
+
+Audio needed one more step: WebKit only starts media in a web view that's in
+a window, and the background page has none, so its `AudioContext` stayed
+`interrupted`. The stand-in sends one native message
+(`my-browser.offscreen`, the reason for the added `nativeMessaging`
+permission) and the browser puts the background web view
+(`_backgroundWebView`, private, checked and reported as a `TUNE` line) in a
+borderless window that is never shown. Upstream WebKit does the same for its
+own offscreen documents. Measured: `AudioContext.state` went from
+`interrupted` to `running` (`extensions_can_play_audio_from_an_offscreen_document`).
+
+WebKit also ignores `declarativeNetRequest` rules that set the User-Agent on
+an extension's own requests (checked on a WebSocket handshake, even with
+access to every site). Read-aloud services want an Edge User-Agent, so the
+stand-in reads the extension's own rule files and passes the first "set
+User-Agent" value in that native message; the browser sets it as the
+background page's `customUserAgent` (printable ASCII, 512 characters at
+most). It covers every request from that page, not only the rule's URLs;
+it's the extension's own traffic, and no tab is affected. The Origin stays
+`webkit-extension://…`, which no browser code can change.
+
+Limits: a worker that uses `importScripts` or `self.registration` would break
+as a page. When WebKit ships `offscreen`, drop the stand-in.
+
+### Why does the browser connect for extensions, and why only through a gate?
+
+Some services refuse WebKit's own extension connections: WebKit sends a
+`webkit-extension://` Origin and ignores the extension's header rules. Edge
+Read Aloud reported "Speech service connection failed". The only way round it
+is for the browser's own code to open the connection, which the "nothing
+phones home" rule forbade. The owner chose a gate rather than an exception:
+
+- every address is blocked until the owner allows it in Settings → Network;
+- blocked requests are listed for the session only, and not answering means
+  denied;
+- an allowed rule ignores the query (`wss://host/path`), or covers the host
+  (`wss://host/*`), so a changing token doesn't need a new answer;
+- only `wss:`, only hosts the extension's manifest asks for, never this Mac
+  or the local network, no cookies or cache, no Origin.
+
+Memory: nothing exists until the first allowed connection (no URL session,
+no objects). The page side is a script only adapted extensions get. Checked
+by hand against a local echo server (open, text and binary both ways, clean
+close, the rule's User-Agent, no Origin) with a temporary bypass of the
+local-network check; the e2e test covers every refusal and the allow flow.
+
+### Why does the home button drop the web view?
+
+The new tab page is native (see above). Going home destroys the page's web
+view like closing the tab would, so its memory goes. Back can't return to
+the page; Safari's home is a page in history, ours is not one.
+
+### Why does the second dialog get a "don't allow more" checkbox?
+
+An `alert()` in a loop is a sheet that comes straight back, and a window can't
+close while a sheet is up: the tab is trapped. Chrome and Safari offer the
+same escape.
+
+### Why does a page need permission for a second download?
+
+Otherwise a page can fill the Downloads folder (and try many file names)
+without a click. Chrome calls it "automatic downloads". Typed and
+user-initiated loads reset the count.
+
+### Why doesn't bench output use `println!`?
+
+`println!` panics when stdout is closed, and release builds abort on panic. A
+test that failed and dropped the browser's stdout made the next status line
+crash the browser (a crash report on the owner's screen). `say!` ignores
+write errors.
 
 ## Measurement
 

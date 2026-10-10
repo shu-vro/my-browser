@@ -38,8 +38,11 @@ changing the decision, and update it after.
 3. **Measure before optimizing, and keep only measured wins.** Engine settings
    go through `MYB_TUNE` experiments first. Record the evidence in the code
    comment and in `previous-iterations/`.
-4. **Nothing phones home.** No new network request may be made by the browser
-   itself. Website requests are the only traffic.
+4. **Nothing phones home.** The browser never connects on its own. Websites
+   and extensions the user opened make the traffic. The one exception is the
+   network gate (`src/netgate.rs`): connections made for an extension that
+   WebKit can't make itself, each blocked until the user allows its address
+   in Settings → Network. No other code may open a connection.
 5. **Private WebKit APIs are allowed, carefully.** Check
    `respondsToSelector:` first, skip when missing, report in the bench `TUNE`
    lines, and cover with the `engine_and_privacy_settings_are_applied` test.

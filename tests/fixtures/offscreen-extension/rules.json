@@ -1,0 +1,11 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [{ "header": "User-Agent", "operation": "set", "value": "OffscreenPlayerTest/1.0" }]
+    },
+    "condition": { "urlFilter": "||example.invalid/", "resourceTypes": ["websocket", "xmlhttprequest"] }
+  }
+]

@@ -16,6 +16,10 @@ worse is rejected.
   - Built-in tracker blocking: Disconnect's list, the one Firefox uses.
   - All third-party cookies blocked, and WebKit's Intelligent Tracking
     Prevention on.
+  - HTTPS first, Global Privacy Control, Safari's fingerprinting protection,
+    and tracking parameters (fbclid, gclid…) removed from links.
+  - Websites can't reach your Mac's local servers or devices on your network.
+  - Protections can be turned down for one site from its site menu.
   - No ad-click attribution, and no safe-browsing lookups unless you turn them
     on.
   - The browser itself never sends anything anywhere.
@@ -30,12 +34,21 @@ worse is rejected.
   - file upload,
   - JavaScript dialogs.
 - **Find in page** (⌘F, ⌘G, ⇧⌘G).
-- **Web extensions** (Safari/Chrome format, unpacked), managed from the
-  settings page.
+- **Web extensions** (Safari/Chrome format, unpacked) with toolbar buttons
+  and popups. Each one is off on every site until you click its button there,
+  and doesn't even start (no memory) until its first click. Right-click a
+  button to let it run everywhere.
+- **Site permissions:** camera, microphone, location and multiple downloads
+  are asked per site and remembered; see and change them all in Settings →
+  Site settings, or for one site from the button left of the address bar.
 - **Storage controls:** see and clear cookies, cache, history and the
   downloads list, and delete data left behind by older builds.
+- **New tab page** drawn natively (no page process): a banner, a search bar
+  and your most visited sites, each can be turned off.
+- **Light, dark or system appearance**, which sites with a dark mode follow.
 - **Settings** at `mybrowser://settings`, opened with ⌘, : search engine, tab
-  sleep, privacy, history, downloads, storage and extensions.
+  sleep, privacy, history, downloads, storage, extensions, and an uninstall
+  button.
 
 ## Requirements
 
@@ -67,7 +80,7 @@ Command-line flags:
 ## Test and measure
 
 ```sh
-cargo test --release                  # 49 tests, opens real browser windows briefly
+cargo test --release                  # 73 tests, opens real browser windows briefly
 ./target/release/bench                # benchmark against the recorded bars (~4 min)
 ```
 

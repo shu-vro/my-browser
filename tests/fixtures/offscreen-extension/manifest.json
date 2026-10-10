@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Offscreen Player",
+  "version": "1.0",
+  "description": "Test fixture: like read-aloud extensions, plays a tone from an offscreen document, sets its own User-Agent with a rule, and opens WebSockets from the offscreen page; reports in the page title.",
+  "permissions": [
+    "offscreen",
+    "declarativeNetRequest"
+  ],
+  "host_permissions": [
+    "https://gate.invalid/*",
+    "wss://gate.invalid/*"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ua",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "content.js"
+      ]
+    }
+  ],
+  "action": {
+    "default_title": "Offscreen Player"
+  }
+}

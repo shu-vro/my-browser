@@ -138,7 +138,8 @@ impl Browser {
 
 /// A tiny local web server for tests. Routes:
 /// `/page/<t>` (title t), `/setcookie`, `/echo` (title = Cookie header),
-/// `/file.txt` (a download), `/script/<js>` (runs the URL-decoded js).
+/// `/file.txt` (a download), `/script/<js>` (runs the URL-decoded js),
+/// `/slow/<t>` (title t after 2 s).
 fn serve() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -175,6 +176,9 @@ fn handle(mut s: TcpStream) {
         html(format!("<title>cookie:{cookie}</title>"))
     } else if path == "/file.txt" {
         ("text/plain", "Content-Disposition: attachment; filename=\"file.txt\"\r\n".into(), b"hello download".to_vec())
+    } else if let Some(t) = path.strip_prefix("/slow/") {
+        std::thread::sleep(Duration::from_secs(2));
+        html(format!("<title>{t}</title>"))
     } else if let Some(js) = path.strip_prefix("/script/") {
         html(format!("<title>start</title><script>{}</script>", percent_decode(js)))
     } else {
@@ -192,13 +196,12 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::new();
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() + 0 && i + 2 <= b.len() - 1 + 1 {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+        if b[i] == b'%' && i + 2 < b.len() && i + 2 <= b.len() - 1 + 1
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
                 out.push(v);
                 i += 3;
                 continue;
             }
-        }
         out.push(b[i]);
         i += 1;
     }
@@ -230,16 +233,14 @@ impl TempProfile {
 impl Drop for TempProfile {
     fn drop(&mut self) {
         // WebKit keeps the profile's cookies under ~/Library/WebKit/<app>/WebsiteDataStore/<id>.
-        if let Ok(db) = rusqlite::Connection::open(self.0.join("browser.db")) {
-            if let Ok(id) = db.query_row("SELECT value FROM settings WHERE key='profile_id'", [], |r| r.get::<_, String>(0)) {
-                if let Some(home) = std::env::var_os("HOME") {
+        if let Ok(db) = rusqlite::Connection::open(self.0.join("browser.db"))
+            && let Ok(id) = db.query_row("SELECT value FROM settings WHERE key='profile_id'", [], |r| r.get::<_, String>(0))
+                && let Some(home) = std::env::var_os("HOME") {
                     // Cookies and site data, and extension storage, both keyed by the profile id.
                     let webkit = Path::new(&home).join("Library/WebKit/my-browser");
                     let _ = std::fs::remove_dir_all(webkit.join("WebsiteDataStore").join(id.to_lowercase()));
                     let _ = std::fs::remove_dir_all(webkit.join("WebExtensions").join(id.to_uppercase()));
                 }
-            }
-        }
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
@@ -266,6 +267,35 @@ fn failed_load_is_reported() {
     assert!(b.send("go http://127.0.0.1:1/").starts_with("FAILED "));
     // Browser still works afterwards.
     assert!(b.send("go about:blank").starts_with("LOADED "));
+}
+
+#[test]
+fn a_harness_that_stops_reading_does_not_crash_the_browser() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_my-browser"))
+        .arg("--bench")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    while line.trim() != "READY" {
+        line.clear();
+        out.read_line(&mut line).unwrap();
+    }
+    drop(out); // like a test that failed and went away
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, "go about:blank\nstate\ntabs\nquit").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "did not quit");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.success(), "{status:?}");
 }
 
 #[test]
@@ -326,7 +356,13 @@ fn engine_and_privacy_settings_are_applied() {
     names.sort();
     let mut want = [
         "ad_attribution_off",
+        "committed_url",
+        "ext_background_view",
+        "fingerprinting_protection",
+        "global_privacy_control",
+        "https_first",
         "jit",
+        "local_network_shield",
         "pagecache",
         "prewarm",
         "proccache",
@@ -542,6 +578,10 @@ fn downloads_go_to_the_chosen_folder() {
     let path = line.strip_prefix("DOWNLOAD done ").unwrap_or_else(|| panic!("{line}"));
     assert_eq!(Path::new(path), dir.0.join("file.txt"));
     assert_eq!(std::fs::read_to_string(path).unwrap(), "hello download");
+    // Marked as downloaded from the internet (WebKit does it), so Gatekeeper
+    // checks it before it can run.
+    let q = Command::new("/usr/bin/xattr").args(["-p", "com.apple.quarantine", path]).output().unwrap();
+    assert!(q.status.success() && q.stdout.starts_with(b"00"), "{q:?}");
 
     // Same name again: kept apart, not overwritten.
     writeln!(b.stdin, "go {base}/file.txt").unwrap();
@@ -607,6 +647,151 @@ fn web_pages_cannot_use_the_bridge_or_open_internal_pages() {
 }
 
 #[test]
+fn new_tab_page_shows_most_visited_sites() {
+    let base = serve();
+    let mut b = launch();
+    b.nav(&format!("go {base}/page/one"));
+    // A new tab gets the native page: no web view, an empty address bar.
+    b.key("cmd+t");
+    assert!(b.state_until(|s| s.ends_with("title=New Tab")).contains("url= title=New Tab"));
+    assert_eq!(b.send("home"), format!("HOME shown=1 art=1 search=1 sites={base}/"));
+    assert_eq!(b.bridge(&["settings.set", "home_top_sites", "0"]), "true");
+    assert_eq!(b.bridge(&["settings.set", "home_art", "0"]), "true");
+    b.key("cmd+t");
+    assert_eq!(b.send("home"), "HOME shown=1 art=0 search=1 sites=");
+    // Loading a page replaces it.
+    b.nav(&format!("go {base}/page/two"));
+    assert_eq!(b.send("home"), "HOME shown=0");
+    assert_eq!(b.bridge(&["settings.set", "theme", "dark"]), "true");
+    assert!(b.send("bridge settings.set\ttheme\tpurple").starts_with("BRIDGE err "));
+}
+
+#[test]
+fn home_button_shows_the_new_tab_page() {
+    let base = serve();
+    let mut b = launch();
+    b.nav(&format!("go {base}/page/one"));
+    // The page goes (no web view), the new tab page takes its place.
+    assert!(b.send("gohome").starts_with("HOME shown=1 "));
+    assert_eq!(b.send("state"), "STATE back=0 forward=0 url= title=New Tab");
+    assert_eq!(b.send("tabs"), "TABS count=1 active=0 asleep=0 windows=1");
+    // Pressing it again changes nothing; loading a page replaces it.
+    assert!(b.send("gohome").starts_with("HOME shown=1 "));
+    b.nav(&format!("go {base}/page/two"));
+    assert_eq!(b.send("home"), "HOME shown=0");
+}
+
+// ---------------------------------------------------------------------------
+// Attacks and protections
+
+#[test]
+fn pages_cannot_trap_the_tab_with_dialogs() {
+    let base = serve();
+    let mut b = launch();
+    let js = "alert('one');alert('two');document.title='after '+confirm('three')";
+    writeln!(b.stdin, "go {base}/script/{}", encode(js)).unwrap();
+    assert_eq!(b.wait_for("DIALOG "), "DIALOG one");
+    assert_eq!(b.send("dialog ok"), "ANSWERED 1");
+    // From the second dialog on, the user can block the rest.
+    assert_eq!(b.wait_for("DIALOG "), "DIALOG two");
+    assert_eq!(b.send("dialog ok check"), "ANSWERED 1");
+    // The confirm() never shows; the page gets "cancel" and carries on.
+    assert!(b.state_until(|s| s.ends_with("title=after false")).ends_with("title=after false"));
+    // A new page may show dialogs again.
+    writeln!(b.stdin, "go {base}/script/{}", encode("alert('again')")).unwrap();
+    assert_eq!(b.wait_for("DIALOG "), "DIALOG again");
+    assert_eq!(b.send("dialog ok"), "ANSWERED 1");
+}
+
+#[test]
+fn address_bar_cannot_be_spoofed_by_a_slow_navigation() {
+    let base = serve();
+    let other = base.replace("127.0.0.1", "localhost");
+    let mut b = launch();
+    // The page sends itself to a slow "bank" and keeps showing its own content meanwhile.
+    let page = format!("{base}/script/{}", encode(&format!("setTimeout(()=>location='{other}/slow/bank',50)")));
+    b.nav(&format!("go {page}"));
+    std::thread::sleep(Duration::from_millis(600));
+    let s = b.send("state");
+    assert!(s.contains(&format!("url={page}")) && s.ends_with("title=start"), "the bar shows the page on screen: {s}");
+    assert!(b.state_until(|s| s.ends_with("title=bank")).contains(&format!("url={other}/slow/bank")));
+    // What the user types shows right away, before it loads.
+    writeln!(b.stdin, "go {other}/slow/typed").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(b.send("state").contains(&format!("url={other}/slow/typed")));
+}
+
+#[test]
+fn a_page_needs_permission_for_more_than_one_download() {
+    let base = serve();
+    let dir = TempProfile::new("multi-downloads");
+    let mut b = launch();
+    assert_eq!(b.bridge(&["settings.set", "downloads_dir", dir.path()]), "true");
+    let js = "const d=()=>{const a=document.createElement('a');a.href='/file.txt';a.download='f.txt';a.click()};d();setTimeout(d,700)";
+    writeln!(b.stdin, "go {base}/script/{}", encode(js)).unwrap();
+    assert!(b.wait_for("DOWNLOAD ").starts_with("DOWNLOAD done"), "the first one just downloads");
+    assert_eq!(b.wait_for("DIALOG "), "DIALOG 127.0.0.1 wants to download multiple files");
+    assert_eq!(b.send("dialog cancel check"), "ANSWERED 1");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1, "the second was refused");
+    assert!(b.bridge(&["perm.list"]).contains("\"kind\":\"downloads\",\"value\":\"deny\""), "and remembered");
+}
+
+#[test]
+fn failed_loads_show_an_error_page() {
+    let mut b = launch();
+    assert!(b.send("go http://127.0.0.1:1/").starts_with("FAILED "));
+    let s = b.state_until(|s| s.ends_with("title=Can't open this page"));
+    assert!(s.contains("url=http://127.0.0.1:1/") && s.ends_with("title=Can't open this page"), "{s}");
+    assert!(b.bridge(&["history.list", ""]) == "[]", "an error page isn't a visit");
+}
+
+#[test]
+fn websites_cannot_reach_the_local_network() {
+    let base = serve();
+    let mut b = launch();
+    // A page that isn't local (a data: URL) tries to reach a server on this Mac.
+    let probe = format!("fetch('{base}/page/x',{{mode:'no-cors'}}).then(()=>document.title='reached',()=>document.title='blocked')");
+    let remote = format!("go data:text/html,{}", encode(&format!("<title>start</title><script>{probe}</script>")));
+    let outcome = |b: &mut Browser| b.state_until(|s| s.contains("title=reached") || s.contains("title=blocked"));
+    b.nav(&remote);
+    assert!(outcome(&mut b).ends_with("title=blocked"));
+    // A local page may talk to local servers.
+    b.nav(&format!("go {base}/script/{}", encode(&probe)));
+    assert!(outcome(&mut b).ends_with("title=reached"));
+    // The switch in Privacy settings turns the shield off.
+    assert_eq!(b.bridge(&["settings.set", "block_local_network", "0"]), "true");
+    b.nav(&remote);
+    assert!(outcome(&mut b).ends_with("title=reached"));
+}
+
+#[test]
+fn global_privacy_control_is_sent() {
+    let base = serve();
+    let mut b = launch();
+    b.nav(&format!("go {base}/script/{}", encode("document.title='gpc '+navigator.globalPrivacyControl")));
+    assert!(b.state_until(|s| s.ends_with("title=gpc true")).ends_with("title=gpc true"));
+}
+
+#[test]
+fn tracking_parameters_are_removed_unless_shields_are_down() {
+    let base = serve();
+    let mut b = launch();
+    assert_eq!(b.nav(&format!("go {base}/page/x?fbclid=abc&keep=1&gclid=z")), format!("{base}/page/x?keep=1"));
+    // Shields down for this site: the address is left alone.
+    assert_eq!(b.bridge(&["perm.set", "127.0.0.1", "shields", "off"]), "true");
+    // WebKit's own link filtering follows the page being left, so (like the
+    // site menu) reload once under the new setting.
+    b.nav("reload");
+    assert!(b.bridge(&["perm.list"]).contains("\"site\":\"127.0.0.1\",\"kind\":\"shields\",\"value\":\"off\""));
+    assert_eq!(b.nav(&format!("go {base}/page/x?fbclid=abc")), format!("{base}/page/x?fbclid=abc"));
+    assert_eq!(b.bridge(&["perm.forget", "127.0.0.1"]), "true");
+    assert_eq!(b.bridge(&["perm.list"]), "[]");
+    let bad = b.send("bridge perm.set\t127.0.0.1\tcamera\tmaybe");
+    assert!(bad.starts_with("BRIDGE err "), "{bad}");
+}
+
+#[test]
 fn unknown_internal_page_fails() {
     let mut b = launch();
     assert!(b.send("go mybrowser://nope").starts_with("FAILED "));
@@ -616,8 +801,92 @@ fn unknown_internal_page_fails() {
 // Extensions
 
 #[test]
-fn extension_content_script_runs_and_can_be_disabled() {
+fn extensions_can_play_audio_from_an_offscreen_document() {
+    // WebKit has no `chrome.offscreen`; read-aloud extensions need it. The
+    // browser stands in for it, and the player's audio must actually start
+    // (a background page outside a window stays "interrupted").
     let base = serve();
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/offscreen-extension");
+    let profile = TempProfile::new("offscreen");
+    let mut b = launch_with(&["--profile", profile.path()]);
+    let installed = b.bridge(&["ext.install", fixture]);
+    let id: String = installed.split("\"id\":").nth(1).unwrap().chars().take_while(char::is_ascii_digit).collect();
+    b.nav(&format!("go {base}/page/listen"));
+    assert_eq!(b.send(&format!("extclick {id}")), "EXTCLICK ok");
+    let state = b.state_until(|s| s.contains("title=AUDIO"));
+    // Its own rule's User-Agent, which WebKit doesn't apply to extension pages.
+    assert!(state.ends_with("title=AUDIO running OffscreenPlayerTest/1.0"), "{state}");
+    // Only the profile's copy was changed, not the folder installed from.
+    let source = std::fs::read_to_string(format!("{fixture}/manifest.json")).unwrap();
+    assert!(source.contains("service_worker") && !source.contains("nativeMessaging"));
+    b.quit();
+}
+
+#[test]
+fn extension_connections_are_blocked_until_allowed() {
+    // The browser connects for an extension only to addresses the user
+    // allowed: blocked ones are listed for the session, allowed ones kept.
+    let base = serve();
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/offscreen-extension");
+    let profile = TempProfile::new("netgate");
+    let mut b = launch_with(&["--profile", profile.path()]);
+    let installed = b.bridge(&["ext.install", fixture]);
+    let id: String = installed.split("\"id\":").nth(1).unwrap().chars().take_while(char::is_ascii_digit).collect();
+    b.nav(&format!("go {base}/page/listen"));
+    assert_eq!(b.send(&format!("extclick {id}")), "EXTCLICK ok");
+    b.state_until(|s| s.contains("title=AUDIO"));
+    assert_eq!(b.send("netbutton"), "NETBUTTON 0");
+    // The page asks the extension's offscreen page to open a WebSocket.
+    let mut socket = |b: &mut Browser, url: &str| {
+        b.nav(&format!("go {base}/script/{}", encode(&format!("setTimeout(()=>postMessage({{ws:'{url}'}},'*'),100)"))));
+        let s = b.state_until(|s| s.contains("title=WS"));
+        s.split("title=WS ").nth(1).unwrap().to_string()
+    };
+    let blocked = "error close 1006 my-browser: blocked until allowed in Settings → Network";
+    assert_eq!(socket(&mut b, "wss://gate.invalid/tts?token=1"), blocked);
+    assert_eq!(socket(&mut b, "wss://gate.invalid/tts?token=2"), blocked, "another query, same address");
+    assert_eq!(socket(&mut b, "wss://gate.invalid/other"), blocked);
+    assert_eq!(b.send("netbutton"), "NETBUTTON 1");
+    let list = b.bridge(&["net.list"]);
+    assert!(list.contains(r#""address":"wss://gate.invalid/tts","site":"wss://gate.invalid/*","denied":false,"count":2"#), "{list}");
+    // Never offered: hosts the manifest doesn't ask for, this Mac, plain ws:.
+    for (url, why) in [
+        ("wss://elsewhere.invalid/x", "not a site this extension asks for"),
+        ("wss://127.0.0.1/x", "this Mac and the local network are blocked"),
+        ("ws://gate.invalid/x", "only wss: addresses"),
+    ] {
+        assert_eq!(socket(&mut b, url), format!("error close 1006 my-browser: {why}"));
+    }
+    assert!(!b.bridge(&["net.list"]).contains("elsewhere"));
+    // Only a blocked request's address or site can be allowed.
+    assert!(b.send(&format!("bridge net.allow\t{id}\twss://gate.invalid/*x")).starts_with("BRIDGE err "));
+    assert!(b.send(&format!("bridge net.allow\t{id}\twss://evil.invalid/*")).starts_with("BRIDGE err "));
+    // Deny one: still blocked, no longer waiting. Allow the other (any query).
+    assert_eq!(b.bridge(&["net.deny", &id, "wss://gate.invalid/other"]), "true");
+    assert_eq!(b.bridge(&["net.allow", &id, "wss://gate.invalid/tts"]), "true");
+    assert_eq!(b.send("netbutton"), "NETBUTTON 0");
+    let list = b.bridge(&["net.list"]);
+    assert!(list.contains(r#""allowed":[{"ext":"#) && list.contains(r#""rule":"wss://gate.invalid/tts""#), "{list}");
+    assert!(list.contains(r#""address":"wss://gate.invalid/other","site":"wss://gate.invalid/*","denied":true"#), "{list}");
+    // Allowed: the browser connects (the name doesn't exist, so it fails as a
+    // connection, not as a refusal).
+    assert_eq!(socket(&mut b, "wss://gate.invalid/tts?token=3"), "error close 1006");
+    assert_eq!(socket(&mut b, "wss://gate.invalid/other"), blocked);
+    b.quit();
+
+    // Next session: the allowed rule is kept, the blocked list is gone.
+    let mut b = launch_with(&["--profile", profile.path()]);
+    let list = b.bridge(&["net.list"]);
+    assert!(list.starts_with(r#"{"blocked":[],"allowed":[{"#) && list.contains("wss://gate.invalid/tts"), "{list}");
+    assert_eq!(b.bridge(&["net.forget", &id, "wss://gate.invalid/tts"]), "true");
+    assert_eq!(b.bridge(&["net.list"]), r#"{"blocked":[],"allowed":[]}"#);
+    b.quit();
+}
+
+#[test]
+fn extensions_stay_off_until_clicked_then_turn_off_when_leaving_the_site() {
+    let base = serve();
+    let other = base.replace("127.0.0.1", "localhost");
     let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/title-extension");
     // Throwaway profiles count as private browsing, where extensions don't run.
     let profile = TempProfile::new("extension");
@@ -625,13 +894,42 @@ fn extension_content_script_runs_and_can_be_disabled() {
     let installed = b.bridge(&["ext.install", fixture]);
     assert!(installed.contains("\"name\":\"Title Marker\""), "{installed}");
     let id: String = installed.split("\"id\":").nth(1).unwrap().chars().take_while(char::is_ascii_digit).collect();
-
-    b.nav(&format!("go {base}/page/hello"));
-    assert!(b.state_until(|s| s.ends_with("title=EXT hello")).ends_with("title=EXT hello"), "content script ran");
     let list = b.bridge(&["ext.list"]);
-    assert!(list.contains("\"loaded\":true") && list.contains("http://127.0.0.1/*"), "{list}");
+    assert!(list.contains("\"access\":\"click\"") && list.contains("\"running\":false"), "installed, not started: {list}");
+    assert!(list.contains("http://127.0.0.1/*"), "{list}");
 
+    // Off until clicked: the page is untouched, and the button shows it's off.
+    b.nav(&format!("go {base}/page/hello"));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(b.send("state").ends_with("title=hello"), "not running before a click");
+    assert_eq!(b.send("extbuttons"), format!("EXTBUTTONS {id}:0"));
+
+    // A click starts it, turns it on for this site (the page reloads so its
+    // script runs), and opens its popup under the button.
+    assert_eq!(b.send(&format!("extclick {id}")), "EXTCLICK ok");
+    assert_eq!(b.wait_for("POPUP "), format!("POPUP {id} shown=1"));
+    assert!(b.state_until(|s| s.ends_with("title=EXT hello")).ends_with("title=EXT hello"), "content script ran");
+    assert_eq!(b.send("extbuttons"), format!("EXTBUTTONS {id}:1"));
+    assert!(b.bridge(&["ext.list"]).contains("\"running\":true"));
+
+    // Same site: still on. Another site: off, and coming back it stays off.
+    b.nav(&format!("go {base}/page/again"));
+    assert!(b.state_until(|s| s.ends_with("title=EXT again")).ends_with("title=EXT again"));
+    b.nav(&format!("go {other}/page/elsewhere"));
+    assert_eq!(b.send("extbuttons"), format!("EXTBUTTONS {id}:0"));
+    b.nav(&format!("go {base}/page/back"));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(b.send("state").ends_with("title=back"), "off again after leaving the site");
+
+    // "On every site": runs without a click.
+    assert_eq!(b.bridge(&["ext.access", &id, "always"]), "true");
+    b.nav(&format!("go {base}/page/everywhere"));
+    assert!(b.state_until(|s| s.ends_with("title=EXT everywhere")).ends_with("title=EXT everywhere"));
+    assert!(b.send(&format!("bridge ext.access\t{id}\tsometimes")).starts_with("BRIDGE err "));
+
+    // Disabled: no button, never runs.
     assert_eq!(b.bridge(&["ext.toggle", &id, "0"]), "true");
+    assert_eq!(b.send("extbuttons"), "EXTBUTTONS ");
     b.nav(&format!("go {base}/page/plain"));
     std::thread::sleep(Duration::from_millis(300));
     assert!(b.send("state").ends_with("title=plain"), "disabled extension doesn't run");

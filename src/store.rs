@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// Settings the settings page may change, with their defaults.
-pub const SETTINGS: [(&str, &str); 8] = [
+pub const SETTINGS: [(&str, &str); 13] = [
     // duckduckgo | brave | startpage | google
     ("search", "duckduckgo"),
     // Page for new tabs; empty means a blank page.
@@ -20,12 +20,20 @@ pub const SETTINGS: [(&str, &str); 8] = [
     ("restore_session", "1"),
     // Built-in tracker blocker (Disconnect list).
     ("block_trackers", "1"),
+    // Websites can't reach localhost or the local network (sites can be allowed one by one).
+    ("block_local_network", "1"),
     // Safe-browsing lookups send hashed URL prefixes to Apple/Google. Off by default.
     ("safe_browsing", "0"),
     // JavaScript JIT: faster JS, more memory. Applies after restart.
     ("jit", "1"),
     // Where downloads go; empty means ~/Downloads.
     ("downloads_dir", ""),
+    // system | light | dark: the browser's look, which pages see as prefers-color-scheme.
+    ("theme", "system"),
+    // What the built-in new tab page shows.
+    ("home_art", "1"),
+    ("home_search", "1"),
+    ("home_top_sites", "1"),
 ];
 
 pub struct Store {
@@ -53,6 +61,30 @@ pub struct Extension {
     pub id: i64,
     pub path: String,
     pub enabled: bool,
+    /// click: off until its button is clicked on a site | always: on every site.
+    pub access: String,
+}
+
+/// Per-site permissions and the values each may hold. A missing row means the
+/// default: ask (camera, microphone, location, more than one download per
+/// page), blocked (local network),
+/// protections on (shields).
+pub const PERMISSIONS: [(&str, [&str; 2]); 6] = [
+    ("camera", ["allow", "deny"]),
+    ("downloads", ["allow", "deny"]),
+    ("microphone", ["allow", "deny"]),
+    ("location", ["allow", "deny"]),
+    ("local_network", ["allow", "deny"]),
+    ("shields", ["on", "off"]),
+];
+
+/// A site as permissions see it: the lowercase host name of an address.
+pub fn site_of(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = if host.starts_with('[') { host.split_inclusive(']').next()? } else { host.split(':').next()? };
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
 pub fn now() -> i64 {
@@ -78,8 +110,17 @@ impl Store {
                  status TEXT NOT NULL, bytes INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS extensions (
                  id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL DEFAULT 1);
-             CREATE TABLE IF NOT EXISTS session (pos INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL);",
+             CREATE TABLE IF NOT EXISTS session (pos INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS permissions (
+                 site TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (site, kind)) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS net_allowed (
+                 ext INTEGER NOT NULL, rule TEXT NOT NULL, UNIQUE (ext, rule));",
         )?;
+        // Added after the first release: extensions run only where clicked unless set to "always".
+        let has_access: bool = db.prepare("SELECT access FROM extensions LIMIT 0").is_ok();
+        if !has_access {
+            db.execute_batch("ALTER TABLE extensions ADD COLUMN access TEXT NOT NULL DEFAULT 'click'")?;
+        }
         Ok(Store { db })
     }
 
@@ -119,7 +160,10 @@ impl Store {
             "search" => ["duckduckgo", "brave", "startpage", "google"].contains(&value),
             "homepage" => value.is_empty() || value.starts_with("https://") || value.starts_with("http://"),
             "tab_sleep_minutes" => value.parse::<u32>().is_ok_and(|m| m <= 24 * 60),
-            "restore_session" | "block_trackers" | "safe_browsing" | "jit" => value == "0" || value == "1",
+            "theme" => ["system", "light", "dark"].contains(&value),
+            "restore_session" | "block_trackers" | "block_local_network" | "safe_browsing" | "jit" | "home_art" | "home_search" | "home_top_sites" => {
+                value == "0" || value == "1"
+            }
             "downloads_dir" => value.is_empty() || Path::new(value).is_dir(),
             _ => return Err(format!("unknown setting {key}")),
         };
@@ -157,6 +201,26 @@ impl Store {
         })
         .map(|rows| rows.filter_map(Result::ok).collect())
         .unwrap_or_default()
+    }
+
+    /// The most visited sites (scheme and host), most visited first, counted
+    /// over the latest 5000 visits so it stays fast and follows current habits.
+    pub fn top_sites(&self, limit: usize) -> Vec<String> {
+        let Ok(mut stmt) = self.db.prepare("SELECT url FROM history ORDER BY id DESC LIMIT 5000") else { return Vec::new() };
+        // site -> (visits, rank of its newest visit)
+        let mut counts: std::collections::HashMap<String, (usize, usize)> = std::collections::HashMap::new();
+        let urls = stmt.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>());
+        for (i, url) in urls.unwrap_or_default().iter().enumerate() {
+            let Some((scheme, rest)) = url.split_once("://") else { continue };
+            let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+            if !host.is_empty() {
+                counts.entry(format!("{scheme}://{host}/")).or_insert((0, i)).0 += 1;
+            }
+        }
+        // Equal counts: the most recently visited first.
+        let mut counts: Vec<_> = counts.into_iter().collect();
+        counts.sort_by_key(|(_, (n, newest))| (std::cmp::Reverse(*n), *newest));
+        counts.into_iter().take(limit).map(|(s, _)| s).collect()
     }
 
     pub fn history_count(&self) -> i64 {
@@ -225,10 +289,12 @@ impl Store {
     }
 
     pub fn extensions(&self) -> Vec<Extension> {
-        let Ok(mut stmt) = self.db.prepare("SELECT id, path, enabled FROM extensions ORDER BY id") else {
+        let Ok(mut stmt) = self.db.prepare("SELECT id, path, enabled, access FROM extensions ORDER BY id") else {
             return Vec::new();
         };
-        stmt.query_map([], |r| Ok(Extension { id: r.get(0)?, path: r.get(1)?, enabled: r.get::<_, i64>(2)? == 1 }))
+        stmt.query_map([], |r| {
+            Ok(Extension { id: r.get(0)?, path: r.get(1)?, enabled: r.get::<_, i64>(2)? == 1, access: r.get(3)? })
+        })
             .map(|rows| rows.filter_map(Result::ok).collect())
             .unwrap_or_default()
     }
@@ -237,8 +303,89 @@ impl Store {
         let _ = self.db.execute("UPDATE extensions SET enabled = ?2 WHERE id = ?1", params![id, enabled as i64]);
     }
 
+    pub fn set_extension_access(&self, id: i64, access: &str) -> Result<(), String> {
+        if !["click", "always"].contains(&access) {
+            return Err("access must be click or always".into());
+        }
+        let _ = self.db.execute("UPDATE extensions SET access = ?2 WHERE id = ?1", params![id, access]);
+        Ok(())
+    }
+
     pub fn remove_extension(&self, id: i64) {
         let _ = self.db.execute("DELETE FROM extensions WHERE id = ?1", [id]);
+        let _ = self.db.execute("DELETE FROM net_allowed WHERE ext = ?1", [id]);
+    }
+
+    // ---- network requests the user allowed (see netgate.rs)
+
+    /// Every allowed (extension id, rule), oldest first.
+    pub fn net_allowed(&self) -> Vec<(i64, String)> {
+        let Ok(mut stmt) = self.db.prepare("SELECT ext, rule FROM net_allowed ORDER BY rowid") else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    pub fn allow_net(&self, ext: i64, rule: &str) {
+        let _ = self.db.execute("INSERT OR IGNORE INTO net_allowed (ext, rule) VALUES (?1, ?2)", rusqlite::params![ext, rule]);
+    }
+
+    pub fn forget_net(&self, ext: i64, rule: &str) {
+        let _ = self.db.execute("DELETE FROM net_allowed WHERE ext = ?1 AND rule = ?2", rusqlite::params![ext, rule]);
+    }
+
+    // ---- site permissions
+
+    pub fn permission(&self, site: &str, kind: &str) -> Option<String> {
+        self.db
+            .query_row("SELECT value FROM permissions WHERE site = ?1 AND kind = ?2", [site, kind], |r| r.get(0))
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// Set a site's permission; "ask" (or "default") forgets it. Validated,
+    /// since the settings page is web content.
+    pub fn set_permission(&self, site: &str, kind: &str, value: &str) -> Result<(), String> {
+        let values = PERMISSIONS.iter().find(|(k, _)| *k == kind).map(|(_, v)| v).ok_or(format!("unknown permission {kind}"))?;
+        let valid_site = !site.is_empty()
+            && site.len() <= 253
+            && site.chars().all(|c| c.is_ascii_alphanumeric() || "-.:[]_".contains(c))
+            && site == site.to_ascii_lowercase();
+        if !valid_site {
+            return Err("invalid site".into());
+        }
+        if value == "ask" || value == "default" {
+            let _ = self.db.execute("DELETE FROM permissions WHERE site = ?1 AND kind = ?2", [site, kind]);
+        } else if values.contains(&value) {
+            let _ = self.db.execute(
+                "INSERT INTO permissions (site, kind, value) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(site, kind) DO UPDATE SET value = excluded.value",
+                [site, kind, value],
+            );
+        } else {
+            return Err(format!("invalid value for {kind}"));
+        }
+        Ok(())
+    }
+
+    /// (site, kind, value), by site.
+    pub fn permissions(&self) -> Vec<(String, String, String)> {
+        let Ok(mut stmt) = self.db.prepare("SELECT site, kind, value FROM permissions ORDER BY site, kind") else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
+    }
+
+    /// Sites where `kind` is set to `value`, sorted.
+    pub fn sites_with(&self, kind: &str, value: &str) -> Vec<String> {
+        self.permissions().into_iter().filter(|(_, k, v)| k == kind && v == value).map(|(s, ..)| s).collect()
+    }
+
+    pub fn forget_site(&self, site: &str) {
+        let _ = self.db.execute("DELETE FROM permissions WHERE site = ?1", [site]);
     }
 
     // ---- session (open tabs, for restore at launch)
@@ -299,6 +446,10 @@ mod tests {
         assert!(s.set_setting("profile_id", "x").is_err(), "internal keys are not settable");
         assert!(s.set_setting("downloads_dir", "/definitely/not/here").is_err());
         assert!(s.set_setting("jit", "2").is_err());
+        assert_eq!(s.setting("theme"), "system");
+        assert!(s.set_setting("theme", "dark").is_ok());
+        assert!(s.set_setting("theme", "purple").is_err());
+        assert!(s.set_setting("home_top_sites", "0").is_ok());
     }
 
     #[test]
@@ -317,6 +468,18 @@ mod tests {
         assert_eq!(s.history("", 10).len(), 1);
         s.clear_history();
         assert!(s.history("", 10).is_empty());
+    }
+
+    #[test]
+    fn top_sites_by_visits() {
+        let s = Store::open(None).unwrap();
+        for u in ["https://a.example/1", "https://b.example/", "https://a.example/2?x", "http://b.example/", "https://a.example"] {
+            s.add_visit(u, "");
+        }
+        s.add_visit("https://c.example/", "");
+        s.add_visit("https://b.example/x", "");
+        assert_eq!(s.top_sites(3), ["https://a.example/", "https://b.example/", "https://c.example/"]);
+        assert_eq!(s.top_sites(1).len(), 1);
     }
 
     #[test]
@@ -350,6 +513,51 @@ mod tests {
         assert!(s.extensions().is_empty());
         s.save_session(&[("https://a/".into(), "A".into()), ("https://b/".into(), "B".into())]);
         assert_eq!(s.session()[1].0, "https://b/");
+    }
+
+    #[test]
+    fn site_permissions() {
+        let s = Store::open(None).unwrap();
+        assert_eq!(s.permission("a.example", "camera"), None, "ask by default");
+        s.set_permission("a.example", "camera", "allow").unwrap();
+        s.set_permission("a.example", "shields", "off").unwrap();
+        s.set_permission("b.example", "shields", "off").unwrap();
+        assert_eq!(s.permission("a.example", "camera").as_deref(), Some("allow"));
+        assert_eq!(s.sites_with("shields", "off"), ["a.example", "b.example"]);
+        s.set_permission("a.example", "camera", "ask").unwrap();
+        assert_eq!(s.permission("a.example", "camera"), None);
+        assert!(s.set_permission("a.example", "camera", "maybe").is_err());
+        assert!(s.set_permission("a.example", "notifications", "allow").is_err());
+        assert!(s.set_permission("A.example", "camera", "allow").is_err(), "sites are lowercase");
+        assert!(s.set_permission("a.example/\"", "camera", "allow").is_err());
+        s.forget_site("a.example");
+        assert_eq!(s.permissions().len(), 1);
+    }
+
+    #[test]
+    fn sites_from_addresses() {
+        assert_eq!(site_of("https://WWW.Example.com:8443/a?b#c").as_deref(), Some("www.example.com"));
+        assert_eq!(site_of("http://user:pw@host.example/").as_deref(), Some("host.example"));
+        assert_eq!(site_of("http://[::1]:8080/").as_deref(), Some("[::1]"));
+        assert_eq!(site_of("about:blank"), None);
+        assert_eq!(site_of("https:///x"), None);
+    }
+
+    #[test]
+    fn old_profiles_get_the_extension_access_column() {
+        let dir = std::env::temp_dir().join(format!("mybrowser-migrate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("browser.db");
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch("CREATE TABLE extensions (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL DEFAULT 1); INSERT INTO extensions (path) VALUES ('/x');").unwrap();
+        drop(old);
+        let s = Store::open(Some(&path)).unwrap();
+        assert_eq!(s.extensions()[0].access, "click", "existing extensions become click-to-run");
+        s.set_extension_access(1, "always").unwrap();
+        assert!(s.set_extension_access(1, "sometimes").is_err());
+        drop(s);
+        assert_eq!(Store::open(Some(&path)).unwrap().extensions()[0].access, "always");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
