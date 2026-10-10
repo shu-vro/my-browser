@@ -1,0 +1,27 @@
+name: CI
+# The same checks as .githooks/pre-commit, on every push to main and every PR.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    # The e2e tests open real browser windows; GitHub's macOS runners have a
+    # logged-in GUI session.
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup update stable && rustup default stable && rustup component add rustfmt clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+      - run: cargo fmt --check
+      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo test --release
