@@ -104,6 +104,8 @@ pub struct AppIvars {
     ready: Cell<bool>,
     /// Links and files macOS asked us to open before then.
     pending_urls: RefCell<Vec<String>>,
+    /// The Web Store extension whose package the user asked to add.
+    expected_package: RefCell<Option<String>>,
 }
 
 define_class!(
@@ -199,16 +201,26 @@ define_class!(
             suggested: &NSString,
             done: &DynBlock<dyn Fn(*mut NSURL)>,
         ) {
-            let dir = self.downloads_dir();
-            let path = unique_path(&dir, &sanitize_filename(&suggested.to_string()));
             let url = unsafe { download.originalRequest() }
                 .and_then(|r| r.URL())
                 .and_then(|u| u.absoluteString())
                 .map(|s| s.to_string())
                 .unwrap_or_default();
+            // The package of a Web Store extension the user is adding: a
+            // temporary file, installed when it arrives, not a download.
+            let package = self.ivars().expected_package.borrow().clone().filter(|id| url == extensions::webstore_package_url(id));
+            let path = match &package {
+                Some(id) => {
+                    let dir = extensions::unpack_root();
+                    let _ = std::fs::create_dir_all(&dir);
+                    dir.join(format!("{id}.crx"))
+                }
+                None => unique_path(&self.downloads_dir(), &sanitize_filename(&suggested.to_string())),
+            };
             // The file stays; a private window's download isn't listed.
-            let private = unsafe { download.webView() }.is_some_and(|w| self.is_private_store(&*unsafe { w.configuration().websiteDataStore() }));
-            let id = if private { 0 } else { self.store().add_download(&url, &path.to_string_lossy()) };
+            let private = unsafe { download.webView() }
+                .is_some_and(|w| self.is_private_store(&*unsafe { w.configuration().websiteDataStore() }));
+            let id = if private || package.is_some() { 0 } else { self.store().add_download(&url, &path.to_string_lossy()) };
             if let Some(entry) = self.ivars().downloads.borrow_mut().get_mut(&key(download)) {
                 entry.0 = id;
                 entry.2 = path.to_string_lossy().into_owned();
@@ -1460,6 +1472,39 @@ impl App {
         if self.is_bench() {
             say!("DOWNLOAD {status} {path}");
         }
+        let package = Path::new(&path).starts_with(extensions::unpack_root()) && path.ends_with(".crx");
+        if package && self.ivars().expected_package.take().is_some() && status == "done" {
+            self.install_package(PathBuf::from(&path));
+        }
+    }
+
+    /// The user is adding Web Store extension `id`: its package download is
+    /// expected (and nothing else is installed without being picked).
+    pub fn expect_package(&self, id: &str) {
+        self.ivars().expected_package.replace(Some(id.to_string()));
+    }
+
+    /// Install a downloaded package, after the usual prompt. Problems show on
+    /// the active tab.
+    fn install_package(&self, file: PathBuf) {
+        let this = self.retain();
+        let f = file.clone();
+        internal::install_extension(
+            self,
+            file,
+            Box::new(move |result| {
+                let _ = std::fs::remove_file(&f);
+                match result {
+                    Ok(json) if this.is_bench() => say!("INSTALLED {json}"),
+                    Err(e) if e != "cancelled" => {
+                        if let Some(t) = this.active() {
+                            t.confirm(&format!("Couldn't add the extension.\n\n{e}"), &["OK"], |_| {});
+                        }
+                    }
+                    _ => {}
+                }
+            }),
+        );
     }
 
     /// (downloads row, completed bytes, total bytes) for downloads in flight.
@@ -1623,6 +1668,7 @@ impl App {
             ("findbar", Some(t)) => say!("{}", t.find_state()),
             ("home", Some(t)) => say!("{}", t.home_state()),
             ("netbutton", Some(t)) => say!("NETBUTTON {}", t.net_button_shown() as u8),
+            ("storebutton", Some(t)) => say!("STOREBUTTON {}", t.store_button_shown() as u8),
             ("star", Some(t)) => say!("{}", t.star_state()),
             ("reader", Some(t)) => t.toggle_reader(),
             // Run JavaScript in the page (as the page, with a user gesture):

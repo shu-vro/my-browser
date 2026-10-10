@@ -455,6 +455,92 @@ fn with_script(html: &str, tag: &str) -> String {
     format!("{}{tag}{}", &html[..at], &html[at..])
 }
 
+/// Where packages are unpacked before they're installed (copied into the
+/// profile, after which the unpacked copy is deleted).
+pub fn unpack_root() -> std::path::PathBuf {
+    std::env::temp_dir().join("my-browser-packages")
+}
+
+/// Unpack a Chrome extension package (.crx) or a .zip into a temporary
+/// folder, and return the folder holding its manifest.json. `ditto` keeps
+/// every entry inside the folder (it drops `..` and absolute paths), and
+/// installing copies only regular files, never symlinks.
+pub fn unpack(file: &Path) -> Result<std::path::PathBuf, String> {
+    let bytes = std::fs::read(file).map_err(|e| format!("Couldn't read {}: {e}", file.display()))?;
+    let zip = package_zip(&bytes)?;
+    let stem = file.file_stem().map_or("extension".into(), |s| s.to_string_lossy().into_owned());
+    let root = unpack_root().join(format!("{}-{}", std::process::id(), crate::crash::now_ms()));
+    let out = root.join(&stem);
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let archive = root.join("package.zip");
+    std::fs::write(&archive, zip).map_err(|e| e.to_string())?;
+    let unpacked = std::process::Command::new("/usr/bin/ditto").arg("-x").arg("-k").arg(&archive).arg(&out).status();
+    let _ = std::fs::remove_file(&archive);
+    if !unpacked.is_ok_and(|s| s.success()) {
+        let _ = std::fs::remove_dir_all(&root);
+        return Err("Couldn't unpack that package.".into());
+    }
+    // The manifest at the top, or in the one folder the archive holds.
+    if out.join("manifest.json").is_file() {
+        return Ok(out);
+    }
+    let dirs: Vec<_> = std::fs::read_dir(&out)
+        .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.is_dir() && !p.ends_with("__MACOSX")).collect())
+        .unwrap_or_default();
+    match dirs.as_slice() {
+        [one] if one.join("manifest.json").is_file() => Ok(one.clone()),
+        _ => {
+            let _ = std::fs::remove_dir_all(&root);
+            Err("That package has no manifest.json.".into())
+        }
+    }
+}
+
+/// The zip archive in a package: a .zip as is, or the one inside a .crx.
+/// CRX3: "Cr24", version 3, header length, header (keys, signatures), zip.
+/// CRX2: "Cr24", version 2, key length, signature length, key, signature, zip.
+// ponytail: the CRX signature isn't checked (the Web Store download is over
+// HTTPS from Google); verifying it is item 5 of SECURITY.md's roadmap.
+fn package_zip(bytes: &[u8]) -> Result<&[u8], String> {
+    if bytes.starts_with(b"PK\x03\x04") {
+        return Ok(bytes);
+    }
+    let bad = || "That isn't an extension package (.crx or .zip).".to_string();
+    if !bytes.starts_with(b"Cr24") {
+        return Err(bad());
+    }
+    let word = |i: usize| bytes.get(i..i + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    let start = match word(4) {
+        Some(3) => word(8).map(|h| 12 + h),
+        Some(2) => word(8).zip(word(12)).map(|(k, s)| 16 + k + s),
+        _ => None,
+    };
+    start.and_then(|s| bytes.get(s..)).filter(|z| z.starts_with(b"PK\x03\x04")).ok_or_else(bad)
+}
+
+/// The extension id on a Chrome Web Store page
+/// (`chromewebstore.google.com/detail/<name>/<id>`, or the old
+/// `chrome.google.com/webstore/detail/...`).
+pub fn webstore_id(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let (host, path) = rest.split_once('/')?;
+    let path = path.split(['?', '#']).next()?;
+    let detail = match host {
+        "chromewebstore.google.com" => path.strip_prefix("detail/")?,
+        "chrome.google.com" => path.strip_prefix("webstore/detail/")?,
+        _ => return None,
+    };
+    let id = detail.trim_end_matches('/').rsplit('/').next()?;
+    (id.len() == 32 && id.bytes().all(|b| (b'a'..=b'p').contains(&b))).then(|| id.to_string())
+}
+
+/// Google's download address for a Web Store extension's package.
+pub fn webstore_package_url(id: &str) -> String {
+    format!(
+        "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=140.0&acceptformat=crx2,crx3&x=id%3D{id}%26uc"
+    )
+}
+
 /// What an extension asks for, in words, for the install prompt.
 pub fn describe_access(ext: &WKWebExtension) -> String {
     let mut perms: Vec<String> = unsafe { ext.requestedPermissions() }.iter().map(|p| p.to_string()).collect();
@@ -476,7 +562,35 @@ pub fn describe_access(ext: &WKWebExtension) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::with_script;
+    use super::{package_zip, webstore_id, with_script};
+
+    #[test]
+    fn packages_yield_their_zip() {
+        let zip = b"PK\x03\x04rest";
+        assert_eq!(package_zip(zip).unwrap(), zip);
+        let mut crx3 = b"Cr24\x03\x00\x00\x00\x02\x00\x00\x00hh".to_vec();
+        crx3.extend_from_slice(zip);
+        assert_eq!(package_zip(&crx3).unwrap(), zip);
+        let mut crx2 = b"Cr24\x02\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00kss".to_vec();
+        crx2.extend_from_slice(zip);
+        assert_eq!(package_zip(&crx2).unwrap(), zip);
+        assert!(package_zip(b"Cr24\x03\x00\x00\x00\xff\xff\xff\x00").is_err(), "header past the end");
+        assert!(package_zip(b"<html>").is_err());
+    }
+
+    #[test]
+    fn web_store_pages_give_the_extension_id() {
+        let id = "cjpalhdlnbpafiamejdnhcphjbkeiagm";
+        assert_eq!(
+            webstore_id(&format!("https://chromewebstore.google.com/detail/ublock-origin/{id}")).as_deref(),
+            Some(id)
+        );
+        assert_eq!(webstore_id(&format!("https://chromewebstore.google.com/detail/{id}?hl=en")).as_deref(), Some(id));
+        assert_eq!(webstore_id(&format!("https://chrome.google.com/webstore/detail/x/{id}/")).as_deref(), Some(id));
+        assert_eq!(webstore_id(&format!("https://evil.example/detail/x/{id}")), None);
+        assert_eq!(webstore_id(&format!("http://chromewebstore.google.com/detail/x/{id}")), None, "https only");
+        assert_eq!(webstore_id("https://chromewebstore.google.com/detail/x/not-an-id"), None);
+    }
 
     #[test]
     fn the_websocket_shim_goes_first_in_the_head() {

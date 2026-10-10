@@ -366,10 +366,12 @@ fn extensions_json(app: &App) -> String {
 
 fn pick_and_install_extension(app: &App, reply: Reply) {
     let panel = NSOpenPanel::openPanel(app.mtm());
-    panel.setCanChooseFiles(false);
+    panel.setCanChooseFiles(true);
     panel.setCanChooseDirectories(true);
     panel.setAllowsMultipleSelection(false);
-    panel.setMessage(Some(&NSString::from_str("Choose an unpacked web extension (the folder with manifest.json)")));
+    panel.setMessage(Some(&NSString::from_str(
+        "Choose a Chrome extension package (.crx), a .zip, or an unpacked extension folder (with manifest.json)",
+    )));
     let reply = std::cell::RefCell::new(Some(reply));
     let this = app.retain();
     let p = panel.clone();
@@ -388,10 +390,27 @@ fn pick_and_install_extension(app: &App, reply: Reply) {
 /// then copy it into the profile (so it survives the source folder being
 /// moved), record it and give it a button. Benchmarks and tests skip the
 /// question.
-fn install_extension(app: &App, source: PathBuf, reply: Reply) {
+pub fn install_extension(app: &App, source: PathBuf, reply: Reply) {
+    // A package (.crx or .zip) is unpacked first.
+    if source.is_file() {
+        return match crate::extensions::unpack(&source) {
+            Ok(dir) => install_extension(app, dir, reply),
+            Err(e) => reply(Err(e)),
+        };
+    }
     if !source.join("manifest.json").is_file() {
         return reply(Err("That folder has no manifest.json.".into()));
     }
+    let reply: Reply = {
+        let src = source.clone();
+        // A cancelled or broken package leaves no unpacked copy behind.
+        Box::new(move |r: Result<String, String>| {
+            if r.is_err() {
+                drop_unpacked(&src);
+            }
+            reply(r)
+        })
+    };
     let this = app.retain();
     let src = source.clone();
     crate::extensions::read_extension(
@@ -425,10 +444,15 @@ fn copy_and_register(app: &App, source: PathBuf, reply: Reply) {
         Some(dir) => {
             let name =
                 source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "extension".into());
-            let dest = dir.join(format!("{}-{name}", crate::store::now()));
+            // A new folder every time, even for the same extension twice in a second.
+            let dest = (0..)
+                .map(|n| dir.join(format!("{}-{n}-{name}", crate::crash::now_ms())))
+                .find(|p| !p.exists())
+                .unwrap();
             if let Err(e) = copy_dir(&source, &dest) {
                 return reply(Err(format!("Couldn't copy the extension: {e}")));
             }
+            drop_unpacked(&source);
             dest
         }
         None => source,
@@ -453,6 +477,16 @@ fn copy_and_register(app: &App, source: PathBuf, reply: Reply) {
             }
         }),
     );
+}
+
+/// Delete a package's temporary unpacked copy (anything else is left alone).
+fn drop_unpacked(path: &Path) {
+    let root = crate::extensions::unpack_root();
+    if let Ok(rest) = path.strip_prefix(&root)
+        && let Some(first) = rest.components().next()
+    {
+        let _ = std::fs::remove_dir_all(root.join(first));
+    }
 }
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {

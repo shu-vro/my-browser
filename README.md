@@ -46,8 +46,9 @@ worse is rejected.
 - **Find in page** (⌘F, ⌘G, ⇧⌘G).
 - **Can be your default browser** (Settings → General): links from other apps
   and HTML files from Finder open in new tabs.
-- **Web extensions** (Safari/Chrome format, unpacked) with toolbar buttons
-  and popups. Each one is off on every site until you click its button there,
+- **Chrome extensions**: add them from the Chrome Web Store (a button appears
+  on an extension's page), or install a `.crx`, `.zip` or unpacked folder.
+  Toolbar buttons and popups. Each one is off on every site until you click its button there,
   and doesn't even start (no memory) until its first click. Right-click a
   button to let it run everywhere.
 - **Video**: fullscreen and picture in picture (⌥⌘P or the video's menu).

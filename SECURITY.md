@@ -116,8 +116,14 @@ folder).
 
 ### Extensions
 
-- Installing is a user action: picking a folder in a native dialog, then
-  confirming a native prompt that lists what it asks for.
+- Installing is a user action: picking a folder or package in a native
+  dialog, or clicking the Web Store button on that extension's page, then
+  confirming a native prompt that lists what it asks for. A site can't
+  start an install: only the package the user asked the Web Store button for
+  is installed when it downloads.
+- Packages are unpacked with `ditto` into a temporary folder (entries can't
+  escape it) and copied without symlinks. CRX signatures aren't verified
+  yet; Web Store packages come over HTTPS from Google.
 - **Off on every site until clicked there**, and off again when the tab
   leaves the site. Only extensions set to "On every site" get site access at
   start. Runtime permission requests are asked, never granted silently.

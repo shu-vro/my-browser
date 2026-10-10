@@ -1278,6 +1278,37 @@ fn extensions_stay_off_until_clicked_then_turn_off_when_leaving_the_site() {
 }
 
 #[test]
+fn chrome_extension_packages_install_from_crx_and_zip() {
+    let profile = TempProfile::new("packages");
+    let files = TempProfile::new("package-files");
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/title-extension");
+    // A .zip with the extension in a folder (as GitHub serves them), and a
+    // CRX3 around the same zip (as the Chrome Web Store serves them).
+    let zip = files.0.join("title.zip");
+    let zipped = Command::new("/usr/bin/ditto").args(["-c", "-k", "--keepParent", fixture]).arg(&zip).status();
+    assert!(zipped.unwrap().success());
+    let crx = files.0.join("title.crx");
+    let mut bytes = b"Cr24\x03\x00\x00\x00\x04\x00\x00\x00sign".to_vec();
+    bytes.extend(std::fs::read(&zip).unwrap());
+    std::fs::write(&crx, bytes).unwrap();
+    let junk = files.0.join("junk.crx");
+    std::fs::write(&junk, "<html>not a package</html>").unwrap();
+
+    let mut b = launch_with(&["--profile", profile.path()]);
+    for package in [&crx, &zip] {
+        let installed = b.bridge(&["ext.install", package.to_str().unwrap()]);
+        assert!(installed.contains("\"name\":"), "{installed}");
+    }
+    let list = b.bridge(&["ext.list"]);
+    assert_eq!(list.matches("\"read\":true").count(), 2, "{list}");
+    // Installed into the profile, not run from the temporary unpacked copy.
+    assert_eq!(list.matches(&format!("\"path\":\"{}/extensions/", profile.path())).count(), 2, "{list}");
+    let refused = b.send(&format!("bridge ext.install\t{}", junk.display()));
+    assert_eq!(refused, "BRIDGE err That isn't an extension package (.crx or .zip).");
+    b.quit();
+}
+
+#[test]
 fn installing_a_folder_without_manifest_fails() {
     let dir = TempProfile::new("not-an-extension");
     let mut b = launch();

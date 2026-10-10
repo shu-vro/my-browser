@@ -529,10 +529,27 @@ it starts at the top. The field's delegate maps Enter, Shift+Enter and Esc;
 
 ## Extensions (`src/extensions.rs`)
 
-- **Install:** the user picks a folder; the browser reads the manifest and
-  asks first, listing the API permissions and sites it wants (skipped in bench
-  mode). Then it copies the folder into `<profile>/extensions/` (symlinks
-  skipped), records it (`access = click`) and gives it a toolbar button.
+- **Install:** the user picks a folder, a `.zip` or a Chrome package
+  (`.crx`); the browser reads the manifest and asks first, listing the API
+  permissions and sites it wants (skipped in bench mode). Then it copies the
+  folder into `<profile>/extensions/<ms>-<n>-<name>` (symlinks skipped),
+  records it (`access = click`) and gives it a toolbar button.
+- **Packages** (`extensions::unpack`): a `.crx` is a zip after a header
+  (CRX3: `Cr24`, 3, header length, header; CRX2: `Cr24`, 2, key and
+  signature lengths, key, signature). The zip goes through `/usr/bin/ditto
+  -x -k` into `$TMPDIR/my-browser-packages/<pid>-<ms>/`, which keeps every
+  entry inside (it strips `..` and absolute paths); the manifest may be at the
+  top or in the archive's one folder. The unpacked copy is deleted once
+  copied into the profile, or if the install is cancelled or fails. The CRX
+  signature isn't verified yet (SECURITY.md roadmap).
+- **Chrome Web Store:** on an extension's page
+  (`chromewebstore.google.com/detail/<name>/<id>`) a puzzle-piece button
+  appears left of the star (not in private windows). Clicking it loads
+  Google's package address for that id in the tab (`webstore_package_url`),
+  a user navigation like any link. When that exact download arrives it goes
+  to the temporary folder instead of Downloads, unlisted, and the install
+  prompt follows (`App::install_package`). A `.crx` downloaded any other way
+  is an ordinary download: nothing installs without the user picking it.
 - **Launch:** every enabled extension's manifest is read
   (`WKWebExtension.extensionWithResourceBaseURL`; nothing runs) for its
   button. Only `always` extensions get a `WKWebExtensionContext` now.

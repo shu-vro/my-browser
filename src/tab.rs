@@ -103,6 +103,8 @@ pub struct TabIvars {
     ext_buttons: RefCell<Vec<(Retained<NSButton>, bool)>>,
     /// Shown while a network request waits for an answer (netgate.rs).
     net_button: RefCell<Option<Retained<NSButton>>>,
+    /// "Add to my-browser", on Chrome Web Store extension pages.
+    store_button: RefCell<Option<Retained<NSButton>>>,
     /// Extensions clicked on in this tab: (extension id, site). They turn off
     /// when the tab leaves that site.
     pub ext_on: RefCell<Vec<(i64, String)>>,
@@ -645,6 +647,16 @@ define_class!(
         #[unsafe(method(toggleBookmark:))]
         fn toggle_bookmark_action(&self, _s: Option<&AnyObject>) {
             self.toggle_bookmark();
+        }
+
+        /// "Add to my-browser" on a Chrome Web Store page: load the package
+        /// from Google in this tab (it downloads), then offer to install it.
+        #[unsafe(method(addFromWebStore:))]
+        fn add_from_web_store_action(&self, _s: Option<&AnyObject>) {
+            if let Some(id) = crate::extensions::webstore_id(&self.url()) {
+                self.app().expect_package(&id);
+                self.load(&crate::extensions::webstore_package_url(&id));
+            }
         }
 
         /// Right-click menu (WKUIDelegate, private): links get "Open Link in
@@ -1386,6 +1398,11 @@ impl Tab {
         format!("STAR on={}", on as u8)
     }
 
+    /// The Web Store's "Add to my-browser" button is showing.
+    pub fn store_button_shown(&self) -> bool {
+        self.ivars().store_button.borrow().is_some()
+    }
+
     /// The blocked-requests button is showing.
     pub fn net_button_shown(&self) -> bool {
         self.ivars().net_button.borrow().is_some()
@@ -1531,6 +1548,11 @@ impl Tab {
                 b.setToolTip(Some(&NSString::from_str(label)));
             }
             b.setEnabled(crate::store::site_of(&url).is_some() && !url.starts_with(&format!("{INTERNAL}:")));
+        }
+        // The Web Store button comes and goes with the page.
+        let store = !self.is_private() && crate::extensions::webstore_id(&self.url()).is_some();
+        if store != iv.store_button.borrow().is_some() {
+            self.app().refresh_extension_buttons_for(self);
         }
         if let Some(star) = iv.star.get() {
             let on = bookmarkable(&url) && self.app().store().bookmark_of(&url).is_some();
@@ -1788,8 +1810,33 @@ impl Tab {
             content.addSubview(&b);
             iv.net_button.replace(Some(b));
         }
+        // Left of those: "Add to my-browser" on a Chrome Web Store page.
+        if let Some(old) = iv.store_button.take() {
+            old.removeFromSuperview();
+        }
+        let store = !self.is_private() && crate::extensions::webstore_id(&self.url()).is_some();
+        if store {
+            let b = unsafe {
+                NSButton::buttonWithImage_target_action(
+                    &symbol_image("puzzlepiece.extension.fill", "Add to my-browser"),
+                    Some(self),
+                    Some(sel!(addFromWebStore:)),
+                    mtm,
+                )
+            };
+            b.setBordered(false);
+            b.setContentTintColor(Some(&objc2_app_kit::NSColor::controlAccentColor()));
+            b.setToolTip(Some(&NSString::from_str("Add this extension to my-browser")));
+            let x = width - 4.0 - (n + waiting as u8 as f64 + 1.0) * BUTTON_W;
+            b.setFrame(NSRect::new(NSPoint::new(x, top), NSSize::new(BUTTON_W, 28.0)));
+            b.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
+            );
+            content.addSubview(&b);
+            iv.store_button.replace(Some(b));
+        }
         // The star sits between the address bar and those buttons.
-        let right = n + waiting as u8 as f64 + 1.0;
+        let right = n + waiting as u8 as f64 + store as u8 as f64 + 1.0;
         if let Some(star) = iv.star.get() {
             star.setFrame(NSRect::new(NSPoint::new(width - 4.0 - right * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
         }

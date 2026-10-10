@@ -154,7 +154,7 @@
 
   <section id="extensions">
     <h1>Extensions</h1>
-    <p class="note">Install a Safari/Chrome-style web extension from its unpacked folder (the one containing manifest.json). You'll see what it asks for first.</p>
+    <p class="note">Add Chrome extensions from the <a href="#" id="web-store">Chrome Web Store</a>: open an extension's page there and click the puzzle-piece button next to the address bar. Or install a package (.crx or .zip) or an unpacked folder (with manifest.json). You'll see what it asks for first. Most Chrome extensions work; ones that need Chrome-only features may not.</p>
     <p class="note">Extensions are off on every site until you click their button in the toolbar there, and turn off again when you leave the site. Choose "On every site" for ones that must always run, like blockers. Right-click a button for the same choice.</p>
     <p><button class="primary" id="install-ext">Install extension…</button></p>
     <ul class="list" id="ext-list"></ul>
@@ -377,6 +377,7 @@ async function loadExtensions() {
     list.append(li);
   }
 }
+$("web-store").onclick = e => { e.preventDefault(); call("open", "https://chromewebstore.google.com/category/extensions").catch(fail); };
 $("install-ext").onclick = () => call("ext.install").then(r => { toast("Installed " + r.name); loadExtensions(); }, e => { if (String(e.message || e) !== "cancelled") fail(e); });
 loaders.extensions = loadExtensions;
 
