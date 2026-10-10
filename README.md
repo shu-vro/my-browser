@@ -108,7 +108,7 @@ Command-line flags:
 ## Test and measure
 
 ```sh
-cargo test --release                  # 73 tests, opens real browser windows briefly
+cargo test --release                  # 103 tests, opens real browser windows briefly
 ./target/release/bench                # benchmark against the recorded bars (~4 min)
 ```
 
@@ -133,17 +133,31 @@ cargo test --release                  # 73 tests, opens real browser windows bri
 src/
   main.rs          app delegate: startup, profile, engine setup, tabs list, menu/shortcuts,
                    downloads, extension loading, bench protocol
-  tab.rs           one tab: native window tab, toolbar, web view, sleep/wake, navigation policy
+  tab.rs           one tab: native window tab, toolbar, web view, sleep/wake, navigation policy,
+                   printing, link menu, reader mode, password prompts
+  home.rs          the native new tab page
+  extensions.rs    extensions: click to run, toolbar buttons, .crx/.zip packages, the Web Store
   extwindow.rs     a window (tab group) as web extensions see it
   internal.rs      mybrowser:// pages and the settings-page bridge
   privacy.rs       tracking protection and the tracker blocker
-  store.rs         SQLite: settings, history, downloads, extensions, session
+  netgate.rs       the network gate for extension connections
+  passwords.rs     saved passwords in the keychain, CSV import
+  import.rs        import from Chrome, Brave, Edge, Vivaldi, Arc, Safari
+  crash.rs         panic log and crash report prompt
+  store.rs         SQLite: settings, history, bookmarks, downloads, extensions, session
 resources/
   settings.html    the settings / history / downloads / extensions page
+  passwords.js     the saved-passwords form script
+  reader.js        reader mode's article finder
+  icon.svg         the app icon (AppIcon.icns is generated from it)
   trackers.bin     compressed tracker blocker rules (generated)
 scripts/
-  bundle.sh        build the .app
+  bundle.sh        build the .app (UNIVERSAL=1 for both CPUs)
+  dmg.sh           pack the .app into a DMG
+  icon.sh          regenerate AppIcon.icns from icon.svg
   update-trackers.py   regenerate resources/trackers.bin
+.githooks/         pre-commit checks (git config core.hooksPath .githooks)
+.github/workflows/ CI on every push; a release for every push to `release`
 benchmark/         benchmark harness and recorded bars
 tests/             end-to-end tests and fixtures
 ```

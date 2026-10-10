@@ -38,8 +38,10 @@ no devtools; extensions yes. Full vision and rules:
 
 ```sh
 cargo build --release                  # always test release builds
-cargo test --release                   # 73 tests, ~5 s, opens windows (needs GUI session)
+cargo test --release                   # 103 tests, ~12 s, opens windows (needs GUI session)
+git config core.hooksPath .githooks    # once per clone: fmt, clippy, tests before every commit
 ./target/release/bench --runs 1        # ~2 min quick benchmark (floating window)
+./target/release/bench --only startup  # ~20 s: idle CPU, wakeups, footprint only
 ./target/release/bench                 # ~4 min, compare against benchmark/bars.tsv
 BENCH_VERBOSE=1 ./target/release/bench # per-process footprint at every measurement
 MYB_TUNE=jit=0,pagecache=1 ./target/release/bench --runs 2   # engine experiment
@@ -90,6 +92,19 @@ commands:
 - **The owner's shell aliases `ls`,** which can hang scripted commands. Use
   `/bin/ls`.
 - **Python from python.org lacks certificates.** Use `curl` for downloads.
+- **Compare against a build, not the bars.** `bars.tsv` is stale (recorded
+  hidden) and full-run activity numbers swing with what else the Mac does.
+  Build the previous commit in a worktree and run both back to back with
+  `--only`/`--page` (benchmark/README.md).
+- **Tests without `--on-top` run hidden windows**: pages report
+  `visibilityState` hidden, and APIs like screen sharing refuse. Use
+  `launch_with(&["--on-top"])` for those.
+- **Modal menus block the main thread.** Context and password menus print a
+  bench line instead of popping up in bench mode.
+- **WebKit cancels a download whose destination exists.** Always pick a fresh
+  file name.
+- **`/script/<js>` test pages run in `<head>`:** touch the body in a
+  `DOMContentLoaded` listener.
 
 ## Commits
 
