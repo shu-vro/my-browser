@@ -22,7 +22,8 @@ worse is rejected.
   - Protections can be turned down for one site from its site menu.
   - No ad-click attribution, and no safe-browsing lookups unless you turn them
     on.
-  - The browser itself never sends anything anywhere.
+  - The browser itself never sends anything anywhere. After a crash it asks
+    whether you want to report it, as a GitHub issue you read first.
 - **The basics, done properly:**
   - persistent logins (per-profile cookie store),
   - back, forward and reload,

@@ -1317,7 +1317,13 @@ impl Tab {
     ) {
         let mtm = self.mtm();
         let alert = NSAlert::new(mtm);
-        alert.setMessageText(message);
+        // A blank line separates the question from the explanation under it.
+        let text = message.to_string();
+        let (title, detail) = text.split_once("\n\n").unwrap_or((&text, ""));
+        alert.setMessageText(&NSString::from_str(title));
+        if !detail.is_empty() {
+            alert.setInformativeText(&NSString::from_str(detail));
+        }
         for b in buttons {
             alert.addButtonWithTitle(&NSString::from_str(b));
         }
@@ -1335,7 +1341,7 @@ impl Tab {
             }
         }
         if self.app().is_bench() {
-            say!("DIALOG {message}");
+            say!("DIALOG {}", title.replace('\n', " "));
         }
         let this = self.retain();
         let a = alert.clone();

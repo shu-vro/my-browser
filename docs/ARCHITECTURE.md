@@ -91,6 +91,28 @@ main thread with `performSelectorOnMainThread`.
    previously active tab. In bench mode it then prints `TUNE …` lines and
    `READY`.
 
+### Crash reports (`src/crash.rs`)
+
+Nothing is reported automatically. Two records stay on the Mac: the panic
+hook (`crash::install`, set in `App::start`) writes the message, location and
+backtrace to `<profile>/crashes/panic-<ms>.log` before `panic = "abort"`
+ends the process, and macOS writes its own report to
+`~/Library/Logs/DiagnosticReports/my-browser-*.ips`. At the end of `ready`,
+`App::offer_crash_report` looks for either written since `crash_seen_ms`
+(the first launch of a profile only records the time) and asks once with a
+sheet. "Report…" opens a GitHub new-issue link in a tab, with the version,
+macOS version and the summary (a panic log as written, or an `.ips`'s
+exception and crashed-thread frames), and reveals the full report in Finder
+to attach. Bench mode skips the shared DiagnosticReports folder so tests
+never see the owner's crashes.
+
+Release builds are stripped; the release workflow publishes each version's
+`.dSYM`. To symbolicate a frame like `my-browser +0x1a2b3c`:
+`atos -o my-browser.dSYM/Contents/Resources/DWARF/* -arch arm64 -l 0x100000000 0x1001a2b3c`
+(load address 0x100000000 plus the offset). Test:
+`a_crash_is_logged_and_offered_for_reporting_once` (bench `crash` panics on
+purpose).
+
 ### Default browser and links from other apps
 
 The bundle's Info.plist claims `http`/`https` links (`CFBundleURLTypes`) and
@@ -524,6 +546,7 @@ active tab.
 | `gohome` | presses the home button, then answers like `home` |
 | `netbutton` | `NETBUTTON <0\|1>`: the blocked-requests button is showing |
 | `openurl <url>` | a `TABS` line: opens it like a link from another app (`application:openURLs:`) |
+| `crash` | panics (tests the crash reporter) |
 | `quit` or stdin EOF | exits |
 
 Unprompted events: `CRASHED` (the page process died), `DOWNLOAD

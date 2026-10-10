@@ -7,6 +7,7 @@ macro_rules! say {
     }};
 }
 
+mod crash;
 mod extensions;
 mod extwindow;
 mod home;
@@ -589,6 +590,7 @@ impl App {
             None if self.is_bench() => None,
             None => std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/my-browser")),
         };
+        crash::install(profile.as_ref().map(|p| p.join("crashes")));
         let lock = profile.as_ref().map(|dir| lock_profile(dir).unwrap_or_else(|e| fatal(mtm, &e)));
         let db = profile.as_ref().map(|d| d.join("browser.db"));
         let store = Store::open(db.as_deref()).unwrap_or_else(|e| fatal(mtm, &format!("Can't open the profile: {e}")));
@@ -698,6 +700,39 @@ impl App {
             self.read_commands();
             say!("READY");
         }
+        self.offer_crash_report();
+    }
+
+    /// The browser crashed since the last launch: offer to report it. Asks
+    /// once per crash; nothing is sent unless the user submits the issue.
+    fn offer_crash_report(&self) {
+        let store = self.store();
+        let since = store.get("crash_seen_ms").and_then(|s| s.parse().ok());
+        store.put("crash_seen_ms", &crash::now_ms().to_string());
+        // First launch: older reports are from before this profile.
+        let Some(since) = since else { return };
+        let crashes = self.profile_dir().map(|p| p.join("crashes"));
+        // macOS's own reports are shared by every profile; tests must not see the owner's.
+        let system = (!self.is_bench())
+            .then(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Logs/DiagnosticReports")))
+            .flatten();
+        let Some(report) = crash::reports_since(crashes.as_deref(), system.as_deref(), since).pop() else { return };
+        let Some(tab) = self.active() else { return };
+        let this = self.retain();
+        tab.confirm(
+            "my-browser quit unexpectedly. Report the crash?\n\nThe report holds the browser and macOS versions and \
+             where in the code it stopped: no pages, history or personal data. It opens as a GitHub issue you can \
+             read before sending, and nothing is sent otherwise.",
+            &["Report…", "Don't Send"],
+            move |yes| {
+                if yes {
+                    this.open_tab(&crash::issue_url(&crash::summary(&report)), false);
+                    let file = NSURL::fileURLWithPath(&NSString::from_str(&report.to_string_lossy()));
+                    objc2_app_kit::NSWorkspace::sharedWorkspace()
+                        .activateFileViewerSelectingURLs(&NSArray::from_retained_slice(&[file]));
+                }
+            },
+        );
     }
 
     /// Open links and files from other apps in new tabs: web pages and local
@@ -1325,6 +1360,8 @@ impl App {
                 }),
             ),
             ("quit", _) => NSApplication::sharedApplication(self.mtm()).terminate(None),
+            // Tests the crash reporter.
+            ("crash", _) => panic!("crash requested by the bench harness"),
             _ => say!("ERR unknown command: {cmd}"),
         }
     }

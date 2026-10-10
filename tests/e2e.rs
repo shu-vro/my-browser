@@ -380,6 +380,36 @@ fn links_and_files_from_other_apps_open_in_new_tabs() {
 }
 
 #[test]
+fn a_crash_is_logged_and_offered_for_reporting_once() {
+    let profile = TempProfile::new("crash");
+    let mut b = launch_with(&["--profile", profile.path()]);
+    writeln!(b.stdin, "crash").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(s) = b.child.try_wait().unwrap() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "a panic must end the process");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(!status.success());
+    // The panic hook kept the message and where it happened.
+    let logs: Vec<_> = std::fs::read_dir(profile.0.join("crashes")).unwrap().flatten().map(|e| e.path()).collect();
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    let log = std::fs::read_to_string(&logs[0]).unwrap();
+    assert!(log.starts_with("my-browser ") && log.contains("crash requested by the bench harness"), "{log}");
+    assert!(log.contains("src/main.rs"), "{log}");
+    // The next launch asks, once.
+    let mut b = launch_with(&["--profile", profile.path()]);
+    assert!(b.wait_for("DIALOG").contains("quit unexpectedly"));
+    assert_eq!(b.send("dialog cancel"), "ANSWERED 1");
+    b.quit();
+    let mut b = launch_with(&["--profile", profile.path()]);
+    assert!(b.send("tabs").starts_with("TABS"), "no second prompt");
+    b.quit();
+}
+
+#[test]
 fn untitled_page_shows_its_url() {
     let mut b = launch();
     b.nav("go about:blank");

@@ -2,8 +2,10 @@
 
 ## Policy
 
-1. **No telemetry, ever.** No usage stats, crash reports, update pings,
-   remote config or "anonymous" metrics. The browser's own code makes no
+1. **No telemetry, ever.** No usage stats, automatic crash reports, update
+   pings, remote config or "anonymous" metrics. After a crash the browser
+   asks whether to report it; "Report" opens a pre-filled GitHub issue in a
+   tab, which the user reads and submits (or not) themselves. The browser's own code makes no
    network requests; only websites and extensions the user opens do. The
    one path that connects for an extension (the network gate) is blocked
    until the user allows each address, only `wss:` to a host the extension
