@@ -165,8 +165,67 @@ entitlements.
   WebKit's own page processes are sandboxed by macOS.
 - An extension's API permissions are all-or-nothing at install.
 
+## Hardening roadmap
+
+What would make the browser harder to attack, most valuable first. Each item
+says what it protects against and what it costs.
+
+1. **Developer ID signing and notarization.** Builds are signed ad hoc today,
+   so the code's identity changes with every build. That means Gatekeeper
+   blocks the first launch, users learn to click "Open Anyway" (which also
+   works for malware posing as an update), macOS asks again for camera and
+   screen access after each update, and Keychain items the browser saved
+   prompt again. A Developer ID (Apple Developer Program, paid) gives a
+   stable identity. Then: sign with `--options runtime --timestamp`, run
+   `notarytool submit --wait` and `stapler staple` in the release workflow,
+   with the certificate in an encrypted GitHub secret behind a protected
+   `release` environment (required reviewer).
+2. **Signed, opt-in updates.** A browser that doesn't update keeps its bugs.
+   WebKit updates with macOS; our own code doesn't. Use Sparkle 2 with an
+   EdDSA-signed appcast. Ask before the first check (policy 1) and make the
+   check go only to the appcast URL. Refresh the tracker list the same way.
+3. **App Sandbox.** The app process holds the profile database, the
+   extension copies and access to the Keychain. Today a bug in it can reach
+   every file the user can. Turn on `com.apple.security.app-sandbox` with
+   only `network.client`, `files.user-selected.read-write`,
+   `files.downloads.read-write`, camera, microphone and location. This needs
+   a profile migration into the container. Importing from Chrome or Safari
+   and installing extensions would then go through file pickers.
+4. **Protect the release path.** Make `main` and `release` protected
+   branches (reviews, no force pushes). Pin GitHub Actions to commit SHAs,
+   not tags. Turn on Dependabot for Cargo and Actions, and add
+   `cargo audit` (or `cargo deny`) to CI. There are only six direct crates;
+   keep it that way.
+5. **Verify CRX signatures.** Chrome Web Store packages are installed after
+   an HTTPS download from Google's update server, which is trust in the
+   transport only. CRX3 carries signatures in a protobuf header: check them
+   with `SecKeyVerifySignature` and reject packages whose ID doesn't match
+   the signing key.
+6. **DNS-rebinding protection.** The local-network shield checks host names.
+   Add WebKit's local-network access checks when they ship, or a
+   resolve-time check (Network Extension) before that.
+7. **Gate password filling with Touch ID.** Filling already needs a click on
+   the account in a native menu. Add `LocalAuthentication`
+   (`LAContext.evaluatePolicy`) before reading a password, as Safari does
+   when "Require Touch ID" is on.
+8. **Fuzz the parsers.** They read files other programs wrote: macOS crash
+   reports, CSV and HTML imports, Chrome's bookmark JSON, CRX headers, the
+   offscreen manifest rewriting. Add `cargo fuzz` targets for each and run
+   them in a nightly job.
+9. **Review private WebKit API on every macOS release.** Each selector is
+   checked with `respondsToSelector:` and reported in `TUNE` lines. Run the
+   e2e suite on each beta, and check that a missing selector fails closed
+   (protection reported missing) rather than open.
+10. **Keep the bridge small.** Every bridge op is an attack surface from a
+    compromised settings page. New ops validate every argument in
+    `store.rs`, never take paths from the page (use native panels), and get
+    an e2e test proving web pages can't call them.
+
+Every pull request that adds a trust boundary documents it in "Trust
+boundaries" above and adds an e2e test for the attack it stops.
+
 ## Reporting a vulnerability
 
-This project has no public bug tracker yet. Report privately to the
-maintainer, not in a public issue. Include steps to reproduce and the macOS
-version.
+Report privately through GitHub's private vulnerability reporting
+(Security → Report a vulnerability on the repository), not in a public
+issue. Include steps to reproduce and the macOS version.
