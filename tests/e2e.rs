@@ -845,6 +845,13 @@ fn video_fullscreen_picture_in_picture_and_screen_sharing() {
     // Screen sharing asks first; "Don't Allow" reaches the page as NotAllowedError.
     let share = "eval navigator.mediaDevices.getDisplayMedia({video: true}).then(() => document.title = 'shared', \
                  e => document.title = 'refused ' + e.name), 1";
+    // Other tests' floating windows can cover this one, and a covered page
+    // counts as hidden: wait until the page is really visible.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while b.send("eval document.visibilityState") != "EVAL visible" {
+        assert!(Instant::now() < deadline, "the window never became visible");
+        std::thread::sleep(Duration::from_millis(100));
+    }
     writeln!(b.stdin, "{share}").unwrap();
     assert!(b.wait_for("DIALOG").ends_with("127.0.0.1 wants to share your screen"));
     // (The script's EVAL line can come before or after the prompt.)
@@ -1599,9 +1606,19 @@ fn find_bar_finds_steps_wraps_and_closes() {
     }
     // Shift+Cmd+G searches backwards from the same bar.
     b.send("find alpha");
+    // (Searches run asynchronously: let the first match be selected first, or
+    // the backward search can start from the old selection under load.)
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while b.send("selection") != "SELECTION 0" {
+        assert!(Instant::now() < deadline, "find alpha selects the first match");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     b.key("cmd+shift+g");
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(b.send("selection"), "SELECTION 11", "previous from the first match wraps to the last");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while b.send("selection") != "SELECTION 11" {
+        assert!(Instant::now() < deadline, "previous from the first match wraps to the last");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
