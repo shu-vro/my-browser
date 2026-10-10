@@ -96,6 +96,15 @@ titles, URLs, file names) with `textContent`, never `innerHTML`.
   sees only sites and usernames; "Copy Password" goes from the keychain to
   the pasteboard natively.
 
+### Other browsers' data (import)
+
+- Read only when the user clicks an import button, one kind at a time, and
+  never written. Databases are read from a private temporary copy, which is
+  deleted afterwards.
+- Chromium passwords need that browser's keychain secret; macOS asks the user
+  before giving it, and the decrypted passwords go straight into our
+  keychain items (HTTPS sites only).
+
 ### Web content → the local network
 
 Requests from a non-local page to loopback, private, link-local and `.local`

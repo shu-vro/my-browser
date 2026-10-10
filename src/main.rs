@@ -11,6 +11,7 @@ mod crash;
 mod extensions;
 mod extwindow;
 mod home;
+mod import;
 mod internal;
 mod netgate;
 mod passwords;

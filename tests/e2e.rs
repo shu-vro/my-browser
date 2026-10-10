@@ -969,6 +969,96 @@ fn private_windows_fill_passwords_but_never_save_them() {
 }
 
 #[test]
+fn bookmarks_and_history_import_from_other_browsers() {
+    // A made-up home folder with a Brave profile and Safari's files: the
+    // browser looks for other browsers under $HOME, never the real ones here.
+    let home = TempProfile::new("import-home");
+    let lib = home.0.join("Library");
+    let brave = lib.join("Application Support/BraveSoftware/Brave-Browser/Default");
+    std::fs::create_dir_all(&brave).unwrap();
+    std::fs::write(
+        brave.join("Bookmarks"),
+        r#"{"roots":{"bookmark_bar":{"type":"folder","children":[{"type":"url","name":"Rust","url":"https://rust-lang.org/"},
+           {"type":"folder","name":"Work","children":[{"type":"url","name":"Docs","url":"https://docs.example/"}]}]},
+           "other":{"type":"folder","children":[]}}}"#,
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(brave.join("History")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE urls(id INTEGER PRIMARY KEY, url TEXT, title TEXT);
+         CREATE TABLE visits(id INTEGER PRIMARY KEY, url INTEGER, visit_time INTEGER);
+         INSERT INTO urls VALUES (1, 'https://visited.example/', 'Visited in Brave'), (2, 'chrome://settings', 'x');
+         INSERT INTO visits VALUES (1, 1, 13344473600000000), (2, 2, 13344473600000000);",
+    )
+    .unwrap();
+    drop(db);
+    let logins = rusqlite::Connection::open(brave.join("Login Data")).unwrap();
+    logins
+        .execute_batch("CREATE TABLE logins(origin_url TEXT, username_value TEXT, password_value BLOB, blacklisted_by_user INTEGER);")
+        .unwrap();
+    drop(logins);
+    let safari = lib.join("Safari");
+    std::fs::create_dir_all(&safari).unwrap();
+    std::fs::write(
+        safari.join("Bookmarks.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>WebBookmarkType</key><string>WebBookmarkTypeList</string>
+           <key>Children</key><array><dict><key>Title</key><string>BookmarksBar</string><key>WebBookmarkType</key><string>WebBookmarkTypeList</string>
+           <key>Children</key><array><dict><key>WebBookmarkType</key><string>WebBookmarkTypeLeaf</string><key>URLString</key>
+           <string>https://safari.example/</string><key>URIDictionary</key><dict><key>title</key><string>From Safari</string></dict></dict>
+           </array></dict></array></dict></plist>"#,
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(safari.join("History.db")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE history_items(id INTEGER PRIMARY KEY, url TEXT);
+         CREATE TABLE history_visits(id INTEGER PRIMARY KEY, history_item INTEGER, visit_time REAL, title TEXT);
+         INSERT INTO history_items VALUES (1, 'https://safari-visit.example/');
+         INSERT INTO history_visits VALUES (1, 1, 721692800.5, 'Visited in Safari');",
+    )
+    .unwrap();
+    drop(db);
+
+    let mut b = launch_env(&[], &[("HOME", home.path())]);
+    assert_eq!(b.bridge(&["import.sources"]), r#"[{"id":"brave","name":"Brave"},{"id":"safari","name":"Safari"}]"#);
+    assert_eq!(b.bridge(&["import.run", "brave", "bookmarks"]), r#"{"added":2}"#);
+    assert_eq!(b.bridge(&["import.run", "brave", "bookmarks"]), r#"{"added":0}"#, "twice adds nothing twice");
+    assert_eq!(b.bridge(&["import.run", "brave", "history"]), r#"{"added":1}"#, "web pages only");
+    assert_eq!(b.bridge(&["import.run", "brave", "passwords"]), r#"{"added":0}"#);
+    assert_eq!(b.bridge(&["import.run", "safari", "bookmarks"]), r#"{"added":1}"#);
+    assert_eq!(b.bridge(&["import.run", "safari", "history"]), r#"{"added":1}"#);
+    let bookmarks = b.bridge(&["bookmarks.list", ""]);
+    assert!(
+        bookmarks.contains(
+            r#""url":"https://docs.example/","title":"Docs","folder":"Imported from Brave/Bookmarks Bar/Work""#
+        ),
+        "{bookmarks}"
+    );
+    assert!(bookmarks.contains(r#""title":"From Safari","folder":"Imported from Safari/Favorites""#), "{bookmarks}");
+    let history = b.bridge(&["history.list", ""]);
+    // Both visits happened at 2023-11-14 22:13:20 UTC, and keep that time.
+    assert!(
+        history.contains(r#""url":"https://visited.example/","title":"Visited in Brave","at":1700000000"#),
+        "{history}"
+    );
+    assert!(
+        history.contains(r#""url":"https://safari-visit.example/","title":"Visited in Safari","at":1700000000"#),
+        "{history}"
+    );
+    // A bookmarks file exported by any browser.
+    let file = home.0.join("bookmarks.html");
+    std::fs::write(
+        &file,
+        r#"<DL><p><DT><H3>Saved</H3><DL><p><DT><A HREF="https://file.example/">From a file</A></DL><p></DL>"#,
+    )
+    .unwrap();
+    assert_eq!(b.bridge(&["import.file", file.to_str().unwrap()]), r#"{"added":1}"#);
+    assert!(b.bridge(&["bookmarks.list", "file"]).contains(r#""folder":"Imported/Saved""#));
+    // Safari's passwords come through the Passwords app's export instead.
+    assert!(b.send("bridge import.run\tsafari\tpasswords").starts_with("BRIDGE err Import Safari's passwords"));
+    b.quit();
+}
+
+#[test]
 fn history_is_recorded_searchable_and_clearable() {
     let base = serve();
     let mut b = launch();

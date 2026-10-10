@@ -40,6 +40,8 @@ worse is rejected.
 - **Passwords**, saved in your Mac's keychain: offered when you sign in,
   filled when you pick an account under a login field (⌥⌘A). Import a CSV
   from the Passwords app, Safari, Chrome, Edge, Brave or Firefox.
+- **Import** bookmarks, history and passwords from Chrome, Brave, Edge,
+  Vivaldi, Arc or Safari (Settings → Import), or a bookmarks file.
 - **Bookmarks** (⌘D or the star): in the Bookmarks menu, with folders, and in
   Settings → Bookmarks.
 - **Reader mode** (⇧⌘R): the article alone, in large type, without scripts.

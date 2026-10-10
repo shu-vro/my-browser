@@ -188,6 +188,43 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             }
             None => Err("not found".into()),
         },
+        // Settings → Import: other browsers on this Mac.
+        "import.sources" => {
+            let items: Vec<String> = crate::import::sources(&home())
+                .iter()
+                .map(|(id, name)| format!("{{\"id\":{},\"name\":{}}}", json_str(id), json_str(name)))
+                .collect();
+            Ok(format!("[{}]", items.join(",")))
+        }
+        "import.run" => {
+            let (id, what) = (args.get(1).map_or("", |s| s), args.get(2).map_or("", |s| s));
+            let added = match what {
+                "bookmarks" => crate::import::bookmarks(&home(), id).map(|b| store.import_bookmarks(&b)),
+                "history" => crate::import::history(&home(), id).map(|v| store.import_visits(&v)),
+                "passwords" => crate::import::passwords(&home(), id).map(|rows| {
+                    rows.iter()
+                        .filter(|(url, user, pass)| {
+                            crate::passwords::site_for(url).is_some_and(|s| app.vault().save(&s, user, pass).is_ok())
+                        })
+                        .count()
+                }),
+                _ => Err("unknown kind".into()),
+            };
+            app.refresh_toolbars();
+            added.map(|n| format!("{{\"added\":{n}}}"))
+        }
+        // A bookmarks file exported by any browser (.html).
+        "import.file" => match args.get(1) {
+            Some(path) if app.is_bench() => Ok(import_bookmarks_file(app, Path::new(path))),
+            _ => {
+                return pick_file(
+                    app,
+                    "Choose a bookmarks file (.html) exported from another browser",
+                    |app, path| import_bookmarks_file(app, &path),
+                    reply,
+                );
+            }
+        },
         "passwords.import" => match args.get(1) {
             Some(path) if app.is_bench() => Ok(import_passwords(app, Path::new(path))),
             _ => {
@@ -344,6 +381,13 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
         _ => Err(format!("unknown op {op}")),
     };
     reply(result);
+}
+
+fn import_bookmarks_file(app: &App, path: &Path) -> String {
+    let html = std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    let added = app.store().import_bookmarks(&crate::import::html_bookmarks(&html, "Imported"));
+    app.refresh_toolbars();
+    format!("{{\"added\":{added}}}")
 }
 
 /// Save every login in a CSV export (Passwords app, Safari, Chrome, Edge,

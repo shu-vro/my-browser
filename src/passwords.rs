@@ -80,6 +80,12 @@ impl Vault {
     }
 }
 
+/// Another app's secret from the keychain (a Chromium browser's "Safe
+/// Storage" key, for importing its passwords). macOS asks the user first.
+pub fn generic_password(service: &str) -> Option<Vec<u8>> {
+    keychain::generic_password(service)
+}
+
 /// The Security framework's item API. Its dictionaries are CFDictionaries,
 /// which are NSDictionaries (toll-free bridged); the keys are CFStrings.
 mod keychain {
@@ -89,6 +95,8 @@ mod keychain {
     unsafe extern "C" {
         static kSecClass: &'static NSString;
         static kSecClassInternetPassword: &'static NSString;
+        static kSecClassGenericPassword: &'static NSString;
+        static kSecAttrService: &'static NSString;
         static kSecAttrServer: &'static NSString;
         static kSecAttrAccount: &'static NSString;
         static kSecAttrProtocol: &'static NSString;
@@ -186,6 +194,20 @@ mod keychain {
                 unsafe { SecItemUpdate(&*q as *const _ as *const AnyObject, &*change as *const _ as *const AnyObject) };
         }
         if status == 0 { Ok(()) } else { Err(format!("The keychain refused to save it (error {status}).")) }
+    }
+
+    pub fn generic_password(service: &str) -> Option<Vec<u8>> {
+        let service = NSString::from_str(service);
+        let yes = NSNumber::new_bool(true);
+        let q = unsafe {
+            dict(&[
+                (kSecClass, kSecClassGenericPassword),
+                (kSecAttrService, &service),
+                (kSecReturnData, &yes),
+                (kSecMatchLimit, kSecMatchLimitOne),
+            ])
+        };
+        Some(copy_matching(&q)?.downcast::<NSData>().ok()?.to_vec())
     }
 
     pub fn delete(site: &str, user: &str) {

@@ -51,6 +51,7 @@
   <a href="#permissions">Site settings</a>
   <a href="#bookmarks">Bookmarks</a>
   <a href="#passwords">Passwords</a>
+  <a href="#import">Import</a>
   <a href="#history">History</a>
   <a href="#downloads">Downloads</a>
   <a href="#storage">Storage</a>
@@ -125,6 +126,15 @@
     <p><button id="import-passwords">Import from CSV…</button></p>
     <input type="search" id="passwords-q" placeholder="Search passwords">
     <ul class="list" id="passwords-list"></ul>
+  </section>
+
+  <section id="import">
+    <h1>Import</h1>
+    <p class="note">Bring bookmarks, history and passwords over from another browser on this Mac. Bookmarks go into an "Imported from …" folder; importing twice adds nothing twice. macOS may ask you to allow access to the other browser's data, and for its password key.</p>
+    <ul class="list" id="import-list"></ul>
+    <h2>From a file</h2>
+    <p class="note">Any browser can export its bookmarks as an HTML file (Safari: File → Export → Bookmarks). Passwords exported as CSV go in Settings → Passwords. Safari's passwords are in the Passwords app: export them from there.</p>
+    <p><button id="import-file">Import bookmarks file…</button></p>
   </section>
 
   <section id="history">
@@ -322,6 +332,25 @@ async function loadPasswords() {
 $("passwords-q").addEventListener("input", () => { clearTimeout(loadPasswords.t); loadPasswords.t = setTimeout(loadPasswords, 150); });
 $("import-passwords").onclick = () => call("passwords.import").then(r => { toast("Imported " + r.imported + (r.skipped ? ", skipped " + r.skipped + " (not HTTPS)" : "")); loadPasswords(); }, e => { if (String(e.message || e) !== "cancelled") fail(e); });
 loaders.passwords = loadPasswords;
+
+// ---- import
+async function loadImport() {
+  const sources = await call("import.sources");
+  const list = $("import-list"); list.replaceChildren();
+  if (!sources.length) list.append(el("li", "empty", "No other browsers found."));
+  for (const s of sources) {
+    const li = el("li"); const main = el("div", "main"); main.append(el("div", "title", s.name)); li.append(main);
+    const kinds = s.id === "safari" ? ["bookmarks", "history"] : ["bookmarks", "history", "passwords"];
+    for (const kind of kinds) {
+      const b = el("button", null, kind[0].toUpperCase() + kind.slice(1));
+      b.onclick = () => { b.disabled = true; call("import.run", s.id, kind).then(r => toast("Imported " + r.added + " " + kind + " from " + s.name), fail).finally(() => b.disabled = false); };
+      li.append(b);
+    }
+    list.append(li);
+  }
+}
+$("import-file").onclick = () => call("import.file").then(r => toast("Imported " + r.added + " bookmarks"), e => { if (String(e.message || e) !== "cancelled") fail(e); });
+loaders.import = loadImport;
 
 // ---- downloads
 async function loadDownloads() {

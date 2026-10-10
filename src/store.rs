@@ -492,6 +492,48 @@ impl Store {
         let _ = self.db.execute("DELETE FROM bookmarks WHERE id = ?1", [id]);
     }
 
+    /// Add imported (folder, title, url) bookmarks in one transaction; ones
+    /// already in that folder are skipped. Returns how many were added.
+    pub fn import_bookmarks(&self, items: &[(String, String, String)]) -> usize {
+        let _ = self.db.execute_batch("BEGIN");
+        let added = items
+            .iter()
+            .filter(|(folder, title, url)| {
+                self.db
+                    .execute(
+                        "INSERT INTO bookmarks (url, title, folder, at) SELECT ?1, ?2, ?3, ?4
+                         WHERE NOT EXISTS (SELECT 1 FROM bookmarks WHERE url = ?1 AND folder = ?3)",
+                        params![url, title, folder, now()],
+                    )
+                    .unwrap_or(0)
+                    > 0
+            })
+            .count();
+        let _ = self.db.execute_batch("COMMIT");
+        added
+    }
+
+    /// Add imported (url, title, unix time) visits in one transaction; a
+    /// visit to the same address at the same second is there already.
+    pub fn import_visits(&self, visits: &[(String, String, i64)]) -> usize {
+        let _ = self.db.execute_batch("BEGIN");
+        let added = visits
+            .iter()
+            .filter(|(url, title, at)| {
+                self.db
+                    .execute(
+                        "INSERT INTO history (url, title, at) SELECT ?1, ?2, ?3
+                         WHERE NOT EXISTS (SELECT 1 FROM history WHERE at = ?3 AND url = ?1)",
+                        params![url, title, at],
+                    )
+                    .unwrap_or(0)
+                    > 0
+            })
+            .count();
+        let _ = self.db.execute_batch("COMMIT");
+        added
+    }
+
     // ---- session (open tabs, for restore at launch)
 
     /// Open tabs as (window number, url, title), in tab-bar order.
@@ -646,6 +688,18 @@ mod tests {
         assert!(s.update_bookmark(b, "x", "Work//Docs").is_err(), "no empty folder names");
         s.remove_bookmark(a);
         assert_eq!(s.bookmarks("").len(), 1);
+    }
+
+    #[test]
+    fn imports_skip_what_is_already_there() {
+        let s = Store::open(None).unwrap();
+        let b = [("F".to_string(), "A".to_string(), "https://a/".to_string())];
+        assert_eq!(s.import_bookmarks(&b), 1);
+        assert_eq!(s.import_bookmarks(&b), 0, "importing twice adds nothing");
+        let v = [("https://a/".to_string(), "A".to_string(), 1_700_000_000)];
+        assert_eq!(s.import_visits(&v), 1);
+        assert_eq!(s.import_visits(&v), 0);
+        assert_eq!(s.history("", 10)[0].at, 1_700_000_000, "keeps the original time");
     }
 
     #[test]

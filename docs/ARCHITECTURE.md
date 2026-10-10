@@ -435,6 +435,32 @@ Passwords app, Safari, Chrome, Edge, Brave and Firefox (`parse_csv`).
 Tests: `passwords_are_offered_saved_and_filled_only_when_picked`,
 `private_windows_fill_passwords_but_never_save_them`.
 
+## Import from other browsers (`src/import.rs`)
+
+Settings → Import lists the browsers found under `$HOME/Library` (Chrome,
+Brave, Edge, Vivaldi, Arc and Chromium by their default profile folder, and
+Safari) and imports one kind at a time, only when clicked:
+- **Bookmarks**: Chromium's `Bookmarks` JSON (`NSJSONSerialization`) or
+  Safari's `Bookmarks.plist` (`NSPropertyListSerialization`), into
+  "Imported from <browser>/<its folders>"; a `/` in a folder name becomes `-`.
+- **History**: the newest 20,000 visits from Chromium's `History` (µs since
+  1601) or Safari's `History.db` (s since 2001), web pages only, with their
+  original times. The database and its `-wal` are copied to a temporary
+  folder first, since the browser may have them open.
+- **Passwords** (Chromium): `Login Data` rows are `v10` + AES-128-CBC with a
+  key derived by PBKDF2-HMAC-SHA1 (1003 rounds, "saltysalt") from the
+  browser's "Safe Storage" keychain secret. macOS asks the user before
+  handing that secret over; CommonCrypto (`CCKeyDerivationPBKDF`, `CCCrypt`)
+  does the rest. Safari's passwords are in the Passwords app: its CSV export.
+- **A bookmarks file** (`.html`, the Netscape format every browser exports).
+
+Imports run in one transaction each and skip what's already there (same
+address in the same folder, same visit second), so importing twice adds
+nothing twice. Reading another app's data can need the user's permission
+(Full Disk Access for Safari's folder); the error says so. Test:
+`bookmarks_and_history_import_from_other_browsers` (a made-up `$HOME` with a
+Brave profile and Safari's files).
+
 ## Reader mode
 
 View → Reader (⇧⌘R, `Tab::toggle_reader`) runs `resources/reader.js` in the
