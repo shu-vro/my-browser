@@ -382,6 +382,8 @@ fn links_and_files_from_other_apps_open_in_new_tabs() {
     let dir = TempProfile::new("openfile");
     std::fs::write(dir.0.join("page.html"), "<title>local file</title><p>hi").unwrap();
     assert!(b.send(&format!("openurl file://{}/page.html", dir.path())).starts_with("TABS count=3"));
+    // (Hidden bench windows can get a late "became key" for the previous tab.)
+    b.send("switch 2");
     let state = b.state_until(|s| s.ends_with("title=local file"));
     assert!(state.ends_with("title=local file"), "{state}");
     // Other schemes belong to other apps.
@@ -699,6 +701,8 @@ fn bookmarks_toggle_with_cmd_d_and_fill_the_menu() {
     let base = serve();
     let mut b = launch();
     b.nav(&format!("go {base}/page/saved"));
+    // (The title can arrive after LOADED; the bookmark takes it.)
+    b.state_until(|s| s.ends_with("title=saved"));
     assert_eq!(b.send("star"), "STAR on=0");
     b.key("cmd+d");
     assert_eq!(b.send("star"), "STAR on=1");
@@ -708,6 +712,7 @@ fn bookmarks_toggle_with_cmd_d_and_fill_the_menu() {
     assert_eq!(b.send("bookmarksmenu"), "BOOKMARKSMENU Remove Bookmark|Show All Bookmarks|-|saved");
     // Folders become submenus, listed before the bookmarks beside them.
     b.nav(&format!("go {base}/page/second"));
+    b.state_until(|s| s.ends_with("title=second"));
     b.key("cmd+d");
     b.bridge(&["bookmarks.update", &id, "Saved page", "Work/Docs"]);
     assert_eq!(b.send("bookmarksmenu"), "BOOKMARKSMENU Remove Bookmark|Show All Bookmarks|-|Work/|second");
