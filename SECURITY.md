@@ -88,9 +88,10 @@ site. Test: `websites_cannot_reach_the_local_network`.
 
 ### Web content → camera, microphone, location
 
-Asked per site with a sheet, remembered unless unticked, and listed in
-Settings → Site settings. Notifications and screen sharing are denied
-(WebKit's default without a delegate).
+Asked per site with a sheet, remembered unless unticked (never in private
+windows), and listed in Settings → Site settings. Screen sharing is asked the
+same way, and then macOS's own picker decides what is shared. Web
+notifications are always denied.
 
 ### Web content → file system (downloads)
 
@@ -170,7 +171,7 @@ entitlements.
 - No ad *hiding* (cosmetic filtering) and no debouncing of bounce trackers.
 - The local-network shield matches addresses, not DNS answers: a public name
   that resolves to a private address (DNS rebinding) isn't caught.
-- Notifications and screen sharing aren't supported (denied).
+- Web notifications aren't supported (denied), by choice.
 - The tracker list is updated by hand (`scripts/update-trackers.py`), not
   automatically. Updating automatically would mean the browser making network
   requests of its own, which conflicts with policy 1 unless the user opts in.

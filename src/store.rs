@@ -77,8 +77,9 @@ pub struct Extension {
 /// default: ask (camera, microphone, location, more than one download per
 /// page), blocked (local network),
 /// protections on (shields).
-pub const PERMISSIONS: [(&str, [&str; 2]); 6] = [
+pub const PERMISSIONS: [(&str, [&str; 2]); 7] = [
     ("camera", ["allow", "deny"]),
+    ("screen", ["allow", "deny"]),
     ("downloads", ["allow", "deny"]),
     ("microphone", ["allow", "deny"]),
     ("location", ["allow", "deny"]),

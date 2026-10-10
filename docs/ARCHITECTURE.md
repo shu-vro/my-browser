@@ -267,14 +267,16 @@ the default.
 | Kind | Values | Default | Used by |
 |---|---|---|---|
 | `camera`, `microphone` | allow, deny | ask | `webView:requestMediaCapturePermissionForOrigin:…` |
+| `screen` | allow, deny | ask | `_webView:requestDisplayCapturePermissionForOrigin:…` (private); then macOS's picker chooses what to share |
 | `location` | allow, deny | ask | `webView:requestGeolocationPermissionForOrigin:…` (implemented by selector; newer than our bindings) |
 | `downloads` | allow, deny | ask from the 2nd download per page | `Tab::allow_download` |
 | `local_network` | allow | blocked | exemptions in the local-network rule list |
 | `shields` | off | on | exemptions in the tracker rule list; no fingerprinting protection or parameter stripping |
 
 A prompt is a sheet "<site> wants to …" with Allow / Don't Allow and a
-"Remember for this site" checkbox (on). Notifications and screen sharing
-aren't wired up: WebKit denies them without a delegate. Settings → Site
+"Remember for this site" checkbox (on; absent in private windows). Web
+notifications are denied, by choice: WebKit's default without a provider,
+and the owner doesn't want them. Settings → Site
 settings lists every site with a saved choice and changes or forgets it
 (`perm.list`, `perm.set`, `perm.forget`). Changing Shields or local network
 access recompiles the affected rule list (the tracker list takes ~1 s, the
@@ -401,6 +403,26 @@ The list is fixed in code and resolved under `$HOME`. Nothing from the page
 chooses a path, and current profiles' stores
 (`WebKit/<app>/WebsiteDataStore/<id>`) are never in it. Sizes don't follow
 symlinks.
+
+## Media: fullscreen, picture in picture, screen sharing
+
+- **Element fullscreen** (`setElementFullscreenEnabled:`, public) is off in
+  a plain WKWebView, so video sites' fullscreen buttons did nothing; it's on.
+- **Picture in picture**: `_setAllowsPictureInPictureMediaPlayback:`
+  (private) turns on the standard API and the video context menu's item.
+  View → Picture in Picture (⌥⌘P, `Tab::picture_in_picture`) uses WebKit's
+  `_togglePictureInPicture` when it has a video to toggle, else asks the
+  largest playing video in the page through the browser's own script world.
+- **Screen sharing**: `_setScreenCaptureEnabled:` (private) and the private
+  UI-delegate method above. A hidden page can't share (WebKit refuses with
+  InvalidStateError), so the test runs `--on-top`.
+
+All three cost nothing until a page uses them. The private ones are `TUNE`
+lines (`picture_in_picture`, `screen_capture`), and so are the private
+UI-delegate methods (`context_menu`, `page_print`, `display_capture`): WebKit
+only calls delegate methods its `WKUIDelegatePrivate` protocol declares, so
+`App::ready` checks the protocol still has them. Test:
+`video_fullscreen_picture_in_picture_and_screen_sharing`.
 
 ## Link context menu
 
@@ -584,6 +606,7 @@ key press does.
 | ⌘T / ⌘N / ⌘W | New tab / new window / close tab |
 | ⇧⌘N | New private window |
 | ⌘P | Print (the panel's PDF menu saves a PDF) |
+| ⌥⌘P | Picture in picture |
 | ⇧⌘T | Reopen closed tab |
 | ⌘L | Address bar |
 | ⌘R / ⌘. | Reload / stop |
@@ -628,6 +651,7 @@ active tab.
 | `netbutton` | `NETBUTTON <0\|1>`: the blocked-requests button is showing |
 | `openurl <url>` | a `TABS` line: opens it like a link from another app (`application:openURLs:`) |
 | `star` | `STAR on=<0\|1>`: the star shows the page as bookmarked |
+| `eval <js>` | `EVAL <result>`: runs the script in the page, with a user gesture |
 | `menu <Menu>[/<Item>]` | `MENU <item>\|…` (`-` separator) after picking `<Item>` if given, as a click would |
 | `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |
 | `printpdf <path>` | `PRINTED <0\|1>` once the page is saved there as a PDF (also printed when any print panel closes) |

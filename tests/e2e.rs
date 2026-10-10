@@ -430,15 +430,20 @@ fn engine_and_privacy_settings_are_applied() {
     let mut want = [
         "ad_attribution_off",
         "committed_url",
+        "context_menu",
+        "display_capture",
         "ext_background_view",
         "fingerprinting_protection",
         "global_privacy_control",
         "https_first",
         "jit",
         "local_network_shield",
+        "page_print",
         "pagecache",
+        "picture_in_picture",
         "prewarm",
         "proccache",
+        "screen_capture",
         "suspend",
         "third_party_cookies_blocked",
         "tracking_prevention",
@@ -801,6 +806,37 @@ fn every_window_comes_back_after_a_restart() {
     assert!(b.state_until(|s| s.ends_with("title=c")).ends_with("title=c"));
     b.key("cmd+shift+]");
     assert!(b.state_until(|s| s.ends_with("title=c")).ends_with("title=c"), "one tab in this window");
+    b.quit();
+}
+
+#[test]
+fn video_fullscreen_picture_in_picture_and_screen_sharing() {
+    let base = serve();
+    // Hidden pages can't share their screen: this test needs a visible window.
+    let mut b = launch_with(&["--on-top"]);
+    b.nav(&format!("go {base}/page/media"));
+    // Video sites' fullscreen buttons and picture in picture work.
+    assert_eq!(b.send("eval document.fullscreenEnabled"), "EVAL 1");
+    assert_eq!(b.send("eval document.pictureInPictureEnabled"), "EVAL 1");
+    assert_eq!(
+        b.send("menu View/Picture in Picture").split('|').next(),
+        Some("MENU Reload Page"),
+        "no video: nothing happens"
+    );
+    // Screen sharing asks first; "Don't Allow" reaches the page as NotAllowedError.
+    let share = "eval navigator.mediaDevices.getDisplayMedia({video: true}).then(() => document.title = 'shared', \
+                 e => document.title = 'refused ' + e.name), 1";
+    writeln!(b.stdin, "{share}").unwrap();
+    assert!(b.wait_for("DIALOG").ends_with("127.0.0.1 wants to share your screen"));
+    // (The script's EVAL line can come before or after the prompt.)
+    writeln!(b.stdin, "dialog cancel").unwrap();
+    assert_eq!(b.wait_for("ANSWERED"), "ANSWERED 1");
+    assert!(b.state_until(|s| s.ends_with("title=refused NotAllowedError")).ends_with("refused NotAllowedError"));
+    // A site set to Block isn't asked.
+    b.bridge(&["perm.set", "127.0.0.1", "screen", "deny"]);
+    b.send("eval document.title = 'again', 1");
+    assert_eq!(b.send(share), "EVAL 1");
+    assert!(b.state_until(|s| s.ends_with("title=refused NotAllowedError")).ends_with("refused NotAllowedError"));
     b.quit();
 }
 

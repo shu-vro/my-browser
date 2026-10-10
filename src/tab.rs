@@ -116,9 +116,10 @@ pub struct TabIvars {
 }
 
 /// Permissions a site asks for: (kind, site menu label, what the prompt says it wants to do).
-const SITE_PERMISSIONS: [(&str, &str, &str); 4] = [
+const SITE_PERMISSIONS: [(&str, &str, &str); 5] = [
     ("camera", "Camera", "use your camera"),
     ("microphone", "Microphone", "use your microphone"),
+    ("screen", "Screen sharing", "share your screen"),
     ("location", "Location", "see your location"),
     ("downloads", "Automatic downloads", "download multiple files"),
 ];
@@ -349,6 +350,24 @@ define_class!(
             let decide = decide.copy();
             let site = unsafe { origin.host() }.to_string().to_ascii_lowercase();
             self.ask_permission(&site, kinds, move |ok| decide.call((if ok { WKPermissionDecision::Grant } else { WKPermissionDecision::Deny },)));
+        }
+
+        /// Screen sharing (`getDisplayMedia`, WKUIDelegate private): the
+        /// site's saved choice, else ask; then macOS's own picker chooses
+        /// what to share.
+        #[unsafe(method(_webView:requestDisplayCapturePermissionForOrigin:initiatedByFrame:withSystemAudio:decisionHandler:))]
+        fn display_capture_permission(
+            &self,
+            _web: &WKWebView,
+            origin: &WKSecurityOrigin,
+            _frame: &WKFrameInfo,
+            _audio: Bool,
+            decide: &DynBlock<dyn Fn(isize)>,
+        ) {
+            let decide = decide.copy();
+            let site = unsafe { origin.host() }.to_string().to_ascii_lowercase();
+            // WKDisplayCapturePermissionDecision: Deny 0, ScreenPrompt 1.
+            self.ask_permission(&site, &["screen"], move |ok| decide.call((ok as isize,)));
         }
 
         /// <input type=file>: a native file picker.
@@ -1187,6 +1206,32 @@ impl Tab {
         } else {
             unsafe { web.loadRequest(&NSURLRequest::requestWithURL(&nsurl)) };
         }
+    }
+
+    /// Picture in picture for the page's video: WebKit's own toggle (private),
+    /// else the standard API on the largest playing video.
+    pub fn picture_in_picture(&self) {
+        let Some(web) = self.web() else { return };
+        let responds = |s| -> bool { unsafe { msg_send![&*web, respondsToSelector: s] } };
+        if responds(sel!(_canTogglePictureInPicture)) && responds(sel!(_togglePictureInPicture)) {
+            let can: bool = unsafe { msg_send![&*web, _canTogglePictureInPicture] };
+            if can {
+                let _: () = unsafe { msg_send![&*web, _togglePictureInPicture] };
+                return;
+            }
+        }
+        let js = "(() => { if (document.pictureInPictureElement) return document.exitPictureInPicture(); \
+                  const v = [...document.querySelectorAll('video')].filter(v => v.readyState > 0) \
+                  .sort((a, b) => (b.clientWidth * b.clientHeight) - (a.clientWidth * a.clientHeight))[0]; \
+                  if (v) v.requestPictureInPicture(); })()";
+        unsafe {
+            web.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+                &NSString::from_str(js),
+                None,
+                &WKContentWorld::defaultClientWorld(self.mtm()),
+                None,
+            )
+        };
     }
 
     /// Put our link items in place of WebKit's "Open Link in New Window"

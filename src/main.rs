@@ -514,6 +514,12 @@ define_class!(
             self.with_active(|t| t.window().toggleTabOverview(None));
         }
 
+        /// Picture in picture for the page's video (⌥⌘P).
+        #[unsafe(method(pictureInPicture:))]
+        fn picture_in_picture_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.picture_in_picture());
+        }
+
         #[unsafe(method(printPage:))]
         fn print_action(&self, _s: Option<&AnyObject>) {
             self.with_active(|t| t.print(None));
@@ -692,14 +698,26 @@ impl App {
             Some(_) => unsafe { WKWebsiteDataStore::dataStoreForIdentifier(&self.profile_uuid(), mtm) },
             None => unsafe { WKWebsiteDataStore::nonPersistentDataStore(mtm) },
         };
-        let line = |name: &str, value: bool, ok: bool| {
-            format!("TUNE {name}={} {}", value as u8, if ok { "ok" } else { "missing" })
-        };
+        let line = tune_line;
         let mut report: Vec<String> =
             privacy::harden_data_store(&data_store).into_iter().map(|(n, ok)| line(n, true, ok)).collect();
         let prefs = unsafe { WKPreferences::new(mtm) };
         for (n, ok) in privacy::harden_preferences(&prefs, self.store().flag("safe_browsing")) {
             report.push(line(n, true, ok));
+        }
+        // Media: element fullscreen (public, but off in WKWebView, so video
+        // sites' fullscreen buttons did nothing), picture in picture and
+        // screen sharing (private).
+        unsafe { prefs.setElementFullscreenEnabled(true) };
+        for (name, setter) in [
+            ("picture_in_picture", sel!(_setAllowsPictureInPictureMediaPlayback:)),
+            ("screen_capture", sel!(_setScreenCaptureEnabled:)),
+        ] {
+            let ok = responds(&prefs, setter);
+            if ok {
+                let _: () = unsafe { objc2::runtime::MessageReceiver::send_message(&*prefs, setter, (Bool::YES,)) };
+            }
+            report.push(line(name, true, ok));
         }
         for (n, ok) in privacy::harden_webpage_preferences(&*unsafe { WKWebpagePreferences::new(mtm) }, true) {
             report.push(line(n, true, ok));
@@ -781,6 +799,18 @@ impl App {
             if let Some(t) = tabs.get(i).or(tabs.first()) {
                 self.select(t);
             }
+        }
+        // Private UI-delegate methods we implement: WebKit must still declare
+        // them, or the feature would quietly stop working.
+        for (name, method) in [
+            ("context_menu", sel!(_webView:getContextMenuFromProposedMenu:forElement:userInfo:completionHandler:)),
+            ("page_print", sel!(_webView:printFrame:pdfFirstPageSize:completionHandler:)),
+            (
+                "display_capture",
+                sel!(_webView:requestDisplayCapturePermissionForOrigin:initiatedByFrame:withSystemAudio:decisionHandler:),
+            ),
+        ] {
+            self.ivars().report.borrow_mut().push(tune_line(name, true, webkit_declares(method)));
         }
         if self.is_bench() {
             for line in self.ivars().report.borrow().iter() {
@@ -1588,6 +1618,25 @@ impl App {
             ("home", Some(t)) => say!("{}", t.home_state()),
             ("netbutton", Some(t)) => say!("NETBUTTON {}", t.net_button_shown() as u8),
             ("star", Some(t)) => say!("{}", t.star_state()),
+            // Run JavaScript in the page (as the page, with a user gesture):
+            // `EVAL <result>`.
+            ("eval", Some(t)) => match t.web() {
+                Some(web) => {
+                    let done = RcBlock::new(|r: *mut AnyObject, e: *mut NSError| {
+                        let text: String = match (unsafe { r.as_ref() }, unsafe { e.as_ref() }) {
+                            (Some(r), _) => {
+                                let d: Option<Retained<NSString>> = unsafe { msg_send![r, description] };
+                                d.map(|d| d.to_string()).unwrap_or_default()
+                            }
+                            (None, Some(e)) => format!("error {}", e.localizedDescription()),
+                            _ => "undefined".into(),
+                        };
+                        say!("EVAL {}", text.replace('\n', " "));
+                    });
+                    unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(arg), Some(&done)) };
+                }
+                None => say!("EVAL error no page"),
+            },
             // A menu bar menu's items as shown: `MENU <title>|…` (`-` separator).
             // `menu File/Duplicate Tab` picks that item first, as a click would.
             ("menu", _) => {
@@ -1957,6 +2006,18 @@ fn tune_value(spec: Option<&str>, name: &str, default: bool) -> bool {
     .unwrap_or(default)
 }
 
+fn tune_line(name: &str, value: bool, ok: bool) -> String {
+    format!("TUNE {name}={} {}", value as u8, if ok { "ok" } else { "missing" })
+}
+
+/// Whether WebKit still declares this optional UI-delegate method. It only
+/// calls the methods it knows, so a renamed one would fail silently.
+fn webkit_declares(method: Sel) -> bool {
+    let Some(protocol) = objc2::runtime::AnyProtocol::get(c"WKUIDelegatePrivate") else { return false };
+    let found = unsafe { objc2::ffi::protocol_getMethodDescription(protocol, method, Bool::NO, Bool::YES) };
+    found.name.is_some()
+}
+
 fn responds(obj: &AnyObject, sel: Sel) -> bool {
     unsafe { msg_send![obj, respondsToSelector: sel] }
 }
@@ -2091,6 +2152,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Zoom In", sel!(zoomIn:), "=", cmd, true),
                 ("Zoom Out", sel!(zoomOut:), "-", cmd, true),
                 ("Actual Size", sel!(actualSize:), "0", cmd, true),
+                ("Picture in Picture", sel!(pictureInPicture:), "p", cmd_alt, true),
             ],
         ),
         (

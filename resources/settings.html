@@ -221,7 +221,7 @@ loaders.privacy = loadSettings;
 $("clear-data").onclick = () => { if (confirm("Sign out of all sites and delete all cookies, caches and site data?")) call("data.clear").then(() => toast("Cleared"), fail); };
 
 // ---- site permissions
-const PERM_LABELS = { camera: "Camera", microphone: "Microphone", location: "Location", downloads: "Multiple downloads" };
+const PERM_LABELS = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", downloads: "Multiple downloads" };
 async function loadPermissions() {
   const rows = await call("perm.list");
   const sites = {};

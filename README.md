@@ -49,7 +49,9 @@ worse is rejected.
   and popups. Each one is off on every site until you click its button there,
   and doesn't even start (no memory) until its first click. Right-click a
   button to let it run everywhere.
-- **Site permissions:** camera, microphone, location and multiple downloads
+- **Video**: fullscreen and picture in picture (⌥⌘P or the video's menu).
+  **Screen sharing** for video calls, asked per site.
+- **Site permissions:** camera, microphone, screen sharing, location and multiple downloads
   are asked per site and remembered; see and change them all in Settings →
   Site settings, or for one site from the button left of the address bar.
 - **Storage controls:** see and clear cookies, cache, history and the
