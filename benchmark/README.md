@@ -15,6 +15,8 @@ cargo build --release            # build the browser and the harness
 | Flag | Meaning |
 |---|---|
 | `--runs N` | Repeat every benchmark N times and take the median (default 3). Use `--runs 1` for a quick look. |
+| `--only startup,pages,leak` | Run only these parts (startup: idle CPU, wakeups and footprint, about 20 s per run). Can't be saved. |
+| `--page anim,text` | With `pages`, measure only these pages. Can't be saved. |
 | `--save` | Write the results to `benchmark/bars.tsv`. Commit that file. Refused if any metric regressed, so bars can only get better. |
 | `--rebaseline` | Save even if something regressed. Only for when **the harness's way of measuring** changed, so old bars aren't comparable. Never use it to accept a browser change that made things worse. Say why in the commit. |
 | `MYB_TUNE` (env) | Override the browser's engine settings for an experiment, for example `MYB_TUNE=jit=1 ./target/release/bench`. See [Engine settings](#engine-settings). |
@@ -148,6 +150,16 @@ MYB_TUNE=jit=0,prewarm=1 ./target/release/bench --runs 2
 | `proccache` | on | Keeps exited pages' processes for reuse | No measured effect yet; needs the cross-site re-test |
 | `jit` | on (user setting) | JavaScript JIT compiler | Off: ~100 MB less in a heavy session, but JS 2.7× slower (`compute_load_ms` 266 → 708) |
 | `suspend` | off | Suspends background processes under memory pressure | Can't be measured: runs under pressure are voided |
+| `fullscreen`, `picture_in_picture`, `screen_capture` | on | Element fullscreen (public), picture in picture and screen capture (private) | No effect on `anim` or idle numbers in an A/B against the build without them (2026-10-11) |
+| `passwords_script` | on | The saved-passwords form script on every page | 0.1–0.5 MB idle, within noise (2026-10-11) |
+
+**Compare against a build, not only the bars.** The full benchmark's
+activity numbers (`*_cpu_ms_per_s`, `*_wakeups_per_s`) move a lot with what
+else the Mac is doing: one full run read `anim_wakeups_per_s` 85 and the next
+morning's A/B read 8 for the same build. To judge a change, build the commit
+before it in a worktree (`git worktree add ../base <commit>`, then
+`cargo build --release` there), copy this `bench` next to its binary, and run
+both back to back with `--only`/`--page`.
 
 Keep a new default only if the benchmark shows it beats the bars without
 regressing anything. Record the numbers in the code comment, in

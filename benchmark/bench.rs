@@ -401,7 +401,9 @@ fn bench_startup(exe: &Path, base: &str, s: &mut Samples) -> Result<(), String> 
 
 /// Each page in a fresh browser: load time, settled footprint, peak.
 fn bench_pages(exe: &Path, base: &str, s: &mut Samples) -> Result<(), String> {
-    for p in PAGES.iter().filter(|p| **p != "blank") {
+    // `--page anim,text` measures only those (to chase one number quickly).
+    let only: Option<Vec<String>> = arg_list("--page");
+    for p in PAGES.iter().filter(|p| **p != "blank" && only.as_ref().is_none_or(|o| o.iter().any(|x| x == *p))) {
         let (mut b, _) = Browser::launch(exe)?;
         record(s, &format!("{p}_load_ms"), b.go(&format!("{base}/{p}"))?);
         std::thread::sleep(SETTLE);
@@ -502,10 +504,24 @@ fn format_bars(results: &BTreeMap<String, f64>) -> String {
 
 // ---------------------------------------------------------------------------
 
+/// The comma-separated values after `flag`, if given.
+fn arg_list(flag: &str) -> Option<Vec<String>> {
+    let args: Vec<String> = std::env::args().collect();
+    let i = args.iter().position(|a| a == flag)?;
+    Some(args.get(i + 1)?.split(',').map(str::to_string).collect())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let rebaseline = args.iter().any(|a| a == "--rebaseline");
     let save = rebaseline || args.iter().any(|a| a == "--save");
+    // `--only startup,pages` and `--page anim` run part of the benchmark;
+    // such a partial run can't be saved as bars.
+    let only = arg_list("--only");
+    if save && (only.is_some() || arg_list("--page").is_some()) {
+        eprintln!("--save needs a full run: drop --only and --page");
+        std::process::exit(2);
+    }
     let runs: usize = args.iter().position(|a| a == "--runs").and_then(|i| args.get(i + 1)?.parse().ok()).unwrap_or(3);
     if cfg!(debug_assertions) {
         eprintln!("warning: debug build; bars should come from `cargo build --release`");
@@ -525,6 +541,9 @@ fn main() {
         type Bench = fn(&Path, &str, &mut Samples) -> Result<(), String>;
         let benches: [(&str, Bench); 3] = [("startup", bench_startup), ("pages", bench_pages), ("leak", bench_leak)];
         for (name, f) in benches {
+            if only.as_ref().is_some_and(|o| !o.iter().any(|x| x == name)) {
+                continue;
+            }
             eprintln!("  {name}");
             if let Err(e) = f(&exe, &base, &mut s) {
                 eprintln!("benchmark {name} failed: {e}");

@@ -772,16 +772,18 @@ impl App {
         // Media: element fullscreen (public, but off in WKWebView, so video
         // sites' fullscreen buttons did nothing), picture in picture and
         // screen sharing (private).
-        unsafe { prefs.setElementFullscreenEnabled(true) };
+        let spec = std::env::var("MYB_TUNE").ok();
+        let tune = |name, default| tune_value(spec.as_deref(), name, default);
+        unsafe { prefs.setElementFullscreenEnabled(tune("fullscreen", true)) };
         for (name, setter) in [
             ("picture_in_picture", sel!(_setAllowsPictureInPictureMediaPlayback:)),
             ("screen_capture", sel!(_setScreenCaptureEnabled:)),
         ] {
-            let ok = responds(&prefs, setter);
+            let (on, ok) = (tune(name, true), responds(&prefs, setter));
             if ok {
-                let _: () = unsafe { objc2::runtime::MessageReceiver::send_message(&*prefs, setter, (Bool::YES,)) };
+                let _: () = unsafe { objc2::runtime::MessageReceiver::send_message(&*prefs, setter, (Bool::new(on),)) };
             }
-            report.push(line(name, true, ok));
+            report.push(line(name, on, ok));
         }
         for (n, ok) in privacy::harden_webpage_preferences(&*unsafe { WKWebpagePreferences::new(mtm) }, true) {
             report.push(line(n, true, ok));
@@ -807,21 +809,23 @@ impl App {
         };
         // Saved passwords: resources/passwords.js in its own world, at the
         // top of each page only, reporting to the "passwords" handler there.
-        unsafe {
+        if tune_value(std::env::var("MYB_TUNE").ok().as_deref(), "passwords_script", true) {
             let world = tab::passwords_world(mtm);
-            let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
-                WKUserScript::alloc(mtm),
-                &NSString::from_str(PASSWORDS_JS),
-                WKUserScriptInjectionTime::AtDocumentEnd,
-                true,
-                &world,
-            );
-            content.addUserScript(&script);
-            content.addScriptMessageHandler_contentWorld_name(
-                ProtocolObject::from_ref(self),
-                &world,
-                &NSString::from_str("passwords"),
-            );
+            unsafe {
+                let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
+                    WKUserScript::alloc(mtm),
+                    &NSString::from_str(PASSWORDS_JS),
+                    WKUserScriptInjectionTime::AtDocumentEnd,
+                    true,
+                    &world,
+                );
+                content.addUserScript(&script);
+                content.addScriptMessageHandler_contentWorld_name(
+                    ProtocolObject::from_ref(self),
+                    &world,
+                    &NSString::from_str("passwords"),
+                );
+            }
         }
         let vault = match &profile {
             Some(_) => passwords::Vault::Keychain,
