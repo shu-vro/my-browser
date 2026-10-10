@@ -841,6 +841,38 @@ fn video_fullscreen_picture_in_picture_and_screen_sharing() {
 }
 
 #[test]
+fn reader_mode_shows_the_article_alone_without_scripts() {
+    let base = serve();
+    let mut b = launch();
+    let para = "Lightweight browsers keep memory low, and readers want the words, not the clutter around them. ";
+    let page = format!(
+        "addEventListener('DOMContentLoaded', () => {{ document.title = 'Story page'; document.body.innerHTML = \
+         '<nav class=menu><a href=/a>Home</a> <a href=/b>Sections</a></nav>\
+          <div class=sidebar-ads><p>Buy things now, buy them today, buy them all, they are on sale here.</p></div>\
+          <article><h1>Big story</h1><p>{p}{p}</p><p>{p}</p><img data-src=/page/img src=data:,><p>{p}{p}</p></article>\
+          <footer>Copyright</footer>'; setInterval(() => document.title = 'Story page', 50); }});",
+        p = para
+    );
+    b.nav(&format!("go {base}/script/{}", encode(&page)));
+    assert_eq!(b.send("reader"), "READER on");
+    assert!(b.state_until(|s| s.ends_with("title=Big story")).ends_with("title=Big story"));
+    let text = b.send("eval document.body.innerText");
+    assert!(text.contains("Big story") && text.contains("readers want the words"), "{text}");
+    assert!(!text.contains("Sections") && !text.contains("Buy things") && !text.contains("Copyright"), "{text}");
+    // The address stays the page's, relative links and lazy images resolve, and no script runs.
+    assert!(b.send("state").contains(&format!("url={base}/script/")));
+    assert_eq!(b.send("eval document.querySelector('img').src"), format!("EVAL {base}/page/img"));
+    assert_eq!(b.send("eval document.scripts.length"), "EVAL 0");
+    // Again: back to the page.
+    assert_eq!(b.send("reader"), "READER off");
+    assert!(b.state_until(|s| s.ends_with("title=Story page")).ends_with("title=Story page"));
+    // A page without an article: nothing to show.
+    b.nav(&format!("go {base}/page/short"));
+    assert_eq!(b.send("reader"), "READER none");
+    b.quit();
+}
+
+#[test]
 fn history_is_recorded_searchable_and_clearable() {
     let base = serve();
     let mut b = launch();

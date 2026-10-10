@@ -404,6 +404,23 @@ chooses a path, and current profiles' stores
 (`WebKit/<app>/WebsiteDataStore/<id>`) are never in it. Sizes don't follow
 symlinks.
 
+## Reader mode
+
+View → Reader (⇧⌘R, `Tab::toggle_reader`) runs `resources/reader.js` in the
+browser's own script world (the page can't see or change it): the element
+whose own paragraphs hold the most text wins (`<article>`/`<main>` get a
+head start), then everything but text, headings, lists, quotes, code,
+tables, links and images is dropped, with every attribute except `href`,
+`src`, `srcset` and `alt`, lazy images get their real address, and
+`javascript:` links go. Rust builds the page (`reader_page`: escaped title,
+large serif type, light/dark) with a policy of `default-src 'none'`, so no
+script can run even if the cleaning missed one, and loads it at the page's
+address so relative links and images resolve. WebKit replaces the page's
+history entry with it, so leaving reader mode (again, or Reload) loads the
+page fresh. No article (under ~300 characters of paragraphs): nothing
+happens. No visit is recorded for the reader page. Nothing runs on any page
+until the user asks. Test: `reader_mode_shows_the_article_alone_without_scripts`.
+
 ## Media: fullscreen, picture in picture, screen sharing
 
 - **Element fullscreen** (`setElementFullscreenEnabled:`, public) is off in
@@ -607,6 +624,7 @@ key press does.
 | ⇧⌘N | New private window |
 | ⌘P | Print (the panel's PDF menu saves a PDF) |
 | ⌥⌘P | Picture in picture |
+| ⇧⌘R | Reader mode |
 | ⇧⌘T | Reopen closed tab |
 | ⌘L | Address bar |
 | ⌘R / ⌘. | Reload / stop |
@@ -651,6 +669,7 @@ active tab.
 | `netbutton` | `NETBUTTON <0\|1>`: the blocked-requests button is showing |
 | `openurl <url>` | a `TABS` line: opens it like a link from another app (`application:openURLs:`) |
 | `star` | `STAR on=<0\|1>`: the star shows the page as bookmarked |
+| `reader` | `READER on\|off\|none`: toggles reader mode (`none`: no article found) |
 | `eval <js>` | `EVAL <result>`: runs the script in the page, with a user gesture |
 | `menu <Menu>[/<Item>]` | `MENU <item>\|…` (`-` separator) after picking `<Item>` if given, as a click would |
 | `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |

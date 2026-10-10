@@ -39,6 +39,7 @@ worse is rejected.
   Downloaded files stay.
 - **Bookmarks** (⌘D or the star): in the Bookmarks menu, with folders, and in
   Settings → Bookmarks.
+- **Reader mode** (⇧⌘R): the article alone, in large type, without scripts.
 - **Print and save as PDF** (⌘P).
 - **Link menu**: right-click a link to open it in a new tab, window or
   private window.

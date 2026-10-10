@@ -96,6 +96,9 @@ pub struct TabIvars {
     crashes: Cell<(u32, Option<Instant>)>,
     /// The next finished load is our error page, not a visit.
     error_page: Cell<bool>,
+    /// Reader mode: the next commit is the reader page; the page shown is one.
+    reader_loading: Cell<bool>,
+    reader: Cell<bool>,
     /// Extension buttons at the right of the toolbar, and (id, on) for each.
     ext_buttons: RefCell<Vec<(Retained<NSButton>, bool)>>,
     /// Shown while a network request waits for an answer (netgate.rs).
@@ -203,6 +206,7 @@ define_class!(
         #[unsafe(method(webView:didCommitNavigation:))]
         fn did_commit_navigation(&self, _web: &WKWebView, _nav: Option<&WKNavigation>) {
             self.ivars().visit.set(None);
+            self.ivars().reader.set(self.ivars().reader_loading.replace(false));
             self.ivars().requested.replace(None);
             self.ivars().allow_internal.replace(None);
             // A new page starts with a clean slate for dialogs and downloads.
@@ -218,7 +222,8 @@ define_class!(
             self.refresh_toolbar();
             let url = self.url();
             let error_page = self.ivars().error_page.replace(false);
-            if !error_page && !self.is_private() && (url.starts_with("http://") || url.starts_with("https://")) {
+            let reader = self.ivars().reader.get();
+            if !error_page && !reader && !self.is_private() && (url.starts_with("http://") || url.starts_with("https://")) {
                 let id = self.app().store().add_visit(&url, &self.ivars().title.borrow());
                 self.ivars().visit.set(Some(id));
             }
@@ -1208,6 +1213,53 @@ impl Tab {
         }
     }
 
+    /// Reader mode (⇧⌘R): the page's article alone, in large type, no
+    /// scripts. Again (or Reload) loads the page again. Costs nothing until used.
+    pub fn toggle_reader(&self) {
+        let Some(web) = self.web() else { return };
+        if self.ivars().reader.get() {
+            // WebKit replaced the page's history entry with the reader page
+            // (same address), so it's loaded again rather than gone back to.
+            let url = unsafe { web.URL() }.and_then(|u| u.absoluteString()).map(|u| u.to_string());
+            if let Some(url) = url {
+                self.load(&url);
+            }
+            return self.report_reader("off");
+        }
+        let this = self.retain();
+        let done = RcBlock::new(move |r: *mut AnyObject, _e: *mut NSError| {
+            let json = unsafe { r.as_ref() }.and_then(|r| r.downcast_ref::<NSString>()).map(|s| s.to_string());
+            match json.as_deref().and_then(reader_page) {
+                Some(html) => this.show_reader(&html),
+                None => this.report_reader("none"),
+            }
+        });
+        unsafe {
+            web.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+                &NSString::from_str(READER_JS),
+                None,
+                &WKContentWorld::defaultClientWorld(self.mtm()),
+                Some(&done),
+            )
+        };
+    }
+
+    /// Show the reader page in place of the page, at the page's address (so
+    /// its images and links resolve).
+    fn show_reader(&self, html: &str) {
+        let Some(web) = self.web() else { return };
+        let base = unsafe { web.URL() };
+        self.ivars().reader_loading.set(true);
+        unsafe { web.loadHTMLString_baseURL(&NSString::from_str(html), base.as_deref()) };
+        self.report_reader("on");
+    }
+
+    fn report_reader(&self, state: &str) {
+        if self.app().is_bench() {
+            say!("READER {state}");
+        }
+    }
+
     /// Picture in picture for the page's video: WebKit's own toggle (private),
     /// else the standard API on the largest playing video.
     pub fn picture_in_picture(&self) {
@@ -1369,6 +1421,8 @@ impl Tab {
 
     pub fn reload(&self) {
         match self.web() {
+            // Reloading the reader page means the page itself.
+            Some(_) if self.ivars().reader.get() => self.toggle_reader(),
             Some(web) => unsafe {
                 web.reload();
             },
@@ -1929,6 +1983,38 @@ pub fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
+static READER_JS: &str = include_str!("../resources/reader.js");
+
+/// The reader page for resources/reader.js's result (`{title, site, html}`),
+/// or None if it found no article. The article HTML was cleaned by the
+/// script, and the page's policy forbids every script anyway.
+fn reader_page(json: &str) -> Option<String> {
+    use objc2_foundation::{NSData, NSDictionary, NSJSONReadingOptions, NSJSONSerialization};
+    let data = NSData::with_bytes(json.as_bytes());
+    let value = NSJSONSerialization::JSONObjectWithData_options_error(&data, NSJSONReadingOptions::empty()).ok()?;
+    let dict = value.downcast_ref::<NSDictionary>()?;
+    let field = |k: &str| {
+        dict.objectForKey(&NSString::from_str(k)).and_then(|v| v.downcast::<NSString>().ok()).map(|s| s.to_string())
+    };
+    let (title, site, html) = (field("title")?, field("site").unwrap_or_default(), field("html")?);
+    Some(format!(
+        "<!doctype html><html><head><meta charset=utf-8>\
+         <meta http-equiv=Content-Security-Policy content=\"default-src 'none'; img-src * data:; media-src *; style-src 'unsafe-inline'\">\
+         <title>{t}</title><style>\
+         :root{{color-scheme:light dark}}\
+         body{{font:21px/1.6 ui-serif,Georgia,serif;max-width:36em;margin:56px auto;padding:0 28px;color:#26231f;background:#fbfaf6}}\
+         @media(prefers-color-scheme:dark){{body{{color:#ddd;background:#1c1c1e}}a{{color:#7ab7ff}}}}\
+         h1{{font:700 36px/1.2 -apple-system,sans-serif;margin:.2em 0 .8em}}h2,h3{{font-family:-apple-system,sans-serif;line-height:1.3}}\
+         .site{{font:14px -apple-system,sans-serif;opacity:.6;margin:0}}\
+         img,video,picture{{max-width:100%;height:auto}}figure{{margin:1.5em 0}}figcaption{{font-size:15px;opacity:.7}}\
+         pre{{overflow:auto;font-size:15px;line-height:1.4}}blockquote{{margin-left:0;padding-left:1em;border-left:3px solid #8884}}\
+         table{{border-collapse:collapse;font-size:16px}}td,th{{border:1px solid #8884;padding:4px 8px}}\
+         </style></head><body><p class=site>{s}</p><h1>{t}</h1>{html}</body></html>",
+        t = escape_html(&title),
+        s = escape_html(&site),
+    ))
+}
+
 /// The link under the pointer, from WebKit's context-menu element info.
 fn link_url(element: &AnyObject) -> Option<String> {
     let responds = |o: &AnyObject, s| -> bool { unsafe { msg_send![o, respondsToSelector: s] } };
@@ -1998,6 +2084,15 @@ mod tests {
         {
             assert!(!extension_may_load(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn reader_pages_escape_the_title_and_forbid_scripts() {
+        let page = reader_page(r#"{"title":"<b>Hi</b>","site":"a.example","html":"<p>text</p>"}"#).unwrap();
+        assert!(page.contains("<title>&lt;b&gt;Hi&lt;/b&gt;</title>") && page.contains("<p>text</p>"));
+        assert!(page.contains("default-src 'none'") && !page.contains("script-src"), "no scripts at all");
+        assert!(page.find("Content-Security-Policy").unwrap() < page.find("<p>text").unwrap(), "policy comes first");
+        assert!(reader_page("").is_none() && reader_page(r#"{"title":"x"}"#).is_none());
     }
 
     #[test]

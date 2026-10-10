@@ -514,6 +514,12 @@ define_class!(
             self.with_active(|t| t.window().toggleTabOverview(None));
         }
 
+        /// Reader mode (⇧⌘R).
+        #[unsafe(method(toggleReader:))]
+        fn toggle_reader_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.toggle_reader());
+        }
+
         /// Picture in picture for the page's video (⌥⌘P).
         #[unsafe(method(pictureInPicture:))]
         fn picture_in_picture_action(&self, _s: Option<&AnyObject>) {
@@ -1618,6 +1624,7 @@ impl App {
             ("home", Some(t)) => say!("{}", t.home_state()),
             ("netbutton", Some(t)) => say!("NETBUTTON {}", t.net_button_shown() as u8),
             ("star", Some(t)) => say!("{}", t.star_state()),
+            ("reader", Some(t)) => t.toggle_reader(),
             // Run JavaScript in the page (as the page, with a user gesture):
             // `EVAL <result>`.
             ("eval", Some(t)) => match t.web() {
@@ -2153,6 +2160,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Zoom Out", sel!(zoomOut:), "-", cmd, true),
                 ("Actual Size", sel!(actualSize:), "0", cmd, true),
                 ("Picture in Picture", sel!(pictureInPicture:), "p", cmd_alt, true),
+                ("Reader", sel!(toggleReader:), "R", cmd, true),
             ],
         ),
         (
