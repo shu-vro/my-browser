@@ -75,6 +75,19 @@ impl Browser {
         self.next()
     }
 
+    /// Wait for lines starting with each prefix, in whatever order they come
+    /// (a script's EVAL reply and the events it caused race). Others are skipped.
+    fn wait_all(&mut self, prefixes: &[&str]) -> Vec<String> {
+        let mut found: Vec<Option<String>> = vec![None; prefixes.len()];
+        while found.iter().any(Option::is_none) {
+            let line = self.next();
+            if let Some(i) = prefixes.iter().position(|p| line.starts_with(p)) {
+                found[i].get_or_insert(line);
+            }
+        }
+        found.into_iter().map(Option::unwrap).collect()
+    }
+
     /// Wait for a line starting with `prefix`, skipping others.
     fn wait_for(&mut self, prefix: &str) -> String {
         loop {
@@ -869,6 +882,89 @@ fn reader_mode_shows_the_article_alone_without_scripts() {
     // A page without an article: nothing to show.
     b.nav(&format!("go {base}/page/short"));
     assert_eq!(b.send("reader"), "READER none");
+    b.quit();
+}
+
+#[test]
+fn passwords_are_offered_saved_and_filled_only_when_picked() {
+    let base = serve();
+    let mut b = launch();
+    let login = format!(
+        "go {base}/script/{}",
+        encode(
+            "addEventListener('DOMContentLoaded', () => { document.title = 'login'; document.body.innerHTML = \
+             '<form action=/page/welcome><input name=username id=u><input type=password name=password id=p>\
+             <button id=b>Sign in</button></form>' })"
+        )
+    );
+    b.nav(&login);
+    // The page can't reach the browser's password handler: it lives in another script world.
+    assert_eq!(b.send("eval typeof webkit.messageHandlers.passwords"), "EVAL undefined");
+    // Signing in offers to save.
+    writeln!(b.stdin, "eval u.value = 'alice'; p.value = 's3cret'; b.click(), 1").unwrap();
+    assert_eq!(b.wait_all(&["DIALOG", "EVAL"])[0], "DIALOG Save the password for alice on 127.0.0.1?");
+    assert_eq!(b.send("dialog ok"), "ANSWERED 1");
+    assert_eq!(b.bridge(&["passwords.list"]), r#"[{"site":"127.0.0.1","user":"alice"}]"#);
+    // (The form went on to its welcome page, `welcome?username=…`; let it land before leaving.)
+    assert!(b.state_until(|s| s.contains("title=welcome")).contains("title=welcome"));
+    // Focusing the login field offers the account; picking it fills the form.
+    b.nav(&login);
+    writeln!(b.stdin, "eval u.focus(), 1").unwrap();
+    assert_eq!(b.wait_all(&["PASSWORDS", "EVAL"])[0], "PASSWORDS alice");
+    assert_eq!(b.send("fillpassword 0"), "FILLPASSWORD");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while b.send("eval [u.value, p.value].join()") != "EVAL alice,s3cret" {
+        assert!(Instant::now() < deadline, "not filled");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The same password again isn't offered for saving.
+    assert_eq!(b.send("eval b.click(), 1"), "EVAL 1");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(b.tabs().starts_with("TABS"), "no second prompt");
+    // "Never for this site" sticks.
+    assert!(b.state_until(|s| s.contains("title=welcome")).contains("title=welcome"));
+    b.nav(&login);
+    writeln!(b.stdin, "eval u.value = 'bob'; p.value = 'x'; b.click(), 1").unwrap();
+    assert!(b.wait_all(&["DIALOG", "EVAL"])[0].starts_with("DIALOG Save the password for bob"));
+    assert_eq!(b.send("dialog cancel check"), "ANSWERED 1");
+    assert!(b.bridge(&["perm.list"]).contains(r#""kind":"passwords","value":"deny""#));
+    assert!(b.state_until(|s| s.contains("title=welcome")).contains("title=welcome"));
+    b.nav(&login);
+    assert_eq!(b.send("eval u.value = 'carol'; p.value = 'y'; b.click(), 1"), "EVAL 1");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(b.tabs().starts_with("TABS"), "never asked again");
+    // CSV export from another browser: HTTPS logins come in, plain HTTP ones don't.
+    let dir = TempProfile::new("passwords-csv");
+    let csv = dir.0.join("export.csv");
+    std::fs::write(
+        &csv,
+        "name,url,username,password,note\nx,https://shop.example/login,dave,pw1,\ny,http://plain.example/,erin,pw2,\n",
+    )
+    .unwrap();
+    assert_eq!(b.bridge(&["passwords.import", csv.to_str().unwrap()]), r#"{"imported":1,"skipped":1}"#);
+    assert!(b.bridge(&["passwords.list"]).contains(r#"{"site":"shop.example","user":"dave"}"#));
+    b.bridge(&["passwords.delete", "shop.example", "dave"]);
+    assert!(!b.bridge(&["passwords.list"]).contains("dave"));
+    b.quit();
+}
+
+#[test]
+fn private_windows_fill_passwords_but_never_save_them() {
+    let base = serve();
+    let mut b = launch();
+    let login = format!(
+        "go {base}/script/{}",
+        encode(
+            "addEventListener('DOMContentLoaded', () => { document.body.innerHTML = \
+             '<form action=/page/welcome><input name=email id=u><input type=password id=p><button id=b>Go</button></form>' })"
+        )
+    );
+    b.key("cmd+shift+n");
+    b.nav(&login);
+    assert_eq!(b.send("eval u.value = 'pat'; p.value = 'z'; b.click(), 1"), "EVAL 1");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(b.tabs().starts_with("TABS"), "not offered in a private window");
+    assert_eq!(b.bridge(&["passwords.list"]), "[]");
     b.quit();
 }
 

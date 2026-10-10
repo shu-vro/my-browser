@@ -50,6 +50,7 @@
   <a href="#privacy">Privacy</a>
   <a href="#permissions">Site settings</a>
   <a href="#bookmarks">Bookmarks</a>
+  <a href="#passwords">Passwords</a>
   <a href="#history">History</a>
   <a href="#downloads">Downloads</a>
   <a href="#storage">Storage</a>
@@ -115,6 +116,15 @@
     <p class="note">Bookmark a page with ⌘D or the star next to the address bar. They're also in the Bookmarks menu.</p>
     <input type="search" id="bookmarks-q" placeholder="Search bookmarks">
     <ul class="list" id="bookmarks-list"></ul>
+  </section>
+
+  <section id="passwords">
+    <h1>Passwords</h1>
+    <p class="note">When you sign in, the browser offers to save the password in your Mac's keychain (you'll find them in Keychain Access too). Click a login field later to pick a saved account; nothing is filled in without your choice, and only on the site it was saved for. Not offered in private windows.</p>
+    <p class="note">From Apple's Passwords app, Safari, Chrome, Edge, Brave or Firefox: export your passwords as a CSV file (Passwords app: File → Export All Passwords; Chrome: Settings → Passwords → Export), import it here, then delete the file.</p>
+    <p><button id="import-passwords">Import from CSV…</button></p>
+    <input type="search" id="passwords-q" placeholder="Search passwords">
+    <ul class="list" id="passwords-list"></ul>
   </section>
 
   <section id="history">
@@ -221,7 +231,7 @@ loaders.privacy = loadSettings;
 $("clear-data").onclick = () => { if (confirm("Sign out of all sites and delete all cookies, caches and site data?")) call("data.clear").then(() => toast("Cleared"), fail); };
 
 // ---- site permissions
-const PERM_LABELS = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", downloads: "Multiple downloads" };
+const PERM_LABELS = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", downloads: "Multiple downloads", passwords: "Save passwords" };
 async function loadPermissions() {
   const rows = await call("perm.list");
   const sites = {};
@@ -294,6 +304,24 @@ async function loadBookmarks() {
 }
 $("bookmarks-q").addEventListener("input", () => { clearTimeout(loadBookmarks.t); loadBookmarks.t = setTimeout(loadBookmarks, 150); });
 loaders.bookmarks = loadBookmarks;
+
+// ---- passwords
+async function loadPasswords() {
+  const q = $("passwords-q").value.toLowerCase();
+  const rows = (await call("passwords.list")).filter(p => (p.site + " " + p.user).toLowerCase().includes(q));
+  const list = $("passwords-list"); list.replaceChildren();
+  if (!rows.length) list.append(el("li", "empty", q ? "No matches." : "No saved passwords."));
+  for (const p of rows) {
+    const li = el("li"); const main = el("div", "main");
+    main.append(el("div", "title", p.site), el("div", "sub", p.user || "(no username)"));
+    const copy = el("button", null, "Copy Password"); copy.onclick = () => call("passwords.copy", p.site, p.user).then(() => toast("Copied"), fail);
+    const del = el("button", "danger", "Delete"); del.onclick = () => { if (confirm("Delete the password for " + (p.user || "this login") + " on " + p.site + "?")) call("passwords.delete", p.site, p.user).then(loadPasswords, fail); };
+    li.append(main, copy, del); list.append(li);
+  }
+}
+$("passwords-q").addEventListener("input", () => { clearTimeout(loadPasswords.t); loadPasswords.t = setTimeout(loadPasswords, 150); });
+$("import-passwords").onclick = () => call("passwords.import").then(r => { toast("Imported " + r.imported + (r.skipped ? ", skipped " + r.skipped + " (not HTTPS)" : "")); loadPasswords(); }, e => { if (String(e.message || e) !== "cancelled") fail(e); });
+loaders.passwords = loadPasswords;
 
 // ---- downloads
 async function loadDownloads() {

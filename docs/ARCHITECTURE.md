@@ -404,6 +404,37 @@ chooses a path, and current profiles' stores
 (`WebKit/<app>/WebsiteDataStore/<id>`) are never in it. Sizes don't follow
 symlinks.
 
+## Passwords (`src/passwords.rs`, `resources/passwords.js`)
+
+Logins are internet passwords in the login keychain (`SecItemAdd`,
+`SecItemCopyMatching`, `SecItemUpdate`, `SecItemDelete`), marked with the
+creator code `mybr` so the browser lists only its own. Throwaway profiles use
+`Vault::Memory` and never touch the keychain (the keychain itself is covered
+by an opt-in test, `cargo test --release -- --ignored keychain`).
+
+`passwords.js` is a user script at document end in the top frame only, in
+its own `WKContentWorld` ("passwords"), with a message handler that exists
+only there, so pages can't post to it or see it. It reports:
+- `focus` on a username or password field (once per field): the browser
+  shows a native menu of the accounts saved for the site under the field
+  (`Tab::offer_passwords`); picking one reads it from the vault and calls
+  `__mybFill` in that world with the values as arguments
+  (`callAsyncJavaScript`, no string building), after checking the page is
+  still on that site.
+- `submit` (form submit, Enter, or a button click next to a filled password
+  field): the browser offers to save unless the tab is private, the site is
+  set to never (`passwords` permission = deny), or the same password is saved
+  already. "Never for this site" sets that permission.
+
+Passwords are kept and filled only on HTTPS sites (and plain HTTP on this
+Mac: `localhost`, `127.0.0.1`, `[::1]`), by exact host. Edit → AutoFill
+Password (⌥⌘A) offers again for the focused field. Settings → Passwords lists
+(site, user) pairs, copies a password straight to the pasteboard (it never
+goes to the settings page), deletes, and imports CSV exports from Apple's
+Passwords app, Safari, Chrome, Edge, Brave and Firefox (`parse_csv`).
+Tests: `passwords_are_offered_saved_and_filled_only_when_picked`,
+`private_windows_fill_passwords_but_never_save_them`.
+
 ## Reader mode
 
 View → Reader (⇧⌘R, `Tab::toggle_reader`) runs `resources/reader.js` in the
@@ -646,6 +677,7 @@ key press does.
 | ⌘P | Print (the panel's PDF menu saves a PDF) |
 | ⌥⌘P | Picture in picture |
 | ⇧⌘R | Reader mode |
+| ⌥⌘A | AutoFill password for the focused field |
 | ⇧⌘T | Reopen closed tab |
 | ⌘L | Address bar |
 | ⌘R / ⌘. | Reload / stop |
@@ -692,6 +724,7 @@ active tab.
 | `star` | `STAR on=<0\|1>`: the star shows the page as bookmarked |
 | `storebutton` / `storeclick` | `STOREBUTTON <0\|1>` (the Web Store button is showing) / presses it, `STORECLICK`; the install reports `INSTALLED <json>` |
 | `reader` | `READER on\|off\|none`: toggles reader mode (`none`: no article found) |
+| `fillpassword <i>` | `FILLPASSWORD`: picks account `i` from the last `PASSWORDS <user>\|…` menu (the bench prints that instead of showing it) |
 | `eval <js>` | `EVAL <result>`: runs the script in the page, with a user gesture |
 | `menu <Menu>[/<Item>]` | `MENU <item>\|…` (`-` separator) after picking `<Item>` if given, as a click would |
 | `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |

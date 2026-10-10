@@ -37,6 +37,9 @@ worse is rejected.
 - **Private windows** (⇧⌘N): cookies and site data only in memory, gone when
   the last private tab closes; no history, no session, no extensions.
   Downloaded files stay.
+- **Passwords**, saved in your Mac's keychain: offered when you sign in,
+  filled when you pick an account under a login field (⌥⌘A). Import a CSV
+  from the Passwords app, Safari, Chrome, Edge, Brave or Firefox.
 - **Bookmarks** (⌘D or the star): in the Bookmarks menu, with folders, and in
   Settings → Bookmarks.
 - **Reader mode** (⇧⌘R): the article alone, in large type, without scripts.

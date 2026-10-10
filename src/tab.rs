@@ -96,6 +96,8 @@ pub struct TabIvars {
     crashes: Cell<(u32, Option<Instant>)>,
     /// The next finished load is our error page, not a visit.
     error_page: Cell<bool>,
+    /// The saved-passwords menu last offered.
+    fill: RefCell<Option<FillMenu>>,
     /// Reader mode: the next commit is the reader page; the page shown is one.
     reader_loading: Cell<bool>,
     reader: Cell<bool>,
@@ -119,6 +121,9 @@ pub struct TabIvars {
     /// What it shows, for the bench `home` command.
     home_state: RefCell<String>,
 }
+
+/// The saved-passwords menu: (site, frame of the login form, usernames).
+type FillMenu = (String, Retained<WKFrameInfo>, Vec<String>);
 
 /// Permissions a site asks for: (kind, site menu label, what the prompt says it wants to do).
 const SITE_PERMISSIONS: [(&str, &str, &str); 5] = [
@@ -647,6 +652,17 @@ define_class!(
         #[unsafe(method(toggleBookmark:))]
         fn toggle_bookmark_action(&self, _s: Option<&AnyObject>) {
             self.toggle_bookmark();
+        }
+
+        /// An account picked in the saved-passwords menu (tag = its index).
+        #[unsafe(method(fillPassword:))]
+        fn fill_password_action(&self, sender: &NSMenuItem) {
+            self.fill_password_at(sender.tag() as usize);
+        }
+
+        #[unsafe(method(openPasswordSettings:))]
+        fn open_password_settings_action(&self, _s: Option<&AnyObject>) {
+            self.app().open_settings_page("settings#passwords");
         }
 
         /// "Add to my-browser" on a Chrome Web Store page: load the package
@@ -1222,6 +1238,121 @@ impl Tab {
             unsafe { web.loadFileURL_allowingReadAccessToURL(&nsurl, &dir) };
         } else {
             unsafe { web.loadRequest(&NSURLRequest::requestWithURL(&nsurl)) };
+        }
+    }
+
+    /// A login field got focus: show the accounts saved for this site in a
+    /// menu under it. Nothing is filled until one is picked.
+    pub fn offer_passwords(&self, site: &str, frame: &WKFrameInfo, x: f64, y: f64) {
+        let accounts = self.app().vault().accounts(site);
+        if accounts.is_empty() {
+            return;
+        }
+        self.ivars().fill.replace(Some((site.to_string(), frame.retain(), accounts.clone())));
+        // A menu is modal: the bench reports it and picks with `fillpassword`.
+        if self.app().is_bench() {
+            return say!("PASSWORDS {}", accounts.join("|"));
+        }
+        let Some(web) = self.web() else { return };
+        let mtm = self.mtm();
+        let menu = NSMenu::new(mtm);
+        let add = |title: &str, action: objc2::runtime::Sel, tag: usize| {
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    &NSString::from_str(title),
+                    Some(action),
+                    &NSString::from_str(""),
+                )
+            };
+            unsafe { item.setTarget(Some(self)) };
+            item.setTag(tag as isize);
+            menu.addItem(&item);
+        };
+        for (i, user) in accounts.iter().enumerate() {
+            add(if user.is_empty() { "(no username)" } else { user }, sel!(fillPassword:), i);
+        }
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        add("Manage Passwords…", sel!(openPasswordSettings:), 0);
+        // The field's bottom-left corner, from page (CSS) pixels to view points.
+        let zoom = unsafe { web.pageZoom() };
+        let (px, py) = (x * zoom, y * zoom + 2.0);
+        let point =
+            if web.isFlipped() { NSPoint::new(px, py) } else { NSPoint::new(px, web.bounds().size.height - py) };
+        menu.popUpMenuPositioningItem_atLocation_inView(None, point, Some(&web));
+    }
+
+    /// Fill account `i` of the last menu into the login form, if the page is
+    /// still on the site it was saved for.
+    pub fn fill_password_at(&self, i: usize) {
+        let Some((site, frame, accounts)) = self.ivars().fill.borrow().clone() else { return };
+        let (Some(user), Some(web)) = (accounts.get(i), self.web()) else { return };
+        let now = unsafe { web.URL() }.and_then(|u| u.absoluteString()).map(|u| u.to_string()).unwrap_or_default();
+        if crate::passwords::site_for(&now).as_deref() != Some(site.as_str()) {
+            return;
+        }
+        let Some(password) = self.app().vault().password(&site, user) else { return };
+        let keys = [NSString::from_str("u"), NSString::from_str("p")];
+        let values: [Retained<AnyObject>; 2] = [NSString::from_str(user).into(), NSString::from_str(&password).into()];
+        let keys: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
+        let args = objc2_foundation::NSDictionary::from_retained_objects(&keys, &values);
+        unsafe {
+            web.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+                &NSString::from_str("__mybFill(u, p)"),
+                Some(&args),
+                Some(&frame),
+                &passwords_world(self.mtm()),
+                None,
+            )
+        };
+    }
+
+    /// The page signed in: offer to save the password (not in private
+    /// windows, not where the user said never, not if it's already saved).
+    pub fn offer_to_save(&self, site: &str, user: &str, password: &str) {
+        let app = self.app();
+        if self.is_private()
+            || self.window().attachedSheet().is_some()
+            || app.store().permission(site, "passwords").as_deref() == Some("deny")
+            || app.vault().password(site, user).as_deref() == Some(password)
+        {
+            return;
+        }
+        let who = if user.is_empty() { "this site".to_string() } else { user.to_string() };
+        let message = format!(
+            "Save the password for {who} on {site}?\n\nIt's kept in your Mac's keychain and filled in only when you \
+             pick it on this site."
+        );
+        let (this, site, user, password) = (self.retain(), site.to_string(), user.to_string(), password.to_string());
+        self.sheet(
+            &NSString::from_str(&message),
+            &["Save Password", "Not Now"],
+            None,
+            Some(("Never for this site", false)),
+            move |save, _, never| {
+                let app = this.app();
+                if save {
+                    if let Err(e) = app.vault().save(&site, &user, &password) {
+                        this.confirm(&e, &["OK"], |_| {});
+                    }
+                } else if never {
+                    let _ = app.store().set_permission(&site, "passwords", "deny");
+                }
+            },
+        );
+    }
+
+    /// Run one of resources/passwords.js's functions in this page.
+    pub fn run_password_script(&self, js: &str) {
+        if let Some(web) = self.web() {
+            unsafe {
+                web.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
+                    &NSString::from_str(js),
+                    None,
+                    &passwords_world(self.mtm()),
+                    None,
+                )
+            };
         }
     }
 
@@ -2031,6 +2162,11 @@ pub fn escape_html(s: &str) -> String {
 }
 
 static READER_JS: &str = include_str!("../resources/reader.js");
+
+/// The script world of resources/passwords.js: pages can't reach into it.
+pub fn passwords_world(mtm: MainThreadMarker) -> Retained<WKContentWorld> {
+    unsafe { WKContentWorld::worldWithName(&NSString::from_str("passwords"), mtm) }
+}
 
 /// The reader page for resources/reader.js's result (`{title, site, html}`),
 /// or None if it found no article. The article HTML was cleaned by the

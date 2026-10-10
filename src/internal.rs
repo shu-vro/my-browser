@@ -163,6 +163,42 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             app.refresh_toolbars();
             "true".into()
         }),
+        "passwords.list" => {
+            let items: Vec<String> = app
+                .vault()
+                .all()
+                .iter()
+                .map(|(site, user)| format!("{{\"site\":{},\"user\":{}}}", json_str(site), json_str(user)))
+                .collect();
+            Ok(format!("[{}]", items.join(",")))
+        }
+        "passwords.delete" => {
+            app.vault().delete(args.get(1).map_or("", |s| s), args.get(2).map_or("", |s| s));
+            ok()
+        }
+        // Copied natively: the password never goes to the page.
+        "passwords.copy" => match app.vault().password(args.get(1).map_or("", |s| s), args.get(2).map_or("", |s| s)) {
+            Some(p) => {
+                if !app.is_bench() {
+                    let board = objc2_app_kit::NSPasteboard::generalPasteboard();
+                    board.clearContents();
+                    board.setString_forType(&NSString::from_str(&p), unsafe { objc2_app_kit::NSPasteboardTypeString });
+                }
+                ok()
+            }
+            None => Err("not found".into()),
+        },
+        "passwords.import" => match args.get(1) {
+            Some(path) if app.is_bench() => Ok(import_passwords(app, Path::new(path))),
+            _ => {
+                return pick_file(
+                    app,
+                    "Choose a passwords file exported as CSV",
+                    move |app, path| import_passwords(app, &path),
+                    reply,
+                );
+            }
+        },
         "history.clear" => {
             store.clear_history();
             ok()
@@ -308,6 +344,42 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
         _ => Err(format!("unknown op {op}")),
     };
     reply(result);
+}
+
+/// Save every login in a CSV export (Passwords app, Safari, Chrome, Edge,
+/// Brave, Firefox) to the vault. Logins for sites passwords aren't kept on
+/// (plain HTTP) are skipped. `{"imported": n, "skipped": m}`.
+fn import_passwords(app: &App, path: &Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let (mut imported, mut skipped) = (0, 0);
+    for (url, user, password) in crate::passwords::parse_csv(&text) {
+        match crate::passwords::site_for(&url) {
+            Some(site) if app.vault().save(&site, &user, &password).is_ok() => imported += 1,
+            _ => skipped += 1,
+        }
+    }
+    format!("{{\"imported\":{imported},\"skipped\":{skipped}}}")
+}
+
+/// A native file picker; `then(app, file)` returns the reply's JSON.
+fn pick_file(app: &App, message: &str, then: impl FnOnce(&App, PathBuf) -> String + 'static, reply: Reply) {
+    let panel = NSOpenPanel::openPanel(app.mtm());
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(false);
+    panel.setAllowsMultipleSelection(false);
+    panel.setMessage(Some(&NSString::from_str(message)));
+    let state = std::cell::RefCell::new(Some((reply, then)));
+    let this = app.retain();
+    let p = panel.clone();
+    let handler = RcBlock::new(move |response: isize| {
+        let Some((reply, then)) = state.take() else { return };
+        let path = (response == NSModalResponseOK).then(|| p.URL()).flatten().and_then(|u| u.path());
+        match path {
+            Some(path) => reply(Ok(then(&this, PathBuf::from(path.to_string())))),
+            None => reply(Err("cancelled".into())),
+        }
+    });
+    panel.beginWithCompletionHandler(&handler);
 }
 
 fn extensions_dir(app: &App) -> Option<PathBuf> {

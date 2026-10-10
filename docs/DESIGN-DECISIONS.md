@@ -435,6 +435,38 @@ test that failed and dropped the browser's stdout made the next status line
 crash the browser (a crash report on the owner's screen). `say!` ignores
 write errors.
 
+### Why are passwords in the Keychain and not Apple's Passwords app?
+
+Apple's Passwords app reaches other browsers through its iCloud Passwords
+extension and a native helper, `PasswordManagerBrowserExtensionHelper`. That
+helper is signed with launch constraints that only let Chrome, Edge and
+Firefox start it ("Missing or empty parent launch constraints" in its own
+strings), so a third-party browser can't talk to it, and reading the
+Passwords vault directly needs entitlements Apple doesn't give out. The
+login keychain is the macOS store any app may use: encrypted by the system,
+locked with the Mac, visible in Keychain Access, and guarded per app. Logins
+come over from the Passwords app (or Chrome, Firefox…) with its CSV export.
+
+Filling only after the user picks an account in a native menu, never on page
+load, means a page can't harvest a password with a hidden form. The form
+script lives in its own script world and only reports focus and sign-ins:
+two event listeners, no MutationObserver, so pages pay nothing while idle.
+
+### Why are web notifications denied?
+
+The owner doesn't want them. They would also cost memory: notifications only
+arrive from awake tabs, so allowed sites would have to skip the sleep timer,
+and WebKit doesn't show them for a third-party app by itself (tested: its
+permission prompt works with a persistent store, but nothing is ever
+displayed), so a page script on every site would have to provide them.
+
+### Why is the reader page a new document with no scripts?
+
+Reader views that restyle the live page keep its scripts running, and those
+scripts can undo the cleanup or track reading. The reader page is built
+fresh with a `default-src 'none'` policy, so the cleaning script doesn't have
+to be perfect: nothing in the article can run.
+
 ## Measurement
 
 ### How does the benchmark find all of the browser's processes?

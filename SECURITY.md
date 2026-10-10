@@ -80,6 +80,22 @@ titles, URLs, file names) with `textContent`, never `innerHTML`.
 - **Error pages** escape everything they show and run no script; certificate
   errors can't be bypassed.
 
+### Web content → saved passwords
+
+- The form script runs in its own script world; its message handler exists
+  only there, so pages can't send it fake sign-ins or focus events, or call
+  its fill function (tested: `webkit.messageHandlers.passwords` is undefined
+  in the page).
+- Nothing is filled on load. A password is read from the keychain and put in
+  the form only after the user picks the account in a native menu, only in
+  the top frame, and only if the page is still on the exact site it was saved
+  for. A page can't harvest passwords with hidden forms.
+- Saving is always asked, never on plain-HTTP sites (except this Mac's own),
+  never in private windows.
+- Passwords live in the login keychain, encrypted by macOS. The settings page
+  sees only sites and usernames; "Copy Password" goes from the keychain to
+  the pasteboard natively.
+
 ### Web content → the local network
 
 Requests from a non-local page to loopback, private, link-local and `.local`

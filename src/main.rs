@@ -13,6 +13,7 @@ mod extwindow;
 mod home;
 mod internal;
 mod netgate;
+mod passwords;
 mod privacy;
 mod store;
 mod tab;
@@ -40,11 +41,12 @@ use objc2_foundation::{
 use objc2_web_kit::WKProcessPool;
 use objc2_web_kit::{
     WKAudiovisualMediaTypes, WKContentRuleList, WKContentWorld, WKDownload, WKDownloadDelegate, WKPreferences,
-    WKScriptMessage, WKScriptMessageHandlerWithReply, WKURLSchemeHandler, WKURLSchemeTask, WKUserContentController,
-    WKWebExtension, WKWebExtensionAction, WKWebExtensionContext, WKWebExtensionController,
-    WKWebExtensionControllerConfiguration, WKWebExtensionControllerDelegate, WKWebExtensionMatchPattern,
-    WKWebExtensionTab, WKWebExtensionTabChangedProperties, WKWebExtensionTabConfiguration, WKWebExtensionWindow,
-    WKWebView, WKWebViewConfiguration, WKWebpagePreferences, WKWebsiteDataStore,
+    WKScriptMessage, WKScriptMessageHandler, WKScriptMessageHandlerWithReply, WKURLSchemeHandler, WKURLSchemeTask,
+    WKUserContentController, WKUserScript, WKUserScriptInjectionTime, WKWebExtension, WKWebExtensionAction,
+    WKWebExtensionContext, WKWebExtensionController, WKWebExtensionControllerConfiguration,
+    WKWebExtensionControllerDelegate, WKWebExtensionMatchPattern, WKWebExtensionTab,
+    WKWebExtensionTabChangedProperties, WKWebExtensionTabConfiguration, WKWebExtensionWindow, WKWebView,
+    WKWebViewConfiguration, WKWebpagePreferences, WKWebsiteDataStore,
 };
 
 use extwindow::ExtWindow;
@@ -104,6 +106,8 @@ pub struct AppIvars {
     ready: Cell<bool>,
     /// Links and files macOS asked us to open before then.
     pending_urls: RefCell<Vec<String>>,
+    /// Saved passwords: the keychain, or memory for throwaway profiles.
+    vault: OnceCell<passwords::Vault>,
     /// The Web Store extension whose package the user asked to add.
     expected_package: RefCell<Option<String>>,
 }
@@ -188,6 +192,36 @@ define_class!(
             match internal::message_args(message) {
                 Some(args) => internal::handle(self, args, Box::new(respond)),
                 None => respond(Err("expected an array of strings".into())),
+            }
+        }
+    }
+
+    /// resources/passwords.js: a sign-in, or focus on a login field. Only our
+    /// own script world can post here; the page can't.
+    unsafe impl WKScriptMessageHandler for App {
+        #[unsafe(method(userContentController:didReceiveScriptMessage:))]
+        fn did_receive_password_message(&self, _c: &WKUserContentController, message: &WKScriptMessage) {
+            let frame = unsafe { message.frameInfo() };
+            let origin = unsafe { frame.securityOrigin() };
+            let page = format!("{}://{}/", unsafe { origin.protocol() }, unsafe { origin.host() });
+            let (Some(site), true) = (passwords::site_for(&page), unsafe { frame.isMainFrame() }) else { return };
+            let Some(tab) = unsafe { message.webView() }.and_then(|w| self.tab_of_web(&w)) else { return };
+            let body = unsafe { message.body() };
+            let Some(body) = body.downcast_ref::<objc2_foundation::NSDictionary>() else { return };
+            let get = |k: &str| body.objectForKey(&NSString::from_str(k));
+            let text = |k: &str| get(k).and_then(|v| v.downcast::<NSString>().ok()).map(|s| s.to_string());
+            let number = |k: &str| {
+                get(k).and_then(|v| v.downcast::<objc2_foundation::NSNumber>().ok()).map_or(0.0, |n| n.doubleValue())
+            };
+            match text("op").as_deref() {
+                Some("focus") => tab.offer_passwords(&site, &frame, number("x"), number("y")),
+                Some("submit") => {
+                    let (user, password) = (text("username").unwrap_or_default(), text("password").unwrap_or_default());
+                    if !password.is_empty() && password.len() < 4096 && user.len() < 1024 {
+                        tab.offer_to_save(&site, &user, &password);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -531,6 +565,12 @@ define_class!(
             self.with_active(|t| t.window().toggleTabOverview(None));
         }
 
+        /// AutoFill Password (⌥⌘A): saved accounts for the focused field.
+        #[unsafe(method(offerPasswords:))]
+        fn offer_passwords_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.run_password_script("__mybOffer()"));
+        }
+
         /// Reader mode (⇧⌘R).
         #[unsafe(method(toggleReader:))]
         fn toggle_reader_action(&self, _s: Option<&AnyObject>) {
@@ -764,6 +804,29 @@ impl App {
                 &NSString::from_str("browser"),
             )
         };
+        // Saved passwords: resources/passwords.js in its own world, at the
+        // top of each page only, reporting to the "passwords" handler there.
+        unsafe {
+            let world = tab::passwords_world(mtm);
+            let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
+                WKUserScript::alloc(mtm),
+                &NSString::from_str(PASSWORDS_JS),
+                WKUserScriptInjectionTime::AtDocumentEnd,
+                true,
+                &world,
+            );
+            content.addUserScript(&script);
+            content.addScriptMessageHandler_contentWorld_name(
+                ProtocolObject::from_ref(self),
+                &world,
+                &NSString::from_str("passwords"),
+            );
+        }
+        let vault = match &profile {
+            Some(_) => passwords::Vault::Keychain,
+            None => passwords::Vault::Memory(RefCell::new(Vec::new())),
+        };
+        let _ = self.ivars().vault.set(vault);
         let ext_config = match &profile {
             Some(_) => unsafe {
                 WKWebExtensionControllerConfiguration::configurationWithIdentifier(&self.profile_uuid(), mtm)
@@ -1304,6 +1367,15 @@ impl App {
     }
 
     /// Tabs of the active window, in tab-bar order.
+    pub fn vault(&self) -> &passwords::Vault {
+        self.ivars().vault.get().unwrap()
+    }
+
+    /// The tab showing this web view.
+    fn tab_of_web(&self, web: &WKWebView) -> Option<Retained<Tab>> {
+        self.ivars().tabs.borrow().iter().find(|t| t.web().is_some_and(|w| std::ptr::eq(&*w, web))).cloned()
+    }
+
     /// Redraw every tab's toolbar (a bookmark changed, say).
     pub fn refresh_toolbars(&self) {
         for t in self.ivars().tabs.borrow().clone() {
@@ -1681,6 +1753,11 @@ impl App {
             }
             ("star", Some(t)) => say!("{}", t.star_state()),
             ("reader", Some(t)) => t.toggle_reader(),
+            // Pick account `i` from the saved-passwords menu (`PASSWORDS …`).
+            ("fillpassword", Some(t)) => {
+                t.fill_password_at(arg.parse().unwrap_or(0));
+                say!("FILLPASSWORD");
+            }
             // Run JavaScript in the page (as the page, with a user gesture):
             // `EVAL <result>`.
             ("eval", Some(t)) => match t.web() {
@@ -1930,6 +2007,8 @@ fn url_args() -> Vec<String> {
     }
     out
 }
+
+static PASSWORDS_JS: &str = include_str!("../resources/passwords.js");
 
 /// Schemes the browser opens for other apps.
 fn opens_externally(url: &str) -> bool {
@@ -2201,6 +2280,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Copy", sel!(copy:), "c", cmd, false),
                 ("Paste", sel!(paste:), "v", cmd, false),
                 ("Select All", sel!(selectAll:), "a", cmd, false),
+                ("AutoFill Password", sel!(offerPasswords:), "a", cmd_alt, true),
                 ("Find…", sel!(showFind:), "f", cmd, true),
                 ("Find Next", sel!(findNext:), "g", cmd, true),
                 ("Find Previous", sel!(findPrevious:), "G", cmd, true),
