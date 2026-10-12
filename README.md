@@ -38,7 +38,8 @@ worse is rejected.
   the last private tab closes; no history, no session, no extensions.
   Downloaded files stay.
 - **Passwords**, saved in your Mac's keychain: offered when you sign in,
-  filled when you pick an account under a login field (⌥⌘A). Import a CSV
+  filled when you pick an account under a login field (⌥⌘A), after Touch ID
+  or your Mac's password. Import a CSV
   from the Passwords app, Safari, Chrome, Edge, Brave or Firefox.
 - **Import** bookmarks, history and passwords from Chrome, Brave, Edge,
   Vivaldi, Arc or Safari (Settings → Import), or a bookmarks file.
@@ -110,7 +111,7 @@ Command-line flags:
 ## Test and measure
 
 ```sh
-cargo test --release                  # 103 tests, opens real browser windows briefly
+cargo test --release                  # 107 tests, opens real browser windows briefly
 ./target/release/bench                # benchmark against the recorded bars (~4 min)
 ```
 

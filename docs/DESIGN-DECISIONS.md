@@ -467,6 +467,32 @@ scripts can undo the cleanup or track reading. The reader page is built
 fresh with a `default-src 'none'` policy, so the cleaning script doesn't have
 to be perfect: nothing in the article can run.
 
+### Why does "Check for Updates" open a page instead of checking itself?
+
+Rule 4: the browser never connects on its own, and an update check is a
+request that says "this person runs my-browser, this version, now". Opening
+the latest GitHub release in a tab is a page the user asked for, like any
+link: no timer, no wakeups, no memory until clicked, and no network code.
+The page shows the newest version; Settings shows this one next to the
+button. Automatic checks need a signed appcast (Sparkle, EdDSA) and an
+opt-in prompt, and are only worth it with a Developer ID (SECURITY.md
+roadmap 1 and 2).
+
+### Why ask for Touch ID before filling a password?
+
+Filling already needed a click in a native menu, but anyone at an unlocked
+Mac could fill or copy every saved password. Safari asks the same way.
+`LAContext` costs nothing until used, and the owner can turn it off in
+Settings → Passwords.
+
+### Why are CRX signatures checked when the download is HTTPS from Google?
+
+HTTPS only proves where the file came from, not that it's the extension the
+user asked for or that it wasn't altered on disk before installing. The
+CRX3 header signs the zip and proves the id. Checking it is ~200 lines over
+Security.framework, with no new crate. CRX2 can't prove an id, and Chrome
+refuses it too.
+
 ## Measurement
 
 ### How does the benchmark find all of the browser's processes?

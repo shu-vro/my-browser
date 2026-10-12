@@ -90,6 +90,10 @@ titles, URLs, file names) with `textContent`, never `innerHTML`.
   the form only after the user picks the account in a native menu, only in
   the top frame, and only if the page is still on the exact site it was saved
   for. A page can't harvest passwords with hidden forms.
+- Filling or copying a password first asks for Touch ID (or the Mac's
+  password), through `LAContext` with the device-owner policy, unless the
+  owner turned "Ask for Touch ID" off in Settings → Passwords. It's on by
+  default.
 - Saving is always asked, never on plain-HTTP sites (except this Mac's own),
   never in private windows.
 - Passwords live in the login keychain, encrypted by macOS. The settings page
@@ -146,9 +150,14 @@ folder).
   confirming a native prompt that lists what it asks for. A site can't
   start an install: only the package the user asked the Web Store button for
   is installed when it downloads.
+- `.crx` packages must be CRX3 (`src/crx.rs`): every signature in the header
+  must verify (`SecKeyVerifySignature`), and one must be by the key the
+  package's id is derived from. A Web Store package must also carry the id
+  of the extension whose page the user clicked "Add" on. CRX2 has no signed
+  id and is refused, as in Chrome. `.zip` files and folders are the user's
+  own and unsigned.
 - Packages are unpacked with `ditto` into a temporary folder (entries can't
-  escape it) and copied without symlinks. CRX signatures aren't verified
-  yet; Web Store packages come over HTTPS from Google.
+  escape it) and copied without symlinks.
 - **Off on every site until clicked there**, and off again when the tab
   leaves the site. Only extensions set to "On every site" get site access at
   start. Runtime permission requests are asked, never granted silently.
@@ -200,8 +209,15 @@ entitlements.
 ## Known gaps
 
 - No ad *hiding* (cosmetic filtering) and no debouncing of bounce trackers.
-- The local-network shield matches addresses, not DNS answers: a public name
-  that resolves to a private address (DNS rebinding) isn't caught.
+- The local-network shield for websites matches addresses, not DNS answers:
+  a public name that resolves to a private address (DNS rebinding) isn't
+  caught. The network gate checks DNS answers before connecting, but the
+  system resolves again when it connects, so a name with a zero TTL can
+  still switch in between.
+- Updates aren't automatic: "Check for Updates…" opens the latest GitHub
+  release in a tab, and the user downloads it. Releases aren't signed with a
+  Developer ID (roadmap 1), so a download is trusted as far as GitHub's HTTPS
+  and the `SHA256SUMS` beside it.
 - Web notifications aren't supported (denied), by choice.
 - The tracker list is updated by hand (`scripts/update-trackers.py`), not
   automatically. Updating automatically would mean the browser making network
@@ -226,8 +242,9 @@ says what it protects against and what it costs.
    with the certificate in an encrypted GitHub secret behind a protected
    `release` environment (required reviewer).
 2. **Signed, opt-in updates.** A browser that doesn't update keeps its bugs.
-   WebKit updates with macOS; our own code doesn't. Use Sparkle 2 with an
-   EdDSA-signed appcast. Ask before the first check (policy 1) and make the
+   WebKit updates with macOS; our own code doesn't. Today "Check for
+   Updates…" opens the latest GitHub release and the user installs it by
+   hand. Next: Sparkle 2 with an EdDSA-signed appcast (after roadmap 1). Ask before the first check (policy 1) and make the
    check go only to the appcast URL. Refresh the tracker list the same way.
 3. **App Sandbox.** The app process holds the profile database, the
    extension copies and access to the Keychain. Today a bug in it can reach
@@ -236,35 +253,28 @@ says what it protects against and what it costs.
    `files.downloads.read-write`, camera, microphone and location. This needs
    a profile migration into the container. Importing from Chrome or Safari
    and installing extensions would then go through file pickers.
-4. **Protect the release path.** Make `main` and `release` protected
-   branches (reviews, no force pushes). Pin GitHub Actions to commit SHAs,
-   not tags. Turn on Dependabot for Cargo and Actions, and add
-   `cargo audit` (or `cargo deny`) to CI. There are only six direct crates;
-   keep it that way.
-5. **Verify CRX signatures.** Chrome Web Store packages are installed after
-   an HTTPS download from Google's update server, which is trust in the
-   transport only. CRX3 carries signatures in a protobuf header: check them
-   with `SecKeyVerifySignature` and reject packages whose ID doesn't match
-   the signing key.
-6. **DNS-rebinding protection.** The local-network shield checks host names.
+4. **Protect `main`.** Done for `release`: the repository ruleset "release:
+   owner only" lets only the owner create, push to or delete it, and the
+   release job also checks `github.actor`. Actions are pinned to commit
+   SHAs, Dependabot opens weekly PRs for crates and Actions, and Dependabot
+   security alerts (RustSec advisories) are on. Left: a ruleset for `main`
+   (no force pushes or deletion) once there are other contributors.
+5. **DNS-rebinding protection for websites.** The network gate now checks
+   DNS answers; the websites' local-network shield still checks host names.
    Add WebKit's local-network access checks when they ship, or a
    resolve-time check (Network Extension) before that.
-7. **Gate password filling with Touch ID.** Filling already needs a click on
-   the account in a native menu. Add `LocalAuthentication`
-   (`LAContext.evaluatePolicy`) before reading a password, as Safari does
-   when "Require Touch ID" is on.
-8. **Fuzz the parsers.** They read files other programs wrote: macOS crash
+6. **Fuzz the parsers.** They read files other programs wrote: macOS crash
    reports, CSV and HTML imports, Chrome's bookmark JSON, CRX headers, the
    offscreen manifest rewriting. Add `cargo fuzz` targets for each and run
    them in a nightly job.
-9. **Review private WebKit API on every macOS release.** Each selector is
+7. **Review private WebKit API on every macOS release.** Each selector is
    checked with `respondsToSelector:` and reported in `TUNE` lines. Run the
    e2e suite on each beta, and check that a missing selector fails closed
    (protection reported missing) rather than open.
-10. **Keep the bridge small.** Every bridge op is an attack surface from a
-    compromised settings page. New ops validate every argument in
-    `store.rs`, never take paths from the page (use native panels), and get
-    an e2e test proving web pages can't call them.
+8. **Keep the bridge small.** Every bridge op is an attack surface from a
+   compromised settings page. New ops validate every argument in
+   `store.rs`, never take paths from the page (use native panels), and get
+   an e2e test proving web pages can't call them.
 
 Every pull request that adds a trust boundary documents it in "Trust
 boundaries" above and adds an e2e test for the attack it stops.

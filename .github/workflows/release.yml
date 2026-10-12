@@ -3,7 +3,8 @@ name: Release
 # v<major.minor from Cargo.toml>.<patch>, the patch counting up from 0 with
 # each release (0.2.0, 0.2.1, ...). Bump the minor in Cargo.toml to start
 # 0.3.0. Assets: a universal (Apple Silicon + Intel) DMG, its SHA-256, and the
-# debug symbols for symbolicating crash reports.
+# debug symbols for symbolicating crash reports. The browser's "Check for
+# Updates…" opens the latest of these releases.
 on:
   push:
     branches: [release]
@@ -17,10 +18,13 @@ concurrency:
 
 jobs:
   release:
+    # Only the owner can push to `release` (repository ruleset "release: owner
+    # only"); this check is the second lock.
+    if: github.actor == github.repository_owner
     runs-on: xcode-27
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0 # tags, to find the last patch
       - name: Rust

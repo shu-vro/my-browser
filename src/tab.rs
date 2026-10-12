@@ -42,6 +42,9 @@ const BUTTON_W: f64 = 30.0;
 const OBSERVED: [&str; 5] = ["URL", "title", "canGoBack", "canGoForward", "loading"];
 /// Scheme of the browser's own pages (settings, history, downloads, extensions).
 pub const INTERNAL: &str = "mybrowser";
+/// "Check for Updates…": the latest GitHub release, opened as a normal page
+/// (the browser itself never checks).
+pub const RELEASES: &str = "https://github.com/shu-vro/my-browser/releases/latest";
 
 #[derive(Default)]
 pub struct TabIvars {
@@ -1291,7 +1294,27 @@ impl Tab {
         if crate::passwords::site_for(&now).as_deref() != Some(site.as_str()) {
             return;
         }
-        let Some(password) = self.app().vault().password(&site, user) else { return };
+        let user = user.clone();
+        let this = self.retain();
+        crate::passwords::confirm_owner(
+            self.app(),
+            &format!("fill your password for {site}"),
+            Box::new(move |ok| {
+                if ok {
+                    this.fill_password(&site, &frame, &user);
+                }
+            }),
+        );
+    }
+
+    /// Fill `user`'s password into `frame`, if the tab is still on `site`.
+    fn fill_password(&self, site: &str, frame: &WKFrameInfo, user: &str) {
+        let Some(web) = self.web() else { return };
+        let now = unsafe { web.URL() }.and_then(|u| u.absoluteString()).map(|u| u.to_string()).unwrap_or_default();
+        if crate::passwords::site_for(&now).as_deref() != Some(site) {
+            return;
+        }
+        let Some(password) = self.app().vault().password(site, user) else { return };
         let keys = [NSString::from_str("u"), NSString::from_str("p")];
         let values: [Retained<AnyObject>; 2] = [NSString::from_str(user).into(), NSString::from_str(&password).into()];
         let keys: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
@@ -1300,7 +1323,7 @@ impl Tab {
             web.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
                 &NSString::from_str("__mybFill(u, p)"),
                 Some(&args),
-                Some(&frame),
+                Some(frame),
                 &passwords_world(self.mtm()),
                 None,
             )

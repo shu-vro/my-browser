@@ -177,17 +177,30 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             ok()
         }
         // Copied natively: the password never goes to the page.
-        "passwords.copy" => match app.vault().password(args.get(1).map_or("", |s| s), args.get(2).map_or("", |s| s)) {
-            Some(p) => {
-                if !app.is_bench() {
-                    let board = objc2_app_kit::NSPasteboard::generalPasteboard();
-                    board.clearContents();
-                    board.setString_forType(&NSString::from_str(&p), unsafe { objc2_app_kit::NSPasteboardTypeString });
-                }
-                ok()
+        "passwords.copy" => {
+            let (site, user) = (args.get(1).cloned().unwrap_or_default(), args.get(2).cloned().unwrap_or_default());
+            if app.vault().password(&site, &user).is_none() {
+                return reply(Err("not found".into()));
             }
-            None => Err("not found".into()),
-        },
+            let this = app.retain();
+            return crate::passwords::confirm_owner(
+                app,
+                &format!("copy your password for {site}"),
+                Box::new(move |ok| {
+                    let Some(p) = this.vault().password(&site, &user).filter(|_| ok) else {
+                        return reply(Err("cancelled".into()));
+                    };
+                    if !this.is_bench() {
+                        let board = objc2_app_kit::NSPasteboard::generalPasteboard();
+                        board.clearContents();
+                        board.setString_forType(&NSString::from_str(&p), unsafe {
+                            objc2_app_kit::NSPasteboardTypeString
+                        });
+                    }
+                    reply(Ok("true".into()))
+                }),
+            );
+        }
         // Settings → Import: other browsers on this Mac.
         "import.sources" => {
             let items: Vec<String> = crate::import::sources(&home())
@@ -384,6 +397,11 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
                 }
                 Err(e) => Err(e),
             }
+        }
+        "app.version" => Ok(json_str(&crate::crash::version())),
+        "app.updates" => {
+            app.open_tab_in(false, crate::tab::RELEASES, false);
+            ok()
         }
         "app.uninstall" => return uninstall(app, reply),
         "default.get" => Ok(default_browser_json()),

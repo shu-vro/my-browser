@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Settings the settings page may change, with their defaults.
-pub const SETTINGS: [(&str, &str); 13] = [
+pub const SETTINGS: [(&str, &str); 14] = [
     // duckduckgo | brave | startpage | google
     ("search", "duckduckgo"),
     // Page for new tabs; empty means a blank page.
@@ -34,6 +34,8 @@ pub const SETTINGS: [(&str, &str); 13] = [
     ("home_art", "1"),
     ("home_search", "1"),
     ("home_top_sites", "1"),
+    // Touch ID (or the Mac's password) before a saved password is filled or copied.
+    ("password_auth", "1"),
 ];
 
 pub struct Store {
@@ -189,7 +191,8 @@ impl Store {
             | "jit"
             | "home_art"
             | "home_search"
-            | "home_top_sites" => value == "0" || value == "1",
+            | "home_top_sites"
+            | "password_auth" => value == "0" || value == "1",
             "downloads_dir" => value.is_empty() || Path::new(value).is_dir(),
             _ => return Err(format!("unknown setting {key}")),
         };

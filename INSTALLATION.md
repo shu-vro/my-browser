@@ -54,7 +54,10 @@ Settings (⌘,) → General → make my-browser the default browser.
 
 ## Update
 
-Download the new DMG and drag the app to Applications again, replacing the old
+The browser never checks for updates by itself. Choose **my-browser → Check
+for Updates…** (or Settings → General → Check for updates): it opens the
+latest release on GitHub. If its version is newer than the one Settings
+shows, download the new DMG and drag the app to Applications again, replacing the old
 one. Your profile (logins, history, bookmarks, extensions) is stored separately
 and is kept.
 

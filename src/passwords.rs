@@ -27,6 +27,37 @@ pub enum Vault {
     Memory(RefCell<Vec<(String, String, String)>>),
 }
 
+/// Ask the owner to prove it's them (Touch ID, or the Mac's password) before
+/// a password is filled or copied, unless Settings → Passwords turned that
+/// off. Benchmarks and tests skip it. A Mac that can't ask (no login
+/// password) fills as before. `done(true)` runs on the main thread.
+pub fn confirm_owner(app: &crate::App, reason: &str, done: Box<dyn FnOnce(bool)>) {
+    if app.is_bench() || !app.store().flag("password_auth") {
+        return done(true);
+    }
+    #[link(name = "LocalAuthentication", kind = "framework")]
+    unsafe extern "C" {}
+    // LAPolicyDeviceOwnerAuthentication: biometrics, else the password.
+    const POLICY: isize = 2;
+    let Some(class) = objc2::runtime::AnyClass::get(c"LAContext") else { return done(true) };
+    let ctx: Retained<AnyObject> = unsafe { objc2::msg_send![class, new] };
+    let can: bool =
+        unsafe { objc2::msg_send![&*ctx, canEvaluatePolicy: POLICY, error: std::ptr::null_mut::<*mut AnyObject>()] };
+    if !can {
+        return done(true);
+    }
+    let slot = std::cell::Cell::new(Some(crate::MainOnly(done)));
+    let keep = ctx.clone();
+    let reply = block2::RcBlock::new(move |ok: objc2::runtime::Bool, _e: *mut AnyObject| {
+        let _ = &keep;
+        if let Some(done) = slot.take() {
+            crate::on_main(move || (done.0)(ok.as_bool()));
+        }
+    });
+    let reason = NSString::from_str(reason);
+    let _: () = unsafe { objc2::msg_send![&*ctx, evaluatePolicy: POLICY, localizedReason: &*reason, reply: &*reply] };
+}
+
 /// Sites passwords are saved and filled on: HTTPS, or plain HTTP on this
 /// Mac (local development). Elsewhere a password would travel unencrypted.
 pub fn site_for(url: &str) -> Option<String> {

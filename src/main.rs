@@ -8,6 +8,7 @@ macro_rules! say {
 }
 
 mod crash;
+mod crx;
 mod extensions;
 mod extwindow;
 mod home;
@@ -52,7 +53,7 @@ use objc2_web_kit::{
 
 use extwindow::ExtWindow;
 use store::Store;
-use tab::{INTERNAL, Tab};
+use tab::{INTERNAL, RELEASES, Tab};
 
 /// A download in flight: (downloads row, download, file). Private windows'
 /// downloads have no row (0).
@@ -520,6 +521,11 @@ define_class!(
         #[unsafe(method(openSettings:))]
         fn open_settings_action(&self, _s: Option<&AnyObject>) {
             self.open_internal("settings");
+        }
+
+        #[unsafe(method(checkForUpdates:))]
+        fn check_for_updates_action(&self, _s: Option<&AnyObject>) {
+            self.open_tab(RELEASES, false);
         }
 
         #[unsafe(method(showHistory:))]
@@ -2040,6 +2046,12 @@ pub fn on_main(f: impl FnOnce() + 'static) {
     unsafe { dispatch_async_f(&raw const _dispatch_main_q, Box::into_raw(f).cast(), run) };
 }
 
+/// A value carried through another thread to the main thread without being
+/// touched there: for callbacks macOS runs on its own queues, whose result
+/// goes back to `on_main`. Only use `.0` on the main thread.
+pub struct MainOnly<T>(pub T);
+unsafe impl<T> Send for MainOnly<T> {}
+
 /// Characters that make a name display differently from what it is:
 /// right-to-left overrides turn "photo\u{202E}gpj.app" into "photoppa.jpg".
 fn is_spoofing_char(c: char) -> bool {
@@ -2259,6 +2271,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
             "my-browser",
             vec![
                 ("Settings…", sel!(openSettings:), ",", cmd, true),
+                ("Check for Updates…", sel!(checkForUpdates:), "", none, true),
                 ("Quit my-browser", sel!(terminate:), "q", cmd, false),
             ],
         ),

@@ -487,7 +487,15 @@ pub fn unpack_root() -> std::path::PathBuf {
 /// installing copies only regular files, never symlinks.
 pub fn unpack(file: &Path) -> Result<std::path::PathBuf, String> {
     let bytes = std::fs::read(file).map_err(|e| format!("Couldn't read {}: {e}", file.display()))?;
-    let zip = package_zip(&bytes)?;
+    let (zip, id) = package_zip(&bytes)?;
+    // A Web Store package is saved as `<id>….crx` (see the download
+    // handler): it must be signed by that extension's key.
+    if file.starts_with(unpack_root()) {
+        let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if !id.as_ref().is_some_and(|id| name.starts_with(id.as_str())) {
+            return Err("This package can't be trusted: it isn't the extension you asked for.".into());
+        }
+    }
     let stem = file.file_stem().map_or("extension".into(), |s| s.to_string_lossy().into_owned());
     let root = unpack_root().join(format!("{}-{}", std::process::id(), crate::crash::now_ms()));
     let out = root.join(&stem);
@@ -516,26 +524,17 @@ pub fn unpack(file: &Path) -> Result<std::path::PathBuf, String> {
     }
 }
 
-/// The zip archive in a package: a .zip as is, or the one inside a .crx.
-/// CRX3: "Cr24", version 3, header length, header (keys, signatures), zip.
-/// CRX2: "Cr24", version 2, key length, signature length, key, signature, zip.
-// ponytail: the CRX signature isn't checked (the Web Store download is over
-// HTTPS from Google); verifying it is item 5 of SECURITY.md's roadmap.
-fn package_zip(bytes: &[u8]) -> Result<&[u8], String> {
+/// The zip archive in a package: a .zip as is (the user's own file), or the
+/// one inside a .crx once its signatures check out (with the extension id
+/// they prove).
+fn package_zip(bytes: &[u8]) -> Result<(&[u8], Option<String>), String> {
     if bytes.starts_with(b"PK\x03\x04") {
-        return Ok(bytes);
+        return Ok((bytes, None));
     }
-    let bad = || "That isn't an extension package (.crx or .zip).".to_string();
     if !bytes.starts_with(b"Cr24") {
-        return Err(bad());
+        return Err("That isn't an extension package (.crx or .zip).".into());
     }
-    let word = |i: usize| bytes.get(i..i + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
-    let start = match word(4) {
-        Some(3) => word(8).map(|h| 12 + h),
-        Some(2) => word(8).zip(word(12)).map(|(k, s)| 16 + k + s),
-        _ => None,
-    };
-    start.and_then(|s| bytes.get(s..)).filter(|z| z.starts_with(b"PK\x03\x04")).ok_or_else(bad)
+    crate::crx::verify(bytes).map(|(zip, id)| (zip, Some(id)))
 }
 
 /// The extension id on a Chrome Web Store page
@@ -557,7 +556,7 @@ pub fn webstore_id(url: &str) -> Option<String> {
 /// Google's download address for a Web Store extension's package.
 pub fn webstore_package_url(id: &str) -> String {
     format!(
-        "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=140.0&acceptformat=crx2,crx3&x=id%3D{id}%26uc"
+        "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=140.0&acceptformat=crx3&x=id%3D{id}%26uc"
     )
 }
 
@@ -587,14 +586,10 @@ mod tests {
     #[test]
     fn packages_yield_their_zip() {
         let zip = b"PK\x03\x04rest";
-        assert_eq!(package_zip(zip).unwrap(), zip);
-        let mut crx3 = b"Cr24\x03\x00\x00\x00\x02\x00\x00\x00hh".to_vec();
-        crx3.extend_from_slice(zip);
-        assert_eq!(package_zip(&crx3).unwrap(), zip);
-        let mut crx2 = b"Cr24\x02\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00kss".to_vec();
-        crx2.extend_from_slice(zip);
-        assert_eq!(package_zip(&crx2).unwrap(), zip);
-        assert!(package_zip(b"Cr24\x03\x00\x00\x00\xff\xff\xff\x00").is_err(), "header past the end");
+        assert_eq!(package_zip(zip).unwrap(), (&zip[..], None));
+        let crx = include_bytes!("../tests/fixtures/title.crx");
+        let (inner, id) = package_zip(crx).unwrap();
+        assert!(inner.starts_with(b"PK\x03\x04") && id.is_some());
         assert!(package_zip(b"<html>").is_err());
     }
 

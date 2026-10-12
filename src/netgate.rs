@@ -76,16 +76,31 @@ pub fn allows(rule: &str, address: &str) -> bool {
 
 /// This Mac or the local network, by name or address. Hosts that only look
 /// numeric (`0x7f.1`, `2130706433`) count too: the resolver may read them as
-/// addresses.
-// ponytail: names are checked, not what they resolve to (DNS rebinding);
-// resolve first and check the address if a service ever needs it.
+/// addresses. A public name can still point here: `resolves_local` checks
+/// what it resolves to before connecting.
 pub fn is_local(address: &str) -> bool {
+    let host = host_of(address);
+    match host.parse::<IpAddr>() {
+        Ok(ip) => local_ip(ip),
+        Err(_) => {
+            let last = host.rsplit('.').next().unwrap_or("");
+            let numeric = !last.is_empty() && (last.bytes().all(|c| c.is_ascii_digit()) || last.starts_with("0x"));
+            numeric || !host.contains('.') || host.ends_with(".localhost") || host.ends_with(".local")
+        }
+    }
+}
+
+/// `wss://host[:port]/…` → `host`, without brackets or a trailing dot.
+fn host_of(address: &str) -> &str {
     let authority = &address[6..address[6..].find('/').map_or(address.len(), |i| i + 6)];
     let host = match authority.strip_prefix('[') {
         Some(v6) => v6.split(']').next().unwrap_or(""),
         None => authority.split(':').next().unwrap_or(""),
     };
-    let host = host.trim_end_matches('.');
+    host.trim_end_matches('.')
+}
+
+fn local_ip(ip: IpAddr) -> bool {
     let local_v4 = |ip: Ipv4Addr| {
         let [a, b, ..] = ip.octets();
         ip.is_loopback()
@@ -95,9 +110,9 @@ pub fn is_local(address: &str) -> bool {
             || ip.is_broadcast()
             || (a == 100 && (64..128).contains(&b))
     };
-    match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => local_v4(ip),
-        Ok(IpAddr::V6(ip)) => {
+    match ip {
+        IpAddr::V4(ip) => local_v4(ip),
+        IpAddr::V6(ip) => {
             let s = ip.segments()[0];
             ip.is_loopback()
                 || ip.is_unspecified()
@@ -105,12 +120,32 @@ pub fn is_local(address: &str) -> bool {
                 || s & 0xffc0 == 0xfe80
                 || ip.to_ipv4_mapped().is_some_and(local_v4)
         }
-        Err(_) => {
-            let last = host.rsplit('.').next().unwrap_or("");
-            let numeric = !last.is_empty() && (last.bytes().all(|c| c.is_ascii_digit()) || last.starts_with("0x"));
-            numeric || !host.contains('.') || host.ends_with(".localhost") || host.ends_with(".local")
-        }
     }
+}
+
+/// Does `address`'s name resolve to this Mac or the local network? A name
+/// that doesn't resolve isn't: connecting fails on its own. Blocks on DNS:
+/// call it off the main thread.
+// ponytail: the system resolves again when connecting, so a name with a
+// zero TTL can still switch to a local address in between (DNS rebinding).
+// This stops names that simply point here (`localtest.me`); closing the gap
+// needs connecting to the checked address, which NSURLSession can't do.
+pub fn resolves_local(address: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    let authority = address[6..].split('/').next().unwrap_or("");
+    let port = authority.rsplit_once(':').filter(|(_, p)| !p.contains(']')).and_then(|(_, p)| p.parse().ok());
+    (host_of(address), port.unwrap_or(443)).to_socket_addrs().is_ok_and(|mut a| a.any(|a| local_ip(a.ip())))
+}
+
+/// Resolve `address` on another thread, then call `done(local)` on the main
+/// thread.
+fn after_resolving(address: String, done: Box<dyn FnOnce(bool)>) {
+    let done = crate::MainOnly(done);
+    std::thread::spawn(move || {
+        let done = done; // the whole wrapper, not its field
+        let local = resolves_local(&address);
+        crate::on_main(move || (done.0)(local));
+    });
 }
 
 /// Open connections: the page's port and its socket. Main thread only (the
@@ -322,7 +357,20 @@ impl App {
                 let Some(nsurl) = NSURL::URLWithString(&NSString::from_str(&url)) else { return };
                 let protocols = string_of(msg, "protocols").unwrap_or_default();
                 let ua = crate::extensions::background_user_agent(ctx);
-                GATE.with(|g| g.get_or_init(Gate::new).open(port, &nsurl, ua.as_deref(), &protocols));
+                let port = port.retain();
+                let address = address_of(&url).unwrap_or_default();
+                after_resolving(
+                    address,
+                    Box::new(move |local| {
+                        if local {
+                            send(&port, r#"{"t":"error"}"#);
+                            let why = "my-browser: this Mac and the local network are blocked";
+                            send(&port, &format!(r#"{{"t":"close","code":1006,"reason":{}}}"#, json_str(why)));
+                            return;
+                        }
+                        GATE.with(|g| g.get_or_init(Gate::new).open(&port, &nsurl, ua.as_deref(), &protocols));
+                    }),
+                );
             }
             Some("send") => {
                 let message = if let Some(text) = string_of(msg, "text") {
@@ -498,5 +546,15 @@ mod tests {
         {
             assert!(!is_local(public), "{public}");
         }
+    }
+
+    #[test]
+    fn names_are_checked_by_what_they_resolve_to() {
+        // No network needed: these resolve locally or are literal addresses.
+        assert!(resolves_local("wss://localhost:9/"));
+        assert!(resolves_local("wss://127.0.0.1/"));
+        assert!(!resolves_local("wss://does-not-resolve.invalid/"), "fails as a connection instead");
+        assert!(!resolves_local("wss://8.8.8.8/"));
+        assert!(!resolves_local("wss://[2001:4860::8888]:8443/x"));
     }
 }

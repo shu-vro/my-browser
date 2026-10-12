@@ -38,7 +38,7 @@ no devtools; extensions yes. Full vision and rules:
 
 ```sh
 cargo build --release                  # always test release builds
-cargo test --release                   # 103 tests, ~12 s, opens windows (needs GUI session)
+cargo test --release                   # 107 tests, ~12 s, opens windows (needs GUI session)
 git config core.hooksPath .githooks    # once per clone: fmt, clippy, tests before every commit
 ./target/release/bench --runs 1        # ~2 min quick benchmark (floating window)
 ./target/release/bench --only startup  # ~20 s: idle CPU, wakeups, footprint only

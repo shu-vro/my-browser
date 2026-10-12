@@ -1145,6 +1145,8 @@ fn settings_page_loads_and_its_bridge_works() {
     assert!(b.bridge(&["settings.get"]).contains("\"search\":\"brave\""));
     let bad = b.send("bridge settings.set\tsearch\tevil.example");
     assert!(bad.starts_with("BRIDGE err "), "{bad}");
+    // Settings → General shows the version "Check for updates" compares against.
+    assert_eq!(b.bridge(&["app.version"]), format!("\"{}\"", env!("CARGO_PKG_VERSION")));
     let unknown = b.send("bridge nope");
     assert!(unknown.starts_with("BRIDGE err unknown op"), "{unknown}");
 }
@@ -1512,14 +1514,17 @@ fn chrome_extension_packages_install_from_crx_and_zip() {
     let files = TempProfile::new("package-files");
     let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/title-extension");
     // A .zip with the extension in a folder (as GitHub serves them), and a
-    // CRX3 around the same zip (as the Chrome Web Store serves them).
+    // signed CRX3 of the same folder (as the Chrome Web Store serves them).
     let zip = files.0.join("title.zip");
     let zipped = Command::new("/usr/bin/ditto").args(["-c", "-k", "--keepParent", fixture]).arg(&zip).status();
     assert!(zipped.unwrap().success());
-    let crx = files.0.join("title.crx");
-    let mut bytes = b"Cr24\x03\x00\x00\x00\x04\x00\x00\x00sign".to_vec();
-    bytes.extend(std::fs::read(&zip).unwrap());
-    std::fs::write(&crx, bytes).unwrap();
+    let crx = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/title.crx")).to_path_buf();
+    // The same package with one byte of its contents changed.
+    let tampered = files.0.join("tampered.crx");
+    let mut bytes = std::fs::read(&crx).unwrap();
+    let at = bytes.len() - 30;
+    bytes[at] ^= 1;
+    std::fs::write(&tampered, bytes).unwrap();
     let junk = files.0.join("junk.crx");
     std::fs::write(&junk, "<html>not a package</html>").unwrap();
 
@@ -1534,6 +1539,9 @@ fn chrome_extension_packages_install_from_crx_and_zip() {
     assert_eq!(list.matches(&format!("\"path\":\"{}/extensions/", profile.path())).count(), 2, "{list}");
     let refused = b.send(&format!("bridge ext.install\t{}", junk.display()));
     assert_eq!(refused, "BRIDGE err That isn't an extension package (.crx or .zip).");
+    let refused = b.send(&format!("bridge ext.install\t{}", tampered.display()));
+    assert!(refused.starts_with("BRIDGE err This package can't be trusted"), "{refused}");
+    assert_eq!(b.bridge(&["ext.list"]).matches("\"id\":").count(), 2, "nothing more installed");
     b.quit();
 }
 
