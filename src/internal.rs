@@ -301,6 +301,23 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             app.unload_extension(ext.id);
             ok()
         }
+        // Unpacked folder: copy it again and re-read it, after its files changed.
+        "ext.reload" => {
+            let Some(ext) = args
+                .get(1)
+                .and_then(|s| s.parse().ok())
+                .and_then(|id: i64| store.extensions().into_iter().find(|e| e.id == id && e.enabled))
+            else {
+                return reply(Err("no such extension".into()));
+            };
+            if !ext.source.is_empty()
+                && ext.path != ext.source
+                && let Err(e) = recopy(Path::new(&ext.source), Path::new(&ext.path))
+            {
+                return reply(Err(format!("Couldn't copy the extension: {e}")));
+            }
+            return app.reload_extension(ext.id, &ext.path, Box::new(move |r| reply(r.map(|name| json_str(&name)))));
+        }
         "ext.access" => id_arg(&args, 1)
             .and_then(|id| app.set_extension_access(id, args.get(2).map_or("", |s| s)).map(|()| "true".to_string())),
         "ext.remove" => id_arg(&args, 1).map(|id| {
@@ -461,9 +478,11 @@ fn extensions_json(app: &App) -> String {
                 errors.extend(unsafe { c.errors() }.iter().map(|e| json_str(&e.localizedDescription().to_string())));
             }
             errors.dedup();
+            let local = !e.source.is_empty() || !extensions_dir(app).is_some_and(|d| Path::new(&e.path).starts_with(d));
             format!(
-                "{{\"id\":{},\"path\":{},\"enabled\":{},\"read\":{},\"running\":{},\"access\":{},\"name\":{},\"version\":{},\"description\":{},\"permissions\":[{}],\"errors\":[{}]}}",
+                "{{\"id\":{},\"local\":{},\"path\":{},\"enabled\":{},\"read\":{},\"running\":{},\"access\":{},\"name\":{},\"version\":{},\"description\":{},\"permissions\":[{}],\"errors\":[{}]}}",
                 e.id,
+                local,
                 json_str(&e.path),
                 e.enabled,
                 ext.is_some(),
@@ -556,6 +575,12 @@ pub fn install_extension(app: &App, source: PathBuf, reply: Reply) {
 }
 
 fn copy_and_register(app: &App, source: PathBuf, reply: Reply) {
+    // Packages are unpacked to a temporary folder; only a user's folder can be reloaded.
+    let from = if source.starts_with(crate::extensions::unpack_root()) {
+        String::new()
+    } else {
+        source.to_string_lossy().into_owned()
+    };
     let path = match extensions_dir(app) {
         Some(dir) => {
             let name =
@@ -574,7 +599,7 @@ fn copy_and_register(app: &App, source: PathBuf, reply: Reply) {
         None => source,
     };
     let path = path.to_string_lossy().into_owned();
-    let id = app.store().add_extension(&path);
+    let id = app.store().add_extension(&path, &from);
     let this = app.retain();
     app.register_extension(
         id,
@@ -603,6 +628,19 @@ fn drop_unpacked(path: &Path) {
     {
         let _ = std::fs::remove_dir_all(root.join(first));
     }
+}
+
+/// Replace the profile's copy `to` with a fresh copy of `from`. The old copy
+/// stays until the new one is complete.
+fn recopy(from: &Path, to: &Path) -> std::io::Result<()> {
+    if !from.join("manifest.json").is_file() {
+        return Err(std::io::Error::other(format!("{} has no manifest.json", from.display())));
+    }
+    let fresh = to.with_file_name(format!("{}.reload", to.file_name().unwrap_or_default().to_string_lossy()));
+    let _ = std::fs::remove_dir_all(&fresh);
+    copy_dir(from, &fresh)?;
+    std::fs::remove_dir_all(to)?;
+    std::fs::rename(&fresh, to)
 }
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {

@@ -7,11 +7,11 @@
 <title>Settings</title>
 <style>
   :root {
-    --bg: #ffffff; --panel: #f6f6f7; --text: #1d1d1f; --muted: #6e6e73; --line: #e3e3e6;
+    --bg: #ffffff; --panel: #f6f6f7; --text: #1d1d1f; --muted: #5c5c61; --line: #e3e3e6;
     --accent: #0a66d8; --danger: #c62828; --ok: #1f7a3a;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #1c1c1e; --panel: #2a2a2d; --text: #f2f2f4; --muted: #a1a1a6; --line: #3a3a3d;
+    :root { --bg: #1c1c1e; --panel: #2a2a2d; --text: #f2f2f4; --muted: #c7c7cc; --line: #3a3a3d;
             --accent: #4d9bff; --danger: #ff6b6b; --ok: #5cd27c; }
   }
   * { box-sizing: border-box; }
@@ -39,6 +39,7 @@
   .empty { color: var(--muted); padding: 18px 0; }
   .tag { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
   .note { color: var(--muted); font-size: 12.5px; }
+  a { color: var(--accent); }
   #toast { position: fixed; bottom: 18px; right: 18px; background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   #toast.show { opacity: .92; }
   progress { width: 120px; }
@@ -467,7 +468,13 @@ async function loadExtensions() {
     const toggle = el("input"); toggle.type = "checkbox"; toggle.checked = x.enabled; toggle.title = "Enabled";
     toggle.onchange = () => call("ext.toggle", x.id, toggle.checked ? "1" : "0").then(loadExtensions, e => { fail(e); loadExtensions(); });
     const rm = el("button", "danger", "Remove"); rm.onclick = () => { if (confirm("Remove " + (x.name || "this extension") + "?")) call("ext.remove", x.id).then(loadExtensions, fail); };
-    li.append(main, access, toggle, rm);
+    li.append(main, access, toggle);
+    if (x.local && x.enabled) {
+      const rl = el("button", null, "Reload"); rl.title = "Read the folder again after changing its files";
+      rl.onclick = () => call("ext.reload", x.id).then(n => { toast("Reloaded " + n); loadExtensions(); }, e => { fail(e); loadExtensions(); });
+      li.append(rl);
+    }
+    li.append(rm);
     list.append(li);
   }
 }

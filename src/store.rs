@@ -71,6 +71,8 @@ pub struct Extension {
     pub enabled: bool,
     /// click: off until its button is clicked on a site | always: on every site.
     pub access: String,
+    /// The user's folder it was copied from ("" for packages): Reload copies it again.
+    pub source: String,
 }
 
 /// Per-site permissions and the values each may hold. A missing row means the
@@ -139,6 +141,10 @@ impl Store {
         // Added in 0.2: which window each restored tab goes back to.
         if db.prepare("SELECT win FROM session LIMIT 0").is_err() {
             db.execute_batch("ALTER TABLE session ADD COLUMN win INTEGER NOT NULL DEFAULT 0")?;
+        }
+        // Added in 0.3: the folder an unpacked extension was copied from, for Reload.
+        if db.prepare("SELECT source FROM extensions LIMIT 0").is_err() {
+            db.execute_batch("ALTER TABLE extensions ADD COLUMN source TEXT NOT NULL DEFAULT ''")?;
         }
         Ok(Store { db })
     }
@@ -312,17 +318,24 @@ impl Store {
 
     // ---- extensions
 
-    pub fn add_extension(&self, path: &str) -> i64 {
-        let _ = self.db.execute("INSERT OR IGNORE INTO extensions (path) VALUES (?1)", [path]);
+    pub fn add_extension(&self, path: &str, source: &str) -> i64 {
+        let _ = self.db.execute("INSERT OR IGNORE INTO extensions (path, source) VALUES (?1, ?2)", [path, source]);
         self.db.query_row("SELECT id FROM extensions WHERE path = ?1", [path], |r| r.get(0)).unwrap_or(0)
     }
 
     pub fn extensions(&self) -> Vec<Extension> {
-        let Ok(mut stmt) = self.db.prepare("SELECT id, path, enabled, access FROM extensions ORDER BY id") else {
+        let Ok(mut stmt) = self.db.prepare("SELECT id, path, enabled, access, source FROM extensions ORDER BY id")
+        else {
             return Vec::new();
         };
         stmt.query_map([], |r| {
-            Ok(Extension { id: r.get(0)?, path: r.get(1)?, enabled: r.get::<_, i64>(2)? == 1, access: r.get(3)? })
+            Ok(Extension {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                enabled: r.get::<_, i64>(2)? == 1,
+                access: r.get(3)?,
+                source: r.get(4)?,
+            })
         })
         .map(|rows| rows.filter_map(Result::ok).collect())
         .unwrap_or_default()
@@ -663,8 +676,8 @@ mod tests {
     #[test]
     fn extensions_and_session() {
         let s = Store::open(None).unwrap();
-        let id = s.add_extension("/x/ext");
-        assert_eq!(s.add_extension("/x/ext"), id, "same path, same row");
+        let id = s.add_extension("/x/ext", "");
+        assert_eq!(s.add_extension("/x/ext", ""), id, "same path, same row");
         s.set_extension_enabled(id, false);
         assert!(!s.extensions()[0].enabled);
         s.remove_extension(id);

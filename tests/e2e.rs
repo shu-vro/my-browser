@@ -1482,6 +1482,31 @@ fn extensions_stay_off_until_clicked_then_turn_off_when_leaving_the_site() {
 }
 
 #[test]
+fn reload_copies_an_unpacked_extension_folder_again() {
+    let base = serve();
+    let profile = TempProfile::new("reload");
+    let src = TempProfile::new("reload-src");
+    let fixture = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/title-extension"));
+    for f in ["manifest.json", "content.js", "popup.html"] {
+        std::fs::copy(fixture.join(f), src.0.join(f)).unwrap();
+    }
+    let mut b = launch_with(&["--profile", profile.path()]);
+    let installed = b.bridge(&["ext.install", src.path()]);
+    let id: String = installed.split("\"id\":").nth(1).unwrap().chars().take_while(char::is_ascii_digit).collect();
+    assert!(b.bridge(&["ext.list"]).contains("\"local\":true"));
+    assert_eq!(b.bridge(&["ext.access", &id, "always"]), "true");
+    b.nav(&format!("go {base}/page/before"));
+    assert!(b.state_until(|s| s.ends_with("title=EXT before")).ends_with("title=EXT before"));
+
+    // Edit the user's folder: the running copy doesn't change until Reload.
+    std::fs::write(src.0.join("content.js"), "document.title = \"NEW \" + document.title;").unwrap();
+    assert_eq!(b.bridge(&["ext.reload", &id]), "\"Title Marker\"");
+    b.nav(&format!("go {base}/page/after"));
+    assert!(b.state_until(|s| s.ends_with("title=NEW after")).ends_with("title=NEW after"));
+    b.quit();
+}
+
+#[test]
 fn chrome_extension_packages_install_from_crx_and_zip() {
     let profile = TempProfile::new("packages");
     let files = TempProfile::new("package-files");

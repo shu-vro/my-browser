@@ -146,6 +146,26 @@ impl App {
         self.refresh_extension_buttons();
     }
 
+    /// Read an extension's folder again (after its files changed), and
+    /// start it again if it was running.
+    pub fn reload_extension(&self, id: i64, path: &str, done: Done) {
+        let running = self.extension_context(id).is_some();
+        self.unload_extension(id);
+        let this = self.retain();
+        self.register_extension(
+            id,
+            path,
+            Box::new(move |r| {
+                done(r.and_then(|name| {
+                    if running {
+                        this.start_extension(id)?;
+                    }
+                    Ok(name)
+                }))
+            }),
+        );
+    }
+
     /// Switch between `click` and `always`. A running extension restarts
     /// under the new access.
     pub fn set_extension_access(&self, id: i64, access: &str) -> Result<(), String> {
