@@ -226,6 +226,17 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             app.refresh_toolbars();
             added.map(|n| format!("{{\"added\":{n}}}"))
         }
+        // System Settings → Privacy & Security → Full Disk Access, after an
+        // import macOS refused.
+        "import.allow" => {
+            let url = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles";
+            if !app.is_bench()
+                && let Some(url) = NSURL::URLWithString(&NSString::from_str(url))
+            {
+                NSWorkspace::sharedWorkspace().openURL(&url);
+            }
+            ok()
+        }
         // A bookmarks file exported by any browser (.html).
         "import.file" => match args.get(1) {
             Some(path) if app.is_bench() => Ok(import_bookmarks_file(app, Path::new(path))),

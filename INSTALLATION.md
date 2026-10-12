@@ -52,6 +52,21 @@ It should print `my-browser-<version>.dmg: OK`.
 
 Settings (⌘,) → General → make my-browser the default browser.
 
+## Import from another browser (optional)
+
+Settings → Import copies bookmarks, history and passwords from Chrome, Brave,
+Edge, Vivaldi, Arc or Safari. macOS keeps each browser's data private to it,
+so the first import says so and offers to open System Settings:
+
+1. Privacy & Security → **Full Disk Access** → turn on **my-browser** (add it
+   with **+** from Applications if it isn't listed).
+2. Quit my-browser (⌘Q) and open it again, then import.
+
+You can turn Full Disk Access off again once you've imported. Because
+releases aren't signed with an Apple Developer ID, macOS treats each new
+version as a different app: after updating, remove my-browser from the list
+(**−**) and add it again if you need to import again.
+
 ## Update
 
 The browser never checks for updates by itself. Choose **my-browser → Check

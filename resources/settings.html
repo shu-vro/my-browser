@@ -387,7 +387,11 @@ async function loadImport() {
     const kinds = s.id === "safari" ? ["bookmarks", "history"] : ["bookmarks", "history", "passwords"];
     for (const kind of kinds) {
       const b = el("button", null, kind[0].toUpperCase() + kind.slice(1));
-      b.onclick = () => { b.disabled = true; call("import.run", s.id, kind).then(r => toast("Imported " + r.added + " " + kind + " from " + s.name), fail).finally(() => b.disabled = false); };
+      b.onclick = () => { b.disabled = true; call("import.run", s.id, kind).then(r => toast("Imported " + r.added + " " + kind + " from " + s.name), e => {
+        const msg = String(e && e.message || e);
+        if (msg.includes("Full Disk Access")) { if (confirm(msg + "\n\nOpen System Settings now?")) call("import.allow").catch(fail); }
+        else fail(e);
+      }).finally(() => b.disabled = false); };
       li.append(b);
     }
     list.append(li);

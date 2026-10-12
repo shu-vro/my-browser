@@ -1038,6 +1038,15 @@ fn bookmarks_and_history_import_from_other_browsers() {
     assert_eq!(b.bridge(&["import.run", "brave", "bookmarks"]), r#"{"added":0}"#, "twice adds nothing twice");
     assert_eq!(b.bridge(&["import.run", "brave", "history"]), r#"{"added":1}"#, "web pages only");
     assert_eq!(b.bridge(&["import.run", "brave", "passwords"]), r#"{"added":0}"#);
+    // A file macOS won't let us read (other browsers' data since macOS 15):
+    // the message names Full Disk Access, which the page offers to open.
+    use std::os::unix::fs::PermissionsExt;
+    let history = brave.join("History");
+    std::fs::set_permissions(&history, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let refused = b.send("bridge import.run\tbrave\thistory");
+    std::fs::set_permissions(&history, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(refused.starts_with("BRIDGE err ") && refused.contains("Full Disk Access"), "{refused}");
+    assert_eq!(b.bridge(&["import.allow"]), "true");
     assert_eq!(b.bridge(&["import.run", "safari", "bookmarks"]), r#"{"added":1}"#);
     assert_eq!(b.bridge(&["import.run", "safari", "history"]), r#"{"added":1}"#);
     let bookmarks = b.bridge(&["bookmarks.list", ""]);

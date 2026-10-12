@@ -52,12 +52,15 @@ pub fn name_of(id: &str) -> &'static str {
 }
 
 /// A read error in words: macOS keeps other apps' data private until the
-/// user allows it.
+/// user allows it. Since macOS 15 that includes Chromium browsers' profile
+/// folders (the file is visible, reading it fails with EPERM), and only Full
+/// Disk Access lifts it. The settings page offers to open that pane when
+/// the message names it.
 fn explain(e: std::io::Error, what: &str) -> String {
     if e.kind() == std::io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(1) {
         format!(
-            "macOS didn't let my-browser read {what}. Allow it in System Settings → Privacy & Security → Full Disk \
-             Access (or answer Allow when asked), then try again."
+            "macOS keeps {what} private to that browser. To import it, turn on my-browser in System Settings → \
+             Privacy & Security → Full Disk Access, then quit and reopen my-browser and try again."
         )
     } else {
         format!("Couldn't read {what}: {e}")
