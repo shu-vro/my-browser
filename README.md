@@ -82,7 +82,8 @@ worse is rejected.
 Download the DMG from the [releases](https://github.com/shu-vro/my-browser/releases),
 open it and drag my-browser to Applications. It isn't notarized by Apple, so
 the first launch is blocked: open it once, then choose **Open Anyway** in
-System Settings → Privacy & Security.
+System Settings → Privacy & Security. Step by step, with updating and
+uninstalling: [INSTALLATION.md](INSTALLATION.md).
 
 ## Run it
 
