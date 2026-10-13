@@ -43,7 +43,7 @@
   #toast { position: fixed; bottom: 18px; right: 18px; background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   #toast.show { opacity: .92; }
   progress { width: 120px; }
-  .list a.title { color: inherit; text-decoration: none; }
+  .list a.title { display: block; white-space: normal; overflow-wrap: anywhere; color: inherit; text-decoration: none; }
   .list a.title:hover { text-decoration: underline; }
   .bar { display: flex; gap: 10px; align-items: center; margin-bottom: 4px; }
   .bar input[type=search] { margin: 0; flex: 1; }
@@ -70,12 +70,12 @@
   <a href="#storage">Storage</a>
   <a href="#extensions">Extensions</a>
   <a href="#network">Network</a>
+  <a href="#shortcuts">Shortcuts</a>
+  <a href="#about">About</a>
 </nav>
 <main>
   <section id="general">
     <h1>General</h1>
-    <div class="row"><div><div id="app-version">my-browser</div><div class="hint">New versions are published as GitHub releases. The browser never checks in the background: this opens the latest release so you can compare.</div></div>
-      <button id="check-updates">Check for updates</button></div>
     <div class="row"><div><div>Default browser</div><div class="hint" id="default-hint"></div></div>
       <button id="make-default">Make default</button></div>
     <div class="row"><div><div>Search engine</div><div class="hint">Used for anything you type that isn't an address.</div></div>
@@ -204,6 +204,20 @@
     <ul class="list" id="net-blocked"></ul>
     <h2>Allowed</h2>
     <ul class="list" id="net-allowed"></ul>
+  </section>
+
+  <section id="shortcuts">
+    <h1>Keyboard shortcuts</h1>
+    <p class="note">Every shortcut is a menu item. To change one, add it in System Settings → Keyboard → Keyboard Shortcuts → App Shortcuts: pick my-browser, type the menu item's exact name, then the new keys. Restart the browser to see the change here.</p>
+    <p><button id="keys-open">Open Keyboard Settings</button></p>
+    <div id="keys-list"></div>
+  </section>
+
+  <section id="about">
+    <h1>About</h1>
+    <div class="row"><div><div id="app-version">my-browser</div><div class="hint">New versions are published as GitHub releases. The browser never checks in the background: this opens the latest release so you can compare.</div></div>
+      <button id="check-updates">Check for updates</button></div>
+    <p class="note">The lightest browser for macOS: a small native shell around the Safari engine (WebKit). No telemetry, no tracking, no sync. Source code, issues and releases: <a href="#" id="repo">github.com/shu-vro/my-browser</a>.</p>
   </section>
 </main>
 <div id="toast"></div>
@@ -518,6 +532,20 @@ async function loadNetwork() {
   }
 }
 loaders.network = loadNetwork;
+
+// ---- keyboard shortcuts
+async function loadShortcuts() {
+  const list = $("keys-list"); list.replaceChildren();
+  let menu = "", ul = null;
+  for (const k of await call("keys.list")) {
+    if (k.menu !== menu) { menu = k.menu; list.append(el("h2", "day", menu)); ul = el("ul", "list"); list.append(ul); }
+    const li = el("li"); const main = el("div", "main"); main.append(el("div", "title", k.title));
+    li.append(main, el("span", "tag", k.keys)); ul.append(li);
+  }
+}
+$("keys-open").onclick = () => call("keys.open").catch(fail);
+loaders.shortcuts = loadShortcuts;
+$("repo").onclick = e => { e.preventDefault(); call("open", "https://github.com/shu-vro/my-browser").catch(fail); };
 
 show();
 </script>

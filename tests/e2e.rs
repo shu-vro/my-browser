@@ -1154,8 +1154,13 @@ fn settings_page_loads_and_its_bridge_works() {
     assert!(b.bridge(&["settings.get"]).contains("\"search\":\"brave\""));
     let bad = b.send("bridge settings.set\tsearch\tevil.example");
     assert!(bad.starts_with("BRIDGE err "), "{bad}");
-    // Settings → General shows the version "Check for updates" compares against.
+    // Settings → About shows the version "Check for updates" compares against.
     assert_eq!(b.bridge(&["app.version"]), format!("\"{}\"", env!("CARGO_PKG_VERSION")));
+    // Settings → Shortcuts lists the menu bar's keys.
+    let keys = b.bridge(&["keys.list"]);
+    assert!(keys.contains("{\"menu\":\"File\",\"title\":\"New Tab\",\"keys\":\"⌘T\"}"), "{keys}");
+    assert!(keys.contains("\"title\":\"New Private Window\",\"keys\":\"⇧⌘N\""), "{keys}");
+    assert!(keys.contains("\"title\":\"Next Tab\",\"keys\":\"⌃⇥\""), "{keys}");
     let unknown = b.send("bridge nope");
     assert!(unknown.starts_with("BRIDGE err unknown op"), "{unknown}");
 }
@@ -1614,6 +1619,23 @@ fn leftover_data_is_listed_and_deleted_but_profiles_are_kept() {
 
 // ---------------------------------------------------------------------------
 // Find in page
+
+#[test]
+fn address_bar_loads_on_return_only() {
+    let mut b = launch();
+    b.nav("go data:text/html,<title>one</title>");
+    // Return navigates, through the field editor like a real key press.
+    assert!(b.nav("barenter data:text/html,<title>two</title>").contains("two"));
+    // Return on the unchanged address, or clicking in and out again,
+    // doesn't reload the page.
+    b.send("eval window.marker = 1");
+    writeln!(b.stdin, "barenter data:text/html,<title>two</title>").unwrap();
+    assert_eq!(b.send("barblur"), "BLURRED");
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(b.send("state").starts_with("STATE "), "the address bar loaded the page again");
+    assert_eq!(b.send("eval window.marker"), "EVAL 1");
+    b.quit();
+}
 
 #[test]
 fn find_bar_finds_steps_wraps_and_closes() {

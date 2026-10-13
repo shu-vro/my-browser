@@ -384,10 +384,24 @@ The `theme` setting (system | light | dark) sets `NSApp.appearance`. Web views
 inherit it, so the internal pages and any site using `prefers-color-scheme`
 follow it.
 
+### Address bar
+
+The bar has no target/action: its delegate handles Return in
+`control:textView:doCommandBySelector:` and reports it handled, so AppKit
+doesn't beep. Return on the address already showing just gives focus back
+to the page (⌘R reloads), as the owner asked.
+
+### Keyboard shortcuts
+
+Every shortcut is a menu item (`build_menu`). Settings → Shortcuts lists
+them from the live menu bar (`keys.list`); changing one is left to macOS
+(System Settings → Keyboard → App Shortcuts, opened by `keys.open`), which
+needs no code of ours. About my-browser (app menu) opens Settings → About.
+
 ### Updates
 
 There is no update check in the background (CONTRIBUTING rule 4).
-"my-browser → Check for Updates…" and Settings → General → "Check for
+"my-browser → Check for Updates…" and Settings → About → "Check for
 updates" (`app.updates`) open `RELEASES`
 (`github.com/shu-vro/my-browser/releases/latest`) in a normal tab, where
 GitHub shows the newest release; Settings shows this build's version
@@ -776,6 +790,7 @@ active tab.
 | `key <combo>` | `KEY ok\|none` (whether a menu item took it) |
 | `find <text>`, `findnext`, `findprev` | `FIND found=<0\|1>` |
 | `findbar` / `findesc` | `FINDBAR open=<0\|1> text=<term> status=<label>` (`findesc` presses Esc in the field first) |
+| `barenter <text>` / `barblur` | `barenter` types into the address bar and presses Return through its field editor (`LOADED …`, or nothing if the address is unchanged); `barblur` focuses the bar, then the page: `BLURRED` |
 | `selection` | `SELECTION <offset>`: where the current selection (find match) starts |
 | `window` | `WINDOW minimized=<0\|1> key=<0\|1> app_active=<0\|1>` |
 | `bridge <op>\t<arg>…` | `BRIDGE ok <json>` or `BRIDGE err <message>` |

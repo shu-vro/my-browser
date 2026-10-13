@@ -411,10 +411,27 @@ define_class!(
     }
 
     unsafe impl NSControlTextEditingDelegate for Tab {
+        /// Address bar: Enter = go (handled here, so AppKit doesn't beep).
         /// Find field keys: Enter = next, Shift+Enter = previous, Esc = close.
         #[unsafe(method(control:textView:doCommandBySelector:))]
-        fn find_field_command(&self, _control: &NSControl, _view: &NSTextView, command: objc2::runtime::Sel) -> bool {
-            if command == sel!(cancelOperation:) {
+        fn find_field_command(&self, control: &NSControl, _view: &NSTextView, command: objc2::runtime::Sel) -> bool {
+            let bar = self.ivars().bar.get().is_some_and(|b| std::ptr::eq::<NSControl>(&***b, control));
+            if bar {
+                let enter = command == sel!(insertNewline:);
+                let text = control.stringValue().to_string();
+                let url = self.app().normalize(&text);
+                if !enter || text.trim().is_empty() {
+                } else if let Some(web) = self.web().filter(|w| {
+                    let typed = NSURL::URLWithString(&NSString::from_str(&url)).and_then(|u| u.absoluteString());
+                    typed.is_some() && typed == unsafe { w.URL() }.and_then(|u| u.absoluteString())
+                }) {
+                    // Unchanged: back to the page, no reload (⌘R reloads).
+                    self.window().makeFirstResponder(Some(&web));
+                } else {
+                    self.load(&url);
+                }
+                enter
+            } else if command == sel!(cancelOperation:) {
                 self.hide_find();
                 true
             } else if command == sel!(insertNewline:) {
@@ -633,15 +650,6 @@ define_class!(
         }
 
         /// Address bar action: fired on Enter.
-        #[unsafe(method(go:))]
-        fn go_action(&self, sender: &NSTextField) {
-            let text = sender.stringValue().to_string();
-            if !text.trim().is_empty() {
-                let url = self.app().normalize(&text);
-                self.load(&url);
-            }
-        }
-
         #[unsafe(method(goBack:))]
         fn go_back_action(&self, _s: Option<&AnyObject>) {
             self.go_back();
@@ -912,10 +920,9 @@ impl Tab {
         } else {
             bar.setPlaceholderString(Some(&NSString::from_str("Search or enter address")));
         }
-        unsafe {
-            bar.setTarget(Some(self));
-            bar.setAction(Some(sel!(go:)));
-        }
+        // No action: Return is handled in `control:textView:doCommandBySelector:`.
+        // An action also fires when editing ends, so clicking away reloaded the page.
+        unsafe { bar.setDelegate(Some(ProtocolObject::from_ref(self))) };
         content.addSubview(&bar);
         let _ = self.ivars().bar.set(bar);
         let star = unsafe {
@@ -1619,6 +1626,24 @@ impl Tab {
         let bar = self.ivars().bar.get().unwrap();
         self.window().makeFirstResponder(Some(bar));
         unsafe { bar.selectText(None) };
+    }
+
+    /// Bench: edit the address bar through its field editor, then press
+    /// Return (`Some(text)`) or move focus to the page (`None`).
+    pub fn address_bar_key(&self, text: Option<&str>) {
+        self.focus_address_bar();
+        let Some(editor) = self.window().firstResponder().and_then(|r| r.downcast::<NSTextView>().ok()) else { return };
+        match text {
+            Some(text) => {
+                editor.setString(&NSString::from_str(text));
+                let _: () = unsafe { msg_send![&*editor, doCommandBySelector: sel!(insertNewline:)] };
+            }
+            None => {
+                if let Some(web) = self.web() {
+                    self.window().makeFirstResponder(Some(&web));
+                }
+            }
+        }
     }
 
     /// Links: Cmd-click opens a new tab; web pages can't open internal pages;

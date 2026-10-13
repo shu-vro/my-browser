@@ -523,6 +523,11 @@ define_class!(
             self.open_internal("settings");
         }
 
+        #[unsafe(method(showAbout:))]
+        fn show_about_action(&self, _s: Option<&AnyObject>) {
+            self.open_internal("settings#about");
+        }
+
         #[unsafe(method(checkForUpdates:))]
         fn check_for_updates_action(&self, _s: Option<&AnyObject>) {
             self.open_tab(RELEASES, false);
@@ -1684,6 +1689,16 @@ impl App {
                 t.reload();
             }
             ("state", Some(t)) => say!("{}", t.state()),
+            // Type into the address bar and press Return (`barenter <text>`),
+            // or click into it and away again (`barblur`).
+            ("barenter", Some(t)) => {
+                start(&t);
+                t.address_bar_key(Some(arg));
+            }
+            ("barblur", Some(t)) => {
+                t.address_bar_key(None);
+                say!("BLURRED");
+            }
             ("visible", Some(t)) => {
                 let visible = t.window().occlusionState().contains(NSWindowOcclusionState::Visible);
                 say!("VISIBLE {}", visible as u8);
@@ -2270,6 +2285,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
         (
             "my-browser",
             vec![
+                ("About my-browser", sel!(showAbout:), "", none, true),
                 ("Settings…", sel!(openSettings:), ",", cmd, true),
                 ("Check for Updates…", sel!(checkForUpdates:), "", none, true),
                 ("Quit my-browser", sel!(terminate:), "q", cmd, false),
