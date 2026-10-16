@@ -158,8 +158,10 @@ A tab has two states:
 - `App::sleep_background_tabs` runs from one 30-second timer (with 10 s
   tolerance, so macOS can batch the wakeup). It puts to sleep tabs idle longer
   than the `tab_sleep_minutes` setting, or every background tab if
-  `kern.memorystatus_vm_pressure_level` reports pressure. The same tick saves
-  the session.
+  `kern.memorystatus_vm_pressure_level` reports pressure. In Low Power Mode,
+  or when `NSProcessInfo.thermalState` is serious or critical, the timeout
+  drops to one minute (`sleep_after`; 0 still means never). The same tick
+  saves the session.
 
 **The active tab** is tracked explicitly (`App.active`), not taken from
 "key window". Menu actions go to the app delegate, which forwards them to the

@@ -1499,14 +1499,15 @@ impl App {
         }
     }
 
-    /// Put background tabs to sleep: idle ones after the configured minutes,
-    /// all of them when `all` (memory pressure).
+    /// Put background tabs to sleep: idle ones after the configured minutes
+    /// (one minute in Low Power Mode or when the Mac runs hot), all of them
+    /// when `all` (memory pressure).
     fn sleep_background_tabs(&self, all: bool) {
         let minutes: u64 = self.store().setting("tab_sleep_minutes").parse().unwrap_or(0);
-        let idle = Duration::from_secs(minutes * 60);
+        let idle = sleep_after(minutes, saving_power());
         for tab in self.ivars().tabs.borrow().clone() {
             let since = tab.ivars().last_active.get().map_or(Duration::ZERO, |t| t.elapsed());
-            if !self.is_active(&tab) && (all || (minutes > 0 && since >= idle)) {
+            if !self.is_active(&tab) && (all || idle.is_some_and(|idle| since >= idle)) {
                 tab.sleep();
             }
         }
@@ -2140,6 +2141,20 @@ fn memory_pressure() -> bool {
     level > 1
 }
 
+/// Low Power Mode is on, or the Mac is hot enough to throttle itself: a
+/// background page's timers cost battery the user is trying to save.
+fn saving_power() -> bool {
+    let info = objc2_foundation::NSProcessInfo::processInfo();
+    info.isLowPowerModeEnabled() || info.thermalState().0 >= objc2_foundation::NSProcessInfoThermalState::Serious.0
+}
+
+/// How long a background tab stays awake: the setting (0 = never), cut to
+/// one minute while saving power.
+fn sleep_after(minutes: u64, saving: bool) -> Option<Duration> {
+    let minutes = if saving { minutes.min(1) } else { minutes };
+    (minutes > 0).then(|| Duration::from_secs(minutes * 60))
+}
+
 /// Turn address-bar input into a URL: keep explicit schemes, add https:// to
 /// things that look like hosts, send everything else to the search engine.
 fn normalize(input: &str, search: &str) -> String {
@@ -2436,6 +2451,14 @@ mod tests {
         assert_eq!(normalize("rust", "brave"), "https://search.brave.com/search?q=rust");
         assert_eq!(normalize("rust", "google"), "https://www.google.com/search?q=rust");
         assert_eq!(normalize("rust", "startpage"), "https://www.startpage.com/do/search?q=rust");
+    }
+
+    #[test]
+    fn tabs_sleep_sooner_while_saving_power() {
+        assert_eq!(sleep_after(5, false), Some(Duration::from_secs(300)));
+        assert_eq!(sleep_after(5, true), Some(Duration::from_secs(60)));
+        assert_eq!(sleep_after(0, true), None, "never means never");
+        assert_eq!(sleep_after(0, false), None);
     }
 
     #[test]
