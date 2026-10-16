@@ -1921,6 +1921,7 @@ impl App {
             }
             ("star", Some(t)) => say!("{}", t.star_state()),
             ("tabflags", Some(t)) => say!("{}", t.flags_state()),
+            ("zoom", Some(t)) => say!("{}", t.zoom_state()),
             ("reader", Some(t)) => t.toggle_reader(),
             // Pick account `i` from the saved-passwords menu (`PASSWORDS …`).
             ("fillpassword", Some(t)) => {

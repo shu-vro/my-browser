@@ -140,7 +140,8 @@ impl Store {
              CREATE TABLE IF NOT EXISTS bookmarks (
                  id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
                  folder TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL);
-             CREATE INDEX IF NOT EXISTS bookmarks_url ON bookmarks(url);",
+             CREATE INDEX IF NOT EXISTS bookmarks_url ON bookmarks(url);
+             CREATE TABLE IF NOT EXISTS zoom (site TEXT PRIMARY KEY, level REAL NOT NULL) WITHOUT ROWID;",
         )?;
         // Added after the first release: extensions run only where clicked unless set to "always".
         let has_access: bool = db.prepare("SELECT access FROM extensions LIMIT 0").is_ok();
@@ -448,6 +449,25 @@ impl Store {
         let _ = self.db.execute("DELETE FROM permissions WHERE site = ?1", [site]);
     }
 
+    // ---- page zoom per site
+
+    /// The zoom the user chose for this site (1.0 if none).
+    pub fn zoom(&self, site: &str) -> f64 {
+        self.db.query_row("SELECT level FROM zoom WHERE site = ?1", [site], |r| r.get(0)).unwrap_or(1.0)
+    }
+
+    /// Remember a site's zoom; actual size forgets it.
+    pub fn set_zoom(&self, site: &str, level: f64) {
+        let _ = if (level - 1.0).abs() < 0.01 {
+            self.db.execute("DELETE FROM zoom WHERE site = ?1", [site])
+        } else {
+            self.db.execute(
+                "INSERT INTO zoom (site, level) VALUES (?1, ?2) ON CONFLICT(site) DO UPDATE SET level = excluded.level",
+                params![site, level],
+            )
+        };
+    }
+
     // ---- bookmarks
 
     /// Bookmark `url` in `folder`; an existing bookmark of it there is kept.
@@ -748,6 +768,17 @@ mod tests {
         assert!(s.set_permission("a.example/\"", "camera", "allow").is_err());
         s.forget_site("a.example");
         assert_eq!(s.permissions().len(), 1);
+    }
+
+    #[test]
+    fn zoom_is_remembered_per_site() {
+        let s = Store::open(None).unwrap();
+        assert_eq!(s.zoom("a.example"), 1.0);
+        s.set_zoom("a.example", 1.21);
+        assert_eq!(s.zoom("a.example"), 1.21);
+        assert_eq!(s.zoom("b.example"), 1.0);
+        s.set_zoom("a.example", 1.0);
+        assert_eq!(s.db.query_row("SELECT COUNT(*) FROM zoom", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "forgotten");
     }
 
     #[test]

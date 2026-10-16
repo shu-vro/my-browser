@@ -300,6 +300,15 @@ publish. Rules for these settings:
 - If the page process dies (crash or memory kill), the tab reloads, at most
   twice within 30 s; a third crash shows an error page instead of looping.
 
+### Zoom
+
+Zoom is per site: ⌘+/⌘- multiply `pageZoom` and save it in the `zoom`
+table (site → level; actual size deletes the row; private windows read but
+never write). Every main-frame commit sets the committed site's level
+(`did_commit_navigation`), so it applies in any tab and doesn't follow you
+to the next site. Bench: `zoom` → `ZOOM <level>`. Test:
+`zoom_is_remembered_per_site`.
+
 ### Address bar
 
 The bar shows what the user asked for while it loads, otherwise the
@@ -877,6 +886,7 @@ active tab.
 | `printpdf <path>` | `PRINTED <0\|1>` once the page is saved there as a PDF (also printed when any print panel closes) |
 | `tabsearch <query>` | `TABSEARCH <title>\|…`: Search Tabs opened with that query, the matches as listed; answer with `dialog` |
 | `tabflags` | `TABFLAGS pinned=<0\|1> muted=<0\|1> page_muted=<0\|1> audio=<0\|1>` for the active tab |
+| `zoom` | `ZOOM <level>`: the active tab's page zoom |
 | `savepage <path>` | `SAVED <0\|1>` once the page is saved there as a Web Archive |
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |

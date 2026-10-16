@@ -226,7 +226,11 @@ define_class!(
 
         /// A new page replaced the old one: its title must not land on the old visit.
         #[unsafe(method(webView:didCommitNavigation:))]
-        fn did_commit_navigation(&self, _web: &WKWebView, _nav: Option<&WKNavigation>) {
+        fn did_commit_navigation(&self, web: &WKWebView, _nav: Option<&WKNavigation>) {
+            // The site's own zoom (a zoom set on one site doesn't follow you to the next).
+            let url = unsafe { web.URL() }.and_then(|u| u.absoluteString()).map(|u| u.to_string()).unwrap_or_default();
+            let zoom = crate::store::site_of(&url).map_or(1.0, |site| self.app().store().zoom(&site));
+            unsafe { web.setPageZoom(zoom) };
             self.ivars().visit.set(None);
             self.ivars().reader.set(self.ivars().reader_loading.replace(false));
             self.ivars().requested.replace(None);
@@ -1829,12 +1833,21 @@ impl Tab {
         }
     }
 
-    /// Page zoom: `None` resets, otherwise multiply.
+    /// Page zoom: `None` resets, otherwise multiply. Remembered for the
+    /// site (not from private windows) and used on its pages from then on.
     pub fn zoom(&self, factor: Option<f64>) {
         if let Some(web) = self.web() {
             let z = factor.map_or(1.0, |f| (unsafe { web.pageZoom() } * f).clamp(0.3, 3.0));
             unsafe { web.setPageZoom(z) };
+            if let (Some(site), false) = (crate::store::site_of(&self.url()), self.is_private()) {
+                self.app().store().set_zoom(&site, z);
+            }
         }
+    }
+
+    /// `ZOOM <level>`, read from the web view.
+    pub fn zoom_state(&self) -> String {
+        format!("ZOOM {:.2}", self.web().map_or(1.0, |w| unsafe { w.pageZoom() }))
     }
 
     pub fn focus_address_bar(&self) {

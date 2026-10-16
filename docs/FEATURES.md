@@ -34,7 +34,8 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   focuses the page.
 - **Search engine** and **homepage** settings.
 - **Error page** for failed loads (no certificate bypass).
-- **Zoom** in, out and actual size.
+- **Zoom** in, out and actual size, **remembered per site** (actual size
+  forgets it; private windows don't save it).
 - **Find in page** (⌘F, ⌘G, ⇧⌘G).
 - **Reader mode** (⇧⌘R): the article alone, in large type, without scripts.
 - **Print and save as PDF** (⌘P, and `window.print()`).

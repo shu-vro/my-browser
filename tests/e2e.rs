@@ -618,6 +618,24 @@ fn tabs_mute_and_show_when_they_play_sound() {
 }
 
 #[test]
+fn zoom_is_remembered_per_site() {
+    let base = serve();
+    let other = base.replace("127.0.0.1", "localhost");
+    let mut b = launch();
+    b.nav(&format!("go {base}/page/a"));
+    b.key("cmd+=");
+    b.key("cmd+=");
+    assert_eq!(b.send("zoom"), "ZOOM 1.21");
+    b.nav(&format!("go {other}/page/b"));
+    assert_eq!(b.send("zoom"), "ZOOM 1.00", "another site has its own zoom");
+    b.nav(&format!("newtab {base}/page/c"));
+    assert_eq!(b.send("zoom"), "ZOOM 1.21", "the site's zoom comes back, in any tab");
+    b.key("cmd+0");
+    b.nav(&format!("go {base}/page/d"));
+    assert_eq!(b.send("zoom"), "ZOOM 1.00", "actual size forgets it");
+}
+
+#[test]
 fn settings_shortcuts_open_internal_pages() {
     let mut b = launch();
     b.key("cmd+,");
