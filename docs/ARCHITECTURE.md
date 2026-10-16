@@ -56,6 +56,8 @@ name and start time (see benchmark/README.md).
 |---|---|
 | `src/main.rs` | `App`, the application delegate and the only long-lived object. It owns the profile store, the shared WebKit objects (data store, preferences, process pool, user content controller, extension controller), the tab list, downloads in flight and the menu bar. It also runs the bench protocol. |
 | `src/tab.rs` | `Tab`: one native window tab with its toolbar (back, forward, reload, home, site button, address bar) and (while awake) one `WKWebView`. Navigation policy, JavaScript dialogs, permission prompts, the site menu, error pages, extension buttons, and the extension-tab delegate. |
+| `src/tabsearch.rs` | Search Tabs (⇧⌘A): the sheet, its list and the matcher |
+| `src/usage.rs` | Memory and CPU of the browser's processes (Settings → Tabs, heavy-tab badge) |
 | `src/home.rs` | The native new tab page (banner, search field, most visited sites) |
 | `src/extensions.rs` | Extensions: read at launch, started on first click, turned on per site, toolbar buttons |
 | `src/extwindow.rs` | `ExtWindow`: a tab group, as the WebExtensions `windows` API sees it |
@@ -194,6 +196,16 @@ extensions with `didMoveTab:fromIndex:inWindow:` (`App::sync_ext_windows`,
 on each activation), and a window left empty with `didCloseWindow:`. No
 pinned tabs: AppKit's tab bar has no way to pin, and a custom tab bar would
 cost memory and code for every window.
+
+**Search Tabs** (⇧⌘A, `src/tabsearch.rs`): an `NSAlert` sheet on the
+active tab with a search field over a cell-based `NSTableView` of the tabs of
+the same kind (private windows only find private tabs), most recently used
+first. Every word of the query must appear in the title or address
+(`tabsearch::rank`: title start, title, address start, address). ↑/↓ move,
+Return or double-click switches, Esc cancels. Built when asked for; the
+sheet's handler holds it and it's freed when the sheet closes. Bench:
+`tabsearch <query>` → `TABSEARCH <title>|…`, answered with `dialog ok|cancel`.
+Test: `search_tabs_finds_and_switches_to_a_tab`.
 
 **Session restore** saves every window (`session.win`, a column added in
 0.2) in tab-bar order, every 30 s and at quit; at launch each window comes
@@ -842,6 +854,7 @@ active tab.
 | `menu <Menu>[/<Item>]` | `MENU <item>\|…` (`-` separator) after picking `<Item>` if given, as a click would |
 | `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |
 | `printpdf <path>` | `PRINTED <0\|1>` once the page is saved there as a PDF (also printed when any print panel closes) |
+| `tabsearch <query>` | `TABSEARCH <title>\|…`: Search Tabs opened with that query, the matches as listed; answer with `dialog` |
 | `savepage <path>` | `SAVED <0\|1>` once the page is saved there as a Web Archive |
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |

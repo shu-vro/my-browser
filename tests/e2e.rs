@@ -546,6 +546,28 @@ fn keyboard_shortcuts_drive_tabs() {
 }
 
 #[test]
+fn search_tabs_finds_and_switches_to_a_tab() {
+    let base = serve();
+    let mut b = launch();
+    b.nav(&format!("go {base}/page/RustBook"));
+    b.nav(&format!("newtab {base}/page/Weather"));
+    b.nav(&format!("newtab {base}/page/Recipes"));
+    assert!(b.send("key cmd+shift+a").starts_with("TABSEARCH "));
+    assert_eq!(b.next(), "KEY ok");
+    assert_eq!(b.send("dialog cancel"), "ANSWERED 1");
+    // Most recently used first, the tab you're on last.
+    assert_eq!(b.send("tabsearch "), "TABSEARCH Weather|RustBook|Recipes");
+    assert_eq!(b.send("dialog cancel"), "ANSWERED 1");
+    assert!(b.tabs().contains("active=2"), "cancel stays put");
+    assert_eq!(b.send("tabsearch book"), "TABSEARCH RustBook");
+    assert_eq!(b.send("dialog ok"), "ANSWERED 1");
+    assert!(b.tabs().starts_with("TABS count=3 active=0"), "switched");
+    assert_eq!(b.send("tabsearch nothing like it"), "TABSEARCH ");
+    b.send("dialog ok");
+    assert!(b.tabs().starts_with("TABS count=3 active=0"), "no match, no switch");
+}
+
+#[test]
 fn settings_shortcuts_open_internal_pages() {
     let mut b = launch();
     b.key("cmd+,");

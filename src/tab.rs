@@ -1966,15 +1966,23 @@ impl Tab {
         if self.app().is_bench() {
             say!("DIALOG {}", title.replace('\n', " "));
         }
-        let this = self.retain();
         let a = alert.clone();
-        let handler = RcBlock::new(move |response: isize| {
-            this.ivars().alert.replace(None);
+        self.present(&alert, move |response| {
             let checked = a.suppressionButton().is_some_and(|b| b.state() == 1);
             // First button is NSAlertFirstButtonReturn (1000).
             done(response == 1000, field.as_ref().map(|f| f.stringValue().to_string()), checked);
         });
-        self.ivars().alert.replace(Some(alert.clone()));
+    }
+
+    /// Show `alert` as this tab's sheet; `done(response)`. The bench
+    /// `dialog` command answers it.
+    pub fn present(&self, alert: &NSAlert, done: impl Fn(isize) + 'static) {
+        let this = self.retain();
+        let handler = RcBlock::new(move |response: isize| {
+            this.ivars().alert.replace(None);
+            done(response);
+        });
+        self.ivars().alert.replace(Some(alert.retain()));
         alert.beginSheetModalForWindow_completionHandler(self.window(), Some(&handler));
     }
 

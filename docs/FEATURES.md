@@ -53,6 +53,8 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - Native macOS window tabs.
 - New, close, reopen closed tab (⇧⌘T), duplicate, close others, show all
   tabs, move to new window, merge windows.
+- **Search Tabs** (⇧⌘A): type part of a title or address, Return switches;
+  most recently used first.
 - Switch tabs with ⌘1–⌘9, ⌃Tab / ⌃⇧Tab, ⇧⌘[ / ⇧⌘].
 - **Session restore**: every window and tab, in order, with the same tab
   selected.

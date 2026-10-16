@@ -19,6 +19,7 @@ mod passwords;
 mod privacy;
 mod store;
 mod tab;
+mod tabsearch;
 mod usage;
 
 use std::cell::{Cell, OnceCell, RefCell};
@@ -579,6 +580,12 @@ define_class!(
         fn merge_all_windows_action(&self, _s: Option<&AnyObject>) {
             self.with_active(|t| t.window().mergeAllWindows(None));
             self.sync_ext_windows();
+        }
+
+        /// Search Tabs (⇧⌘A).
+        #[unsafe(method(searchTabs:))]
+        fn search_tabs_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| tabsearch::TabSearch::open(self, t, ""));
         }
 
         #[unsafe(method(toggleTabOverview:))]
@@ -1540,6 +1547,11 @@ impl App {
         }
     }
 
+    /// Every open tab, in the order they were opened.
+    pub fn all_tabs(&self) -> Vec<Retained<Tab>> {
+        self.ivars().tabs.borrow().clone()
+    }
+
     fn check_heavy_tabs(&self) {
         for tab in self.ivars().tabs.borrow().clone() {
             tab.check_heavy();
@@ -1821,6 +1833,8 @@ impl App {
                 }
             }
             ("tabs", _) => say!("{}", self.tabs_line()),
+            // Open Search Tabs with this query: `TABSEARCH <title>|…` as listed.
+            ("tabsearch", Some(t)) => tabsearch::TabSearch::open(self, &t, arg),
             // What macOS does when another app opens a link with us.
             ("openurl", _) => {
                 self.open_external(vec![arg.to_string()]);
@@ -2470,6 +2484,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Next Tab", sel!(nextTab:), "\t", ctrl, true),
                 ("Previous Tab", sel!(previousTab:), "\t", ctrl_shift, true),
                 ("Show All Tabs", sel!(toggleTabOverview:), "\\", cmd_shift, true),
+                ("Search Tabs…", sel!(searchTabs:), "A", cmd, true),
                 ("Move Tab to New Window", sel!(moveTabToNewWindow:), "", none, true),
                 ("Merge All Windows", sel!(mergeAllWindows:), "", none, true),
             ],
