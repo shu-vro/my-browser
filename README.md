@@ -102,11 +102,11 @@ Info.plist. WebKit keeps site data per app identity, so the `.app` and
 
 Command-line flags:
 
-| Flag | Meaning |
-|---|---|
-| `--profile DIR` | Use another profile folder (default `~/Library/Application Support/my-browser`) |
-| `--bench` | Driven over stdin/stdout by the benchmark and tests. Uses a throwaway profile unless `--profile` is given. |
-| `--on-top` | Float the window above every app and Space (benchmarks need a visible window) |
+| Flag            | Meaning                                                                                                    |
+| --------------- | ---------------------------------------------------------------------------------------------------------- |
+| `--profile DIR` | Use another profile folder (default `~/Library/Application Support/my-browser`)                            |
+| `--bench`       | Driven over stdin/stdout by the benchmark and tests. Uses a throwaway profile unless `--profile` is given. |
+| `--on-top`      | Float the window above every app and Space (benchmarks need a visible window)                              |
 
 ## Test and measure
 
@@ -121,14 +121,15 @@ cargo test --release                  # 107 tests, opens real browser windows br
 
 ## Documentation
 
-| Document | For |
-|---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How it's built: processes, tabs, profiles, privacy, internal pages, extensions |
-| [docs/DESIGN-DECISIONS.md](docs/DESIGN-DECISIONS.md) | How and why: every major decision as a question, with its evidence |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | The vision, the rules every change follows, the workflow |
-| [SECURITY.md](SECURITY.md) | Threat model, trust boundaries, the privacy policy |
-| [AGENTS.md](AGENTS.md) | Short operating manual for AI coding agents |
-| [previous-iterations/](previous-iterations/) | What each development session did and left open |
+| Document                                             | For                                                                            |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------ |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)         | How it's built: processes, tabs, profiles, privacy, internal pages, extensions |
+| [docs/DESIGN-DECISIONS.md](docs/DESIGN-DECISIONS.md) | How and why: every major decision as a question, with its evidence             |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                   | The vision, the rules every change follows, the workflow                       |
+| [SECURITY.md](SECURITY.md)                           | Threat model, trust boundaries, the privacy policy                             |
+| [AGENTS.md](AGENTS.md)                               | Short operating manual for AI coding agents                                    |
+| [previous-iterations/](previous-iterations/)         | What each development session did and left open                                |
+| [FEATURESmd](docs/FEATURES.md)                       | A list of every feature, with its keyboard shortcut and menu location          |
 
 ## Layout
 
