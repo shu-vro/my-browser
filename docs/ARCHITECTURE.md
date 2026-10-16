@@ -589,6 +589,14 @@ panel, one at a time (ignored while any sheet is up, or after the user
 blocked the page's dialogs). Test: `pages_print_to_pdf_and_window_print_opens_the_panel`
 (bench `printpdf <path>` saves straight to a PDF through the same operation).
 
+### Saving pages
+
+Save Page As (⌘S) asks WebKit for the page as a Web Archive
+(`createWebArchiveDataWithCompletionHandler:`, a binary plist of the page
+and its subresources) and writes it where the save panel says. Offline, it
+opens like any local file (`loadFileURL`). Bench: `savepage <path>` →
+`SAVED <0|1>`. Test: `pages_save_as_web_archives_that_open_offline`.
+
 ## Private windows
 
 ⇧⌘N opens a window whose tabs (`Tab::is_private`) use a non-persistent
@@ -834,6 +842,7 @@ active tab.
 | `menu <Menu>[/<Item>]` | `MENU <item>\|…` (`-` separator) after picking `<Item>` if given, as a click would |
 | `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |
 | `printpdf <path>` | `PRINTED <0\|1>` once the page is saved there as a PDF (also printed when any print panel closes) |
+| `savepage <path>` | `SAVED <0\|1>` once the page is saved there as a Web Archive |
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |
 | `crash` | panics (tests the crash reporter) |

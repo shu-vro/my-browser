@@ -1599,6 +1599,46 @@ impl Tab {
         };
     }
 
+    /// Save the page as a Web Archive (⌘S): one file with the page and its
+    /// images and styles, readable offline (here, in Safari, in Quick Look).
+    /// With `to`, saves there without the panel (tests use it).
+    pub fn save_page(&self, to: Option<&str>) {
+        let Some(web) = self.web() else { return };
+        if self.window().attachedSheet().is_some() {
+            return;
+        }
+        let write = move |data: &objc2_foundation::NSData, path: &str| -> bool {
+            data.writeToFile_atomically(&NSString::from_str(path), true)
+        };
+        if let Some(path) = to.map(str::to_string) {
+            let done = RcBlock::new(move |data: *mut objc2_foundation::NSData, _e: *mut NSError| {
+                let ok = unsafe { data.as_ref() }.is_some_and(|d| write(d, &path));
+                say!("SAVED {}", ok as u8);
+            });
+            return unsafe { web.createWebArchiveDataWithCompletionHandler(&done) };
+        }
+        let panel = objc2_app_kit::NSSavePanel::savePanel(self.mtm());
+        let name = crate::sanitize_filename(&self.title());
+        let name = if name == "download" { "Page".to_string() } else { name };
+        panel.setNameFieldStringValue(&NSString::from_str(&format!("{name}.webarchive")));
+        let (p, this) = (panel.clone(), self.retain());
+        let handler = RcBlock::new(move |response: isize| {
+            let Some(path) = (response == NSModalResponseOK).then(|| p.URL()).flatten().and_then(|u| u.path()) else {
+                return;
+            };
+            let (path, tab) = (path.to_string(), this.clone());
+            let done = RcBlock::new(move |data: *mut objc2_foundation::NSData, _e: *mut NSError| {
+                if !unsafe { data.as_ref() }.is_some_and(|d| write(d, &path)) {
+                    tab.confirm("Couldn't save the page.", &["OK"], |_| {});
+                }
+            });
+            if let Some(web) = this.web() {
+                unsafe { web.createWebArchiveDataWithCompletionHandler(&done) };
+            }
+        });
+        panel.beginSheetModalForWindow_completionHandler(self.window(), &handler);
+    }
+
     /// Bookmark this page, or remove its bookmark (⌘D, the star).
     pub fn toggle_bookmark(&self) {
         let url = self.web().and_then(|w| unsafe { w.URL() }).and_then(|u| u.absoluteString()).map(|u| u.to_string());

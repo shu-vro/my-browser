@@ -38,6 +38,8 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Find in page** (⌘F, ⌘G, ⇧⌘G).
 - **Reader mode** (⇧⌘R): the article alone, in large type, without scripts.
 - **Print and save as PDF** (⌘P, and `window.print()`).
+- **Save Page As** (⌘S): the page with its images and styles in one Web
+  Archive file, readable offline here, in Safari or with Quick Look.
 - **Link menu**: right-click a link to open it in a new tab, window or
   private window.
 - **Popups open as tabs** (`target=_blank`, `window.open`).

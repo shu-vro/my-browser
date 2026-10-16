@@ -787,6 +787,21 @@ fn pages_print_to_pdf_and_window_print_opens_the_panel() {
 }
 
 #[test]
+fn pages_save_as_web_archives_that_open_offline() {
+    let base = serve();
+    let dir = TempProfile::new("webarchive");
+    let mut b = launch();
+    b.key("cmd+s"); // the menu item exists (the panel is a sheet; Esc it)
+    b.send("dialog cancel");
+    b.nav(&format!("go {base}/page/saved"));
+    let file = format!("{}/saved.webarchive", dir.path());
+    assert_eq!(b.send(&format!("savepage {file}")), "SAVED 1");
+    assert!(std::fs::read(&file).unwrap().starts_with(b"bplist00"), "a Web Archive is a binary plist");
+    b.nav(&format!("newtab file://{file}"));
+    assert!(b.state_until(|s| s.ends_with("title=saved")).ends_with("title=saved"), "opens offline");
+}
+
+#[test]
 fn link_menu_opens_links_in_tabs_windows_and_private_windows() {
     let base = serve();
     let mut b = launch();

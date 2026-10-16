@@ -596,6 +596,11 @@ define_class!(
             self.with_active(|t| t.picture_in_picture());
         }
 
+        #[unsafe(method(savePage:))]
+        fn save_page_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.save_page(None));
+        }
+
         #[unsafe(method(printPage:))]
         fn print_action(&self, _s: Option<&AnyObject>) {
             self.with_active(|t| t.print(None));
@@ -1925,6 +1930,8 @@ impl App {
             }
             // Print the page to a PDF file, through the print panel's own path.
             ("printpdf", Some(t)) => t.print(Some(arg)),
+            // Save the page as a Web Archive there: `SAVED <0|1>`.
+            ("savepage", Some(t)) => t.save_page(Some(arg)),
             // The Bookmarks menu as it would open: `BOOKMARKSMENU a|b|-|Folder/|c`.
             // With an index, picks that item (as a click would) first.
             ("bookmarksmenu", _) => {
@@ -2388,6 +2395,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Close Tab", sel!(closeTab:), "w", cmd, true),
                 ("Duplicate Tab", sel!(duplicateTab:), "", none, true),
                 ("Close Other Tabs", sel!(closeOtherTabs:), "w", cmd_alt, true),
+                ("Save Page As…", sel!(savePage:), "s", cmd, true),
                 ("Print…", sel!(printPage:), "p", cmd, true),
             ],
         ),
