@@ -96,6 +96,8 @@
       <input type="checkbox" data-setting="home_search"></div>
     <div class="row"><div><div>Show most visited sites</div><div class="hint">Counted from your history on this Mac. Clearing history clears them.</div></div>
       <input type="checkbox" data-setting="home_top_sites"></div>
+    <div class="row"><div><div>Address bar suggestions</div><div class="hint">While you type, suggest your past searches and pages from your history. Searches you type are kept on this Mac only (see Storage). Off stops saving new ones.</div></div>
+      <input type="checkbox" data-setting="address_suggestions"></div>
     <div class="row"><div><div>Put background tabs to sleep after</div><div class="hint">A sleeping tab frees its memory and reloads when you click it. 0 = never. All background tabs sleep at once when macOS runs low on memory, and after one minute in Low Power Mode.</div></div>
       <span><input type="number" min="0" max="1440" data-setting="tab_sleep_minutes" style="width:70px"> minutes</span></div>
     <div class="row"><div><div>Reopen tabs from last time</div><div class="hint">They come back asleep, so they cost almost nothing until clicked.</div></div>
@@ -179,12 +181,15 @@
   <section id="storage">
     <h1>Storage</h1>
     <p class="note">Everything this browser keeps on your Mac. Nothing here is ever uploaded.</p>
+    <p class="note" id="st-where"></p>
     <div class="row"><div><div>Cookies and site data</div><div class="hint" id="st-site"></div></div>
       <button class="danger" id="st-clear-site">Clear…</button></div>
     <div class="row"><div><div>Cached files</div><div class="hint">Copies of pages and images kept to load sites faster. Clearing keeps you signed in.</div></div>
       <button id="st-clear-cache">Clear cache</button></div>
     <div class="row"><div><div>History</div><div class="hint" id="st-history"></div></div>
       <button class="danger" id="st-clear-history">Clear…</button></div>
+    <div class="row"><div><div>Search history</div><div class="hint" id="st-searches"></div></div>
+      <button class="danger" id="st-clear-searches">Clear…</button></div>
     <div class="row"><div><div>Downloads list</div><div class="hint" id="st-downloads"></div></div>
       <button id="st-clear-downloads">Clear list</button></div>
     <h2>Left over from older versions</h2>
@@ -504,7 +509,9 @@ loaders.downloads = loadDownloads;
 async function loadStorage() {
   const s = await call("storage.get");
   $("st-site").textContent = s.site_data_bytes ? size(s.site_data_bytes) + " for this profile. Clearing signs you out of every site." : "Clearing signs you out of every site.";
-  $("st-history").textContent = s.history + (s.history === 1 ? " visit" : " visits");
+  $("st-where").textContent = "History, search history, bookmarks, the downloads list, site settings and the open tabs are kept in one file: " + s.db + ". Cookies and site data are in WebKit's own store for this profile; passwords are in your keychain.";
+  $("st-history").textContent = s.history + (s.history === 1 ? " visit" : " visits") + ", in " + s.db;
+  $("st-searches").textContent = s.searches + (s.searches === 1 ? " search" : " searches") + " typed in the address bar or on the new tab page, used for suggestions. Saved in " + s.db + " (table \"searches\"). Clearing history clears them too.";
   $("st-downloads").textContent = s.downloads + (s.downloads === 1 ? " entry" : " entries") + ". Clearing the list keeps the files.";
   const list = $("st-leftovers"); list.replaceChildren();
   if (!s.leftovers.length) list.append(el("li", "empty", "Nothing left over."));
@@ -520,6 +527,7 @@ async function loadStorage() {
 $("st-clear-site").onclick = () => { if (confirm("Sign out of all sites and delete all cookies, caches and site data?")) call("data.clear").then(() => { toast("Cleared"); loadStorage(); }, fail); };
 $("st-clear-cache").onclick = () => call("storage.clear_cache").then(() => { toast("Cache cleared"); loadStorage(); }, fail);
 $("st-clear-history").onclick = () => { if (confirm("Delete all history?")) call("history.clear").then(() => { toast("History cleared"); loadStorage(); }, fail); };
+$("st-clear-searches").onclick = () => { if (confirm("Delete all saved searches?")) call("searches.clear").then(() => { toast("Searches cleared"); loadStorage(); }, fail); };
 $("st-clear-downloads").onclick = () => call("downloads.clear").then(() => { toast("List cleared"); loadStorage(); }, fail);
 $("st-clear-leftovers").onclick = () => { if (confirm("Delete the leftover data listed here? This can't be undone.")) call("legacy.clear").then(r => { toast("Freed " + size(r.bytes)); loadStorage(); }, fail); };
 $("st-uninstall-btn").onclick = () => { if (confirm("Delete my-browser and all of its data, then quit? Logins, history and extensions will be gone. This can't be undone.")) call("app.uninstall").catch(fail); };

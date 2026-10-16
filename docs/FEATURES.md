@@ -33,6 +33,10 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Address bar**: type an address or a search; shows the committed address
   (can't be spoofed by a slow navigation); Return on the current address only
   focuses the page.
+- **Suggestions while typing** in the address bar: your past searches and
+  pages from your history, from this Mac only (nothing is sent to a search
+  engine as you type). Settings → Storage shows the file they're kept in and
+  clears them; a setting turns them off.
 - **Search engine** and **homepage** settings.
 - **Error page** for failed loads (no certificate bypass).
 - **Zoom** in, out and actual size, **remembered per site** (actual size

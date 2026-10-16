@@ -318,6 +318,10 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             store.clear_history();
             ok()
         }
+        "searches.clear" => {
+            store.clear_searches();
+            ok()
+        }
         "downloads.list" => {
             let progress = app.download_progress();
             let items: Vec<String> = store
@@ -846,8 +850,14 @@ fn storage_json(app: &App) -> String {
     } else {
         Vec::new()
     };
+    // Where the browser's own records live, said plainly on the Storage page.
+    let db = app
+        .profile_dir()
+        .map_or("memory only (this profile is temporary)".into(), |p| p.join("browser.db").display().to_string());
     format!(
-        "{{\"site_data_bytes\":{site_data},\"profile_bytes\":{profile_files},\"history\":{},\"downloads\":{},\"leftovers\":[{}],\"uninstall\":[{}]}}",
+        "{{\"site_data_bytes\":{site_data},\"profile_bytes\":{profile_files},\"db\":{},\"searches\":{},\"history\":{},\"downloads\":{},\"leftovers\":[{}],\"uninstall\":[{}]}}",
+        json_str(&db),
+        store.search_count(),
         store.history_count(),
         store.downloads().len(),
         leftovers.join(","),

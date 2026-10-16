@@ -127,6 +127,8 @@ pub struct TabIvars {
     sampled: Cell<Option<(crate::usage::Usage, Instant)>>,
     /// Why this background tab is heavy (badge in its tab), if it is.
     heavy: RefCell<Option<String>>,
+    /// The address bar's suggestion list, made on first use.
+    suggest: OnceCell<Retained<crate::suggest::Suggest>>,
     /// Pinned: kept at the front of its window and never put to sleep.
     pinned: Cell<bool>,
     /// The page's sound is off (kept across navigations and sleep).
@@ -427,26 +429,26 @@ define_class!(
     }
 
     unsafe impl NSControlTextEditingDelegate for Tab {
+        /// Typing in the address bar: suggestions.
+        #[unsafe(method(controlTextDidChange:))]
+        fn text_did_change(&self, n: &NSNotification) {
+            if let Some(bar) = self.ivars().bar.get().filter(|b| n.object().is_some_and(|o| std::ptr::eq(&*o, &***b as &NSObject as *const NSObject as *const AnyObject))) {
+                self.suggest_for(&bar.stringValue().to_string());
+            }
+        }
+
+        #[unsafe(method(controlTextDidEndEditing:))]
+        fn text_did_end_editing(&self, _n: &NSNotification) {
+            self.hide_suggestions();
+        }
+
         /// Address bar: Enter = go (handled here, so AppKit doesn't beep).
         /// Find field keys: Enter = next, Shift+Enter = previous, Esc = close.
         #[unsafe(method(control:textView:doCommandBySelector:))]
         fn find_field_command(&self, control: &NSControl, _view: &NSTextView, command: objc2::runtime::Sel) -> bool {
             let bar = self.ivars().bar.get().is_some_and(|b| std::ptr::eq::<NSControl>(&***b, control));
             if bar {
-                let enter = command == sel!(insertNewline:);
-                let text = control.stringValue().to_string();
-                let url = self.app().normalize(&text);
-                if !enter || text.trim().is_empty() {
-                } else if let Some(web) = self.web().filter(|w| {
-                    let typed = NSURL::URLWithString(&NSString::from_str(&url)).and_then(|u| u.absoluteString());
-                    typed.is_some() && typed == unsafe { w.URL() }.and_then(|u| u.absoluteString())
-                }) {
-                    // Unchanged: back to the page, no reload (⌘R reloads).
-                    self.window().makeFirstResponder(Some(&web));
-                } else {
-                    self.load(&url);
-                }
-                enter
+                self.bar_command(control, command)
             } else if command == sel!(cancelOperation:) {
                 self.hide_find();
                 true
@@ -626,6 +628,7 @@ define_class!(
             let text = sender.stringValue().to_string();
             if !text.trim().is_empty() {
                 let url = self.app().normalize(&text);
+                self.remember_search(&text);
                 self.load(&url);
             }
         }
@@ -1413,8 +1416,125 @@ impl Tab {
         self.ivars().title.replace(unsafe { web.title() }.map(|t| t.to_string()).unwrap_or_default());
     }
 
+    /// Address bar keys: ↑/↓ and Esc for the suggestion list, Return to go
+    /// (to the chosen suggestion, else to what was typed). True if handled.
+    fn bar_command(&self, control: &NSControl, command: objc2::runtime::Sel) -> bool {
+        let suggest = self.ivars().suggest.get();
+        if command == sel!(moveDown:) || command == sel!(moveUp:) {
+            return suggest.is_some_and(|s| s.step(if command == sel!(moveDown:) { 1 } else { -1 }));
+        }
+        if command == sel!(cancelOperation:) {
+            let shown = suggest.is_some_and(|s| s.is_shown());
+            self.hide_suggestions();
+            return shown;
+        }
+        if command != sel!(insertNewline:) {
+            return false;
+        }
+        if let Some(item) = suggest.and_then(|s| s.chosen()) {
+            self.open_suggestion(&item);
+            return true;
+        }
+        self.hide_suggestions();
+        let text = control.stringValue().to_string();
+        let url = self.app().normalize(&text);
+        if text.trim().is_empty() {
+        } else if let Some(web) = self.web().filter(|w| {
+            let typed = NSURL::URLWithString(&NSString::from_str(&url)).and_then(|u| u.absoluteString());
+            typed.is_some() && typed == unsafe { w.URL() }.and_then(|u| u.absoluteString())
+        }) {
+            // Unchanged: back to the page, no reload (⌘R reloads).
+            self.window().makeFirstResponder(Some(&web));
+        } else {
+            if !crate::is_address(&text) {
+                self.remember_search(&text);
+            }
+            self.load(&url);
+        }
+        true
+    }
+
+    /// Keep a search typed in the address bar or the new tab page, for
+    /// suggestions (not from private windows, not with suggestions off).
+    pub fn remember_search(&self, text: &str) {
+        let store = self.app().store();
+        if !self.is_private() && store.flag("address_suggestions") {
+            store.add_search(text);
+        }
+    }
+
+    /// Show what matches `typed` under the address bar.
+    fn suggest_for(&self, typed: &str) {
+        let store = self.app().store();
+        let items = if store.flag("address_suggestions") { store.suggestions(typed, 8) } else { Vec::new() };
+        let Some(bar) = self.ivars().bar.get() else { return };
+        self.ivars().suggest.get_or_init(|| crate::suggest::Suggest::new(self)).show(items, bar);
+    }
+
+    fn hide_suggestions(&self) {
+        if let Some(s) = self.ivars().suggest.get() {
+            s.hide();
+        }
+    }
+
+    /// Go to a suggestion (picked with Return or a click).
+    pub fn open_suggestion(&self, item: &crate::store::Suggestion) {
+        self.hide_suggestions();
+        match item {
+            crate::store::Suggestion::Search(text) => {
+                self.remember_search(text);
+                let url = self.app().normalize(text);
+                self.load(&url);
+            }
+            crate::store::Suggestion::Page(url, _) => self.load(url),
+        }
+    }
+
+    /// Bench: type `text` into the address bar (`SUGGEST search:<text>|page:<url>|…`),
+    /// or press a key there (`up`, `down`, `enter`, `esc`).
+    pub fn bar_type(&self, text: &str) -> String {
+        self.focus_address_bar();
+        let Some(editor) = self.window().firstResponder().and_then(|r| r.downcast::<NSTextView>().ok()) else {
+            return "SUGGEST error no editor".into();
+        };
+        editor.setString(&NSString::from_str(text));
+        self.suggest_for(text);
+        self.suggest_state()
+    }
+
+    pub fn bar_press(&self, key: &str) -> String {
+        let command = match key {
+            "up" => sel!(moveUp:),
+            "down" => sel!(moveDown:),
+            "enter" => sel!(insertNewline:),
+            _ => sel!(cancelOperation:),
+        };
+        if let Some(editor) = self.window().firstResponder().and_then(|r| r.downcast::<NSTextView>().ok()) {
+            let _: () = unsafe { msg_send![&*editor, doCommandBySelector: command] };
+        }
+        self.suggest_state()
+    }
+
+    fn suggest_state(&self) -> String {
+        let Some(s) = self.ivars().suggest.get().filter(|s| s.is_shown()) else { return "SUGGEST ".into() };
+        let chosen = s.chosen();
+        let items: Vec<String> = s
+            .items()
+            .iter()
+            .map(|i| {
+                let mark = if Some(i) == chosen.as_ref() { "*" } else { "" };
+                match i {
+                    crate::store::Suggestion::Search(t) => format!("{mark}search:{t}"),
+                    crate::store::Suggestion::Page(u, _) => format!("{mark}page:{u}"),
+                }
+            })
+            .collect();
+        format!("SUGGEST {}", items.join("|"))
+    }
+
     pub fn load(&self, url: &str) {
         let Some(nsurl) = NSURL::URLWithString(&NSString::from_str(url)) else { return };
+        self.hide_suggestions();
         self.ivars().allow_internal.replace(url.starts_with(&format!("{INTERNAL}:")).then(|| url.to_string()));
         let web = self.ensure_web();
         self.ivars().url.replace(url.to_string());

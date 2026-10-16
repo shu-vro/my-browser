@@ -1802,6 +1802,32 @@ fn leftover_data_is_listed_and_deleted_but_profiles_are_kept() {
 // Find in page
 
 #[test]
+fn address_bar_suggests_past_searches_and_visited_pages() {
+    let base = serve();
+    let mut b = launch();
+    b.nav(&format!("go {base}/page/Rustacean"));
+    assert_eq!(b.send("bartype zzz"), "SUGGEST ", "nothing matches, no list");
+    // What Return on a search saves (without going to the search engine).
+    assert_eq!(b.send("savesearch rust book"), "SAVEDSEARCH");
+    assert!(b.bridge(&["storage.get"]).contains(r#""searches":1"#));
+    let typed = b.send("bartype rust");
+    assert_eq!(typed, format!("SUGGEST search:rust book|page:{base}/page/Rustacean"));
+    // ↓ chooses the first, ↓ the next, Return opens it.
+    assert_eq!(b.send("barkey down"), format!("SUGGEST *search:rust book|page:{base}/page/Rustacean"));
+    b.send("barkey down");
+    let line = b.send("barkey enter");
+    assert_eq!(line, "SUGGEST ", "the list closes");
+    assert!(b.state_until(|s| s.ends_with("title=Rustacean")).ends_with("title=Rustacean"));
+    // Esc closes the list; turning suggestions off hides them and keeps no searches.
+    assert!(b.send("bartype rust").starts_with("SUGGEST search:"));
+    assert_eq!(b.send("barkey esc"), "SUGGEST ");
+    assert_eq!(b.bridge(&["settings.set", "address_suggestions", "0"]), "true");
+    assert_eq!(b.send("bartype rust"), "SUGGEST ");
+    assert_eq!(b.bridge(&["history.clear"]), "true");
+    assert!(b.bridge(&["storage.get"]).contains(r#""searches":0"#), "clearing history clears searches");
+}
+
+#[test]
 fn address_bar_loads_on_return_only() {
     let mut b = launch();
     b.nav("go data:text/html,<title>one</title>");

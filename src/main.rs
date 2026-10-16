@@ -18,6 +18,7 @@ mod netgate;
 mod passwords;
 mod privacy;
 mod store;
+mod suggest;
 mod tab;
 mod tabsearch;
 mod usage;
@@ -1828,6 +1829,14 @@ impl App {
                 start(&t);
                 t.address_bar_key(Some(arg));
             }
+            // What Return on a search in the address bar saves, without loading
+            // the search engine (tests stay offline): `SAVEDSEARCH`.
+            ("savesearch", Some(t)) => {
+                t.remember_search(arg);
+                say!("SAVEDSEARCH");
+            }
+            ("bartype", Some(t)) => say!("{}", t.bar_type(arg)),
+            ("barkey", Some(t)) => say!("{}", t.bar_press(arg)),
             ("barblur", Some(t)) => {
                 t.address_bar_key(None);
                 say!("BLURRED");
@@ -2317,17 +2326,29 @@ fn normalize(input: &str, search: &str) -> String {
     let s = input.trim();
     if s.contains("://") || s.starts_with("about:") || s.starts_with("data:") {
         s.to_string()
-    } else if !s.contains(' ') && (s.contains('.') || s.starts_with("localhost")) {
+    } else if is_address(s) {
         format!("https://{s}")
     } else {
-        let base = match search {
-            "brave" => "https://search.brave.com/search?q=",
-            "startpage" => "https://www.startpage.com/do/search?q=",
-            "google" => "https://www.google.com/search?q=",
-            _ => "https://duckduckgo.com/?q=",
-        };
+        let base = SEARCH_ENGINES.iter().find(|(name, _)| *name == search).map_or(SEARCH_ENGINES[0].1, |(_, b)| b);
         format!("{base}{}", encode_query(s))
     }
+}
+
+/// Search engines and their result addresses; the first is the default.
+pub const SEARCH_ENGINES: [(&str, &str); 4] = [
+    ("duckduckgo", "https://duckduckgo.com/?q="),
+    ("brave", "https://search.brave.com/search?q="),
+    ("startpage", "https://www.startpage.com/do/search?q="),
+    ("google", "https://www.google.com/search?q="),
+];
+
+/// Whether address-bar input is an address rather than a search.
+pub fn is_address(input: &str) -> bool {
+    let s = input.trim();
+    s.contains("://")
+        || s.starts_with("about:")
+        || s.starts_with("data:")
+        || (!s.contains(' ') && (s.contains('.') || s.starts_with("localhost")))
 }
 
 fn encode_query(s: &str) -> String {
@@ -2611,6 +2632,7 @@ mod tests {
         assert_eq!(normalize("rust", "brave"), "https://search.brave.com/search?q=rust");
         assert_eq!(normalize("rust", "google"), "https://www.google.com/search?q=rust");
         assert_eq!(normalize("rust", "startpage"), "https://www.startpage.com/do/search?q=rust");
+        assert!(is_address("example.com") && is_address("http://x") && !is_address("rust book") && !is_address("rust"));
     }
 
     #[test]

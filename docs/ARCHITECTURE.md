@@ -328,6 +328,24 @@ or an info icon, and opens the site menu: Shields, local network access,
 JavaScript, camera, microphone, location and multiple downloads for the site, and a link
 to all site settings.
 
+**Suggestions** (`src/suggest.rs`): while the bar is edited
+(`controlTextDidChange:`), `Store::suggestions` matches the text against past
+searches (`searches` table: text, last time; those starting with it first,
+then newest) and visited pages (`history`, grouped by address, most visited
+first; search engines' result pages left out as they repeat a search), at
+most 8. They show in a borderless non-activating `NSPanel` (a child window,
+so typing stays in the bar) with a cell-based table. ↑/↓ choose, Return
+opens the choice (else what was typed), Esc or leaving the bar closes it,
+a click opens a row. Return on text that isn't an address (`is_address`)
+and the new tab page's search save the text, except in private windows or
+with the `address_suggestions` setting off. Nothing is sent to a search
+engine while typing. Clearing history clears searches; Settings → Storage
+shows where both are kept (the profile's `browser.db`) and clears searches
+alone (`searches.clear`). Bench: `bartype <text>` / `barkey up|down|enter|esc`
+→ `SUGGEST [*]search:<text>|[*]page:<url>|…` (`*` = chosen), `savesearch
+<text>` saves one without loading a search engine. Test:
+`address_bar_suggests_past_searches_and_visited_pages`.
+
 ### JavaScript dialogs and prompts
 
 `alert`/`confirm`/`prompt` are sheets on the tab. From a page's second dialog
@@ -364,7 +382,7 @@ local list is tiny) and reloads the tab.
 
 ```
 ~/Library/Application Support/my-browser/     (or --profile DIR)
-  browser.db      settings, history, downloads, extensions, session, profile_id (UUID)
+  browser.db      settings, history, searches, zoom, downloads, extensions, session, profile_id (UUID)
   lock            held for the app's lifetime: one browser per profile
   extensions/     copies of installed extensions
 ~/Library/WebKit/<app id>/WebsiteDataStore/<profile_id>/   cookies, cache, site storage (WebKit's)
@@ -891,6 +909,8 @@ active tab.
 | `tabsearch <query>` | `TABSEARCH <title>\|…`: Search Tabs opened with that query, the matches as listed; answer with `dialog` |
 | `tabflags` | `TABFLAGS pinned=<0\|1> muted=<0\|1> page_muted=<0\|1> audio=<0\|1> swipe=<0\|1>` for the active tab |
 | `zoom` | `ZOOM <level>`: the active tab's page zoom |
+| `bartype <text>` / `barkey up\|down\|enter\|esc` | `SUGGEST [*]search:<text>\|[*]page:<url>\|…`: the address bar's suggestion list after typing or a key (`*` = chosen; empty when closed) |
+| `savesearch <text>` | `SAVEDSEARCH`: save a search as Return in the bar would, without loading it |
 | `savepage <path>` | `SAVED <0\|1>` once the page is saved there as a Web Archive |
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |

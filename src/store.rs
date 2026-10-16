@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Settings the settings page may change, with their defaults.
-pub const SETTINGS: [(&str, &str); 15] = [
+pub const SETTINGS: [(&str, &str); 16] = [
     // duckduckgo | brave | startpage | google
     ("search", "duckduckgo"),
     // Page for new tabs; empty means a blank page.
@@ -36,6 +36,8 @@ pub const SETTINGS: [(&str, &str); 15] = [
     ("home_art", "1"),
     ("home_search", "1"),
     ("home_top_sites", "1"),
+    // Address bar suggestions from past searches and history; searches are saved only while on.
+    ("address_suggestions", "1"),
     // Touch ID (or the Mac's password) before a saved password is filled or copied.
     ("password_auth", "1"),
 ];
@@ -49,6 +51,15 @@ pub struct Visit {
     pub url: String,
     pub title: String,
     pub at: i64,
+}
+
+/// An address bar suggestion.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Suggestion {
+    /// A search typed before.
+    Search(String),
+    /// A visited page: (address, title).
+    Page(String, String),
 }
 
 pub struct Download {
@@ -141,7 +152,8 @@ impl Store {
                  id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
                  folder TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL);
              CREATE INDEX IF NOT EXISTS bookmarks_url ON bookmarks(url);
-             CREATE TABLE IF NOT EXISTS zoom (site TEXT PRIMARY KEY, level REAL NOT NULL) WITHOUT ROWID;",
+             CREATE TABLE IF NOT EXISTS zoom (site TEXT PRIMARY KEY, level REAL NOT NULL) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS searches (text TEXT PRIMARY KEY, at INTEGER NOT NULL) WITHOUT ROWID;",
         )?;
         // Added after the first release: extensions run only where clicked unless set to "always".
         let has_access: bool = db.prepare("SELECT access FROM extensions LIMIT 0").is_ok();
@@ -205,6 +217,7 @@ impl Store {
             | "home_art"
             | "home_search"
             | "home_top_sites"
+            | "address_suggestions"
             | "password_auth" => value == "0" || value == "1",
             "downloads_dir" => value.is_empty() || Path::new(value).is_dir(),
             _ => return Err(format!("unknown setting {key}")),
@@ -276,8 +289,64 @@ impl Store {
         let _ = self.db.execute("DELETE FROM history WHERE id = ?1", [id]);
     }
 
+    /// History and the searches typed in the address bar.
     pub fn clear_history(&self) {
         let _ = self.db.execute("DELETE FROM history", []);
+        self.clear_searches();
+    }
+
+    // ---- searches typed in the address bar (for its suggestions)
+
+    pub fn add_search(&self, text: &str) {
+        let text = text.trim();
+        if !text.is_empty() && text.len() <= 500 {
+            let _ = self.db.execute(
+                "INSERT INTO searches (text, at) VALUES (?1, ?2) ON CONFLICT(text) DO UPDATE SET at = excluded.at",
+                params![text, now()],
+            );
+        }
+    }
+
+    pub fn search_count(&self) -> i64 {
+        self.db.query_row("SELECT COUNT(*) FROM searches", [], |r| r.get(0)).unwrap_or(0)
+    }
+
+    pub fn clear_searches(&self) {
+        let _ = self.db.execute("DELETE FROM searches", []);
+    }
+
+    /// What the address bar suggests for `typed`: past searches containing
+    /// it (newest first, those starting with it before the rest), then
+    /// visited pages whose address or title contains it (most visited
+    /// first), at most `limit` in all.
+    pub fn suggestions(&self, typed: &str, limit: usize) -> Vec<Suggestion> {
+        let typed = typed.trim();
+        if typed.is_empty() {
+            return Vec::new();
+        }
+        let like = format!("%{}%", typed.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        let prefix = format!("{}%", &like[1..]);
+        let mut out: Vec<Suggestion> = Vec::new();
+        if let Ok(mut stmt) = self.db.prepare(
+            "SELECT text FROM searches WHERE text LIKE ?1 ESCAPE '\\'
+             ORDER BY text LIKE ?2 ESCAPE '\\' DESC, at DESC LIMIT ?3",
+        ) {
+            let rows = stmt.query_map(params![like, prefix, (limit / 2).max(1) as i64], |r| r.get::<_, String>(0));
+            out.extend(rows.into_iter().flatten().flatten().map(Suggestion::Search));
+        }
+        if let Ok(mut stmt) = self.db.prepare(
+            "SELECT url, MAX(title) FROM history WHERE url LIKE ?1 ESCAPE '\\' OR title LIKE ?1 ESCAPE '\\'
+             GROUP BY url ORDER BY COUNT(*) DESC, MAX(at) DESC LIMIT ?2",
+        ) {
+            let rows = stmt.query_map(params![like, limit as i64 * 2], |r| Ok(Suggestion::Page(r.get(0)?, r.get(1)?)));
+            // A search engine's result page repeats a search already listed.
+            let results = |u: &str| crate::SEARCH_ENGINES.iter().any(|(_, base)| u.starts_with(base));
+            out.extend(
+                rows.into_iter().flatten().flatten().filter(|p| !matches!(p, Suggestion::Page(u, _) if results(u))),
+            );
+        }
+        out.truncate(limit);
+        out
     }
 
     // ---- downloads
@@ -768,6 +837,36 @@ mod tests {
         assert!(s.set_permission("a.example/\"", "camera", "allow").is_err());
         s.forget_site("a.example");
         assert_eq!(s.permissions().len(), 1);
+    }
+
+    #[test]
+    fn suggestions_from_searches_and_history() {
+        let s = Store::open(None).unwrap();
+        assert!(s.suggestions("ru", 8).is_empty());
+        s.add_search("learn rust");
+        s.add_search("rust book");
+        s.add_search("python");
+        s.add_search("  rust book ");
+        s.add_visit("https://www.rust-lang.org/", "Rust Programming Language");
+        s.add_visit("https://www.rust-lang.org/", "Rust Programming Language");
+        s.add_visit("https://crates.io/", "crates.io: Rust Package Registry");
+        s.add_visit("https://duckduckgo.com/?q=rust+book", "rust book at DuckDuckGo");
+        assert_eq!(s.search_count(), 3, "a repeated search is one row");
+        let got = s.suggestions("rust", 8);
+        assert_eq!(
+            got,
+            [
+                Suggestion::Search("rust book".into()),
+                Suggestion::Search("learn rust".into()),
+                Suggestion::Page("https://www.rust-lang.org/".into(), "Rust Programming Language".into()),
+                Suggestion::Page("https://crates.io/".into(), "crates.io: Rust Package Registry".into()),
+            ],
+            "searches starting with it first, then pages, most visited first"
+        );
+        assert_eq!(s.suggestions("100%", 8), [], "LIKE wildcards are literal");
+        assert_eq!(s.suggestions("rust", 2).len(), 2);
+        s.clear_history();
+        assert_eq!(s.search_count(), 0, "clearing history clears searches");
     }
 
     #[test]
