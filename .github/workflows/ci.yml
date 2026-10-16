@@ -1,9 +1,15 @@
 name: CI
-# The same checks as .githooks/pre-commit, on every push to main and every PR.
+# The same checks as .githooks/pre-commit, on every push to main and every PR
+# that touches more than documentation.
 on:
   push:
     branches: [main]
+    paths-ignore: &docs
+      - "**.md"
+      - "docs/**"
+      - "previous-iterations/**"
   pull_request:
+    paths-ignore: *docs
 
 jobs:
   check:

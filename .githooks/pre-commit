@@ -7,6 +7,11 @@
 # an emergency: git commit --no-verify
 set -eu
 cd "$(git rev-parse --show-toplevel)"
+# Documentation-only commits (the same paths CI ignores) skip the checks.
+if ! git diff --cached --name-only | grep -qv -e '\.md$' -e '^docs/' -e '^previous-iterations/'; then
+  echo "pre-commit: documentation only, skipping checks"
+  exit 0
+fi
 echo "pre-commit: cargo fmt --check"
 cargo fmt --check
 echo "pre-commit: cargo clippy"
