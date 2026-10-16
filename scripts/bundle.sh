@@ -10,6 +10,7 @@
 #
 # VERSION=x.y.z overrides Cargo.toml's version (the release workflow sets it).
 # UNIVERSAL=1 builds for Apple Silicon and Intel and joins them (releases).
+# SIGN_IDENTITY=<Developer ID Application identity> signs for distribution.
 set -eu
 cd "$(dirname "$0")/.."
 APP=target/release/my-browser.app
@@ -75,6 +76,12 @@ cat > "$ENT" <<'PLIST'
 </dict>
 </plist>
 PLIST
-# Ad-hoc signature: required for macOS to remember permission grants.
-codesign --force --options runtime --entitlements "$ENT" --sign - "$APP"
+# Ad-hoc signature by default: required for macOS to remember permission
+# grants. SIGN_IDENTITY="Developer ID Application: …" signs with a Developer
+# ID instead (with a secure timestamp, as notarization requires).
+if [ -n "${SIGN_IDENTITY:-}" ]; then
+  codesign --force --options runtime --timestamp --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP"
+else
+  codesign --force --options runtime --entitlements "$ENT" --sign - "$APP"
+fi
 echo "built $APP"

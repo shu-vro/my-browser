@@ -149,7 +149,11 @@ release: bump the minor in Cargo.toml to start a new series.
 
 Builds are signed ad hoc, not notarized (that needs a paid Apple Developer
 account), so macOS blocks the first launch until the user chooses **Open
-Anyway** in System Settings → Privacy & Security. The app icon is
+Anyway** in System Settings → Privacy & Security. With an account,
+`SIGN_IDENTITY="Developer ID Application: …" ./scripts/bundle.sh` signs for
+distribution, and `NOTARY_PROFILE=<profile> SIGN_IDENTITY=… ./scripts/dmg.sh`
+notarizes and staples the DMG (profile from `xcrun notarytool
+store-credentials`). The release workflow doesn't do this yet. The app icon is
 `resources/icon.svg`; `scripts/icon.sh` regenerates `resources/AppIcon.icns`.
 
 ## Getting a change reviewed

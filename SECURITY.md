@@ -238,7 +238,8 @@ says what it protects against and what it costs.
    screen access after each update, and Keychain items the browser saved
    prompt again. A Developer ID (Apple Developer Program, paid) gives a
    stable identity. Then: sign with `--options runtime --timestamp`, run
-   `notarytool submit --wait` and `stapler staple` in the release workflow,
+   `notarytool submit --wait` and `stapler staple` (both scripts support it
+   now: `SIGN_IDENTITY`, `NOTARY_PROFILE`) in the release workflow,
    with the certificate in an encrypted GitHub secret behind a protected
    `release` environment (required reviewer).
 2. **Signed, opt-in updates.** A browser that doesn't update keeps its bugs.
