@@ -28,7 +28,8 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 
 ## Browsing
 
-- Back, forward, reload, stop and a Home button.
+- Back, forward, reload, stop and a Home button; **swipe** left or right
+  with two fingers on the trackpad to go back or forward.
 - **Address bar**: type an address or a search; shows the committed address
   (can't be spoofed by a slow navigation); Return on the current address only
   focuses the page.

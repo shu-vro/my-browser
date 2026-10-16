@@ -300,6 +300,10 @@ publish. Rules for these settings:
 - If the page process dies (crash or memory kill), the tab reloads, at most
   twice within 30 s; a third crash shows an error page instead of looping.
 
+Every web view allows WebKit's back/forward swipe
+(`allowsBackForwardNavigationGestures`): two fingers left or right on the
+trackpad, with the page sliding as in Safari.
+
 ### Zoom
 
 Zoom is per site: ⌘+/⌘- multiply `pageZoom` and save it in the `zoom`
@@ -885,7 +889,7 @@ active tab.
 | `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |
 | `printpdf <path>` | `PRINTED <0\|1>` once the page is saved there as a PDF (also printed when any print panel closes) |
 | `tabsearch <query>` | `TABSEARCH <title>\|…`: Search Tabs opened with that query, the matches as listed; answer with `dialog` |
-| `tabflags` | `TABFLAGS pinned=<0\|1> muted=<0\|1> page_muted=<0\|1> audio=<0\|1>` for the active tab |
+| `tabflags` | `TABFLAGS pinned=<0\|1> muted=<0\|1> page_muted=<0\|1> audio=<0\|1> swipe=<0\|1>` for the active tab |
 | `zoom` | `ZOOM <level>`: the active tab's page zoom |
 | `savepage <path>` | `SAVED <0\|1>` once the page is saved there as a Web Archive |
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |

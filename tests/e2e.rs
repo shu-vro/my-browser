@@ -598,16 +598,16 @@ fn pinned_tabs_go_first_survive_close_others_and_restarts() {
 fn tabs_mute_and_show_when_they_play_sound() {
     let mut b = launch();
     b.nav("go about:blank");
-    assert_eq!(b.send("tabflags"), "TABFLAGS pinned=0 muted=0 page_muted=0 audio=0");
+    assert_eq!(b.send("tabflags"), "TABFLAGS pinned=0 muted=0 page_muted=0 audio=0 swipe=1", "swipe to go back");
     // A tone, started with the user gesture `eval` carries.
     b.send("eval (() => { const c = new AudioContext(); const o = c.createOscillator(); const g = c.createGain(); g.gain.value = 0.001; o.connect(g).connect(c.destination); o.start(); return 1 })()");
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !b.send("tabflags").ends_with("audio=1") {
+    while !b.send("tabflags").contains("audio=1") {
         assert!(Instant::now() < deadline, "playing sound never reported");
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(b.send("menu Window/Mute Tab").contains("|Unmute Tab|"));
-    assert_eq!(b.send("tabflags"), "TABFLAGS pinned=0 muted=1 page_muted=1 audio=1");
+    assert!(b.send("tabflags").starts_with("TABFLAGS pinned=0 muted=1 page_muted=1 audio=1"));
     // A sleeping tab comes back muted.
     b.nav("newtab about:blank");
     b.send("sleep");

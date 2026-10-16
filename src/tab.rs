@@ -952,8 +952,8 @@ impl Tab {
         self.web().is_some_and(|w| responds(&w, sel!(_isPlayingAudio)) && unsafe { msg_send![&*w, _isPlayingAudio] })
     }
 
-    /// `TABFLAGS pinned=<0|1> muted=<0|1> page_muted=<0|1> audio=<0|1>`;
-    /// page_muted is read back from WebKit.
+    /// `TABFLAGS pinned=<0|1> muted=<0|1> page_muted=<0|1> audio=<0|1> swipe=<0|1>`;
+    /// page_muted and swipe are read back from WebKit.
     pub fn flags_state(&self) -> String {
         let page_muted = self.web().is_some_and(|w| {
             let state: usize =
@@ -961,11 +961,12 @@ impl Tab {
             state & 1 == 1
         });
         format!(
-            "TABFLAGS pinned={} muted={} page_muted={} audio={}",
+            "TABFLAGS pinned={} muted={} page_muted={} audio={} swipe={}",
             self.is_pinned() as u8,
             self.is_muted() as u8,
             page_muted as u8,
-            self.playing_audio() as u8
+            self.playing_audio() as u8,
+            self.web().is_some_and(|w| unsafe { w.allowsBackForwardNavigationGestures() }) as u8
         )
     }
 
@@ -1166,6 +1167,8 @@ impl Tab {
         unsafe {
             web.setNavigationDelegate(Some(ProtocolObject::from_ref(self)));
             web.setUIDelegate(Some(ProtocolObject::from_ref(self)));
+            // Two-finger swipe left/right on the trackpad goes back/forward.
+            web.setAllowsBackForwardNavigationGestures(true);
         }
         content.addSubview(&web);
         for key in observed(&web) {
