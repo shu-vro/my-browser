@@ -1,5 +1,5 @@
 // Saved passwords: offer to save on sign-in, fill when the user picks an
-// account. Runs in its own script world, so the page can't see it or post
+// account. In every frame: a frame's form is its own site's. Runs in its own script world, so the page can't see it or post
 // to its handler. Two event listeners and nothing else: no polling, no DOM
 // observers. The browser decides everything; this only reports and fills.
 (() => {
@@ -52,8 +52,11 @@
     if (b) report(b);
   }, true);
 
-  // Called by the browser after the user picked an account.
-  window.__mybFill = (username, password) => {
+  // Called by the browser after the user picked an account for `site`;
+  // nothing happens if this frame is now somewhere else.
+  window.__mybFill = (username, password, site) => {
+    const host = location.hostname.toLowerCase();
+    if (site && host !== site && "[" + host + "]" !== site) return;
     const el = document.activeElement;
     const { user, password: field } = fields(el && el.tagName === "INPUT" ? scope(el) : document);
     const set = (input, value) => {

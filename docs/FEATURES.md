@@ -118,7 +118,8 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 ## Passwords
 
 - Saved in your Mac's **keychain**; offered when you sign in.
-- Filled when you pick an account under a login field (⌥⌘A).
+- Filled when you pick an account under a login field (⌥⌘A), also in
+  embedded sign-in frames, with the frame's own site's accounts.
 - **Touch ID or your Mac's password** before filling or copying (setting, on
   by default).
 - Manage them in Settings → Passwords; import a CSV from the Passwords app,

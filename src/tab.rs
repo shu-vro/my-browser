@@ -1604,11 +1604,16 @@ impl Tab {
         }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         add("Manage Passwords…", sel!(openPasswordSettings:), 0);
-        // The field's bottom-left corner, from page (CSS) pixels to view points.
-        let zoom = unsafe { web.pageZoom() };
-        let (px, py) = (x * zoom, y * zoom + 2.0);
-        let point =
-            if web.isFlipped() { NSPoint::new(px, py) } else { NSPoint::new(px, web.bounds().size.height - py) };
+        // The field's bottom-left corner, from page (CSS) pixels to view
+        // points. A frame's field is relative to the frame, whose place in
+        // the page is unknown (it may be another site): the pointer then.
+        let point = if unsafe { frame.isMainFrame() } {
+            let zoom = unsafe { web.pageZoom() };
+            let (px, py) = (x * zoom, y * zoom + 2.0);
+            if web.isFlipped() { NSPoint::new(px, py) } else { NSPoint::new(px, web.bounds().size.height - py) }
+        } else {
+            web.convertPoint_fromView(self.window().mouseLocationOutsideOfEventStream(), None)
+        };
         menu.popUpMenuPositioningItem_atLocation_inView(None, point, Some(&web));
     }
 
@@ -1618,7 +1623,8 @@ impl Tab {
         let Some((site, frame, accounts)) = self.ivars().fill.borrow().clone() else { return };
         let (Some(user), Some(web)) = (accounts.get(i), self.web()) else { return };
         let now = unsafe { web.URL() }.and_then(|u| u.absoluteString()).map(|u| u.to_string()).unwrap_or_default();
-        if crate::passwords::site_for(&now).as_deref() != Some(site.as_str()) {
+        // (A frame's site is checked by the fill script, inside the frame.)
+        if unsafe { frame.isMainFrame() } && crate::passwords::site_for(&now).as_deref() != Some(site.as_str()) {
             return;
         }
         let user = user.clone();
@@ -1638,17 +1644,20 @@ impl Tab {
     fn fill_password(&self, site: &str, frame: &WKFrameInfo, user: &str) {
         let Some(web) = self.web() else { return };
         let now = unsafe { web.URL() }.and_then(|u| u.absoluteString()).map(|u| u.to_string()).unwrap_or_default();
-        if crate::passwords::site_for(&now).as_deref() != Some(site) {
+        if unsafe { frame.isMainFrame() } && crate::passwords::site_for(&now).as_deref() != Some(site) {
             return;
         }
         let Some(password) = self.app().vault().password(site, user) else { return };
-        let keys = [NSString::from_str("u"), NSString::from_str("p")];
-        let values: [Retained<AnyObject>; 2] = [NSString::from_str(user).into(), NSString::from_str(&password).into()];
+        // The script fills only if the frame is still on `site` (it may have
+        // navigated since the menu was shown).
+        let keys = [NSString::from_str("u"), NSString::from_str("p"), NSString::from_str("h")];
+        let values: [Retained<AnyObject>; 3] =
+            [NSString::from_str(user).into(), NSString::from_str(&password).into(), NSString::from_str(site).into()];
         let keys: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
         let args = objc2_foundation::NSDictionary::from_retained_objects(&keys, &values);
         unsafe {
             web.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
-                &NSString::from_str("__mybFill(u, p)"),
+                &NSString::from_str("__mybFill(u, p, h)"),
                 Some(&args),
                 Some(frame),
                 &passwords_world(self.mtm()),

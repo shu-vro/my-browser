@@ -1132,6 +1132,53 @@ fn passwords_are_offered_saved_and_filled_only_when_picked() {
 }
 
 #[test]
+fn passwords_work_in_frames_for_the_frames_site() {
+    let base = serve();
+    let mut b = launch();
+    let form = encode(
+        "addEventListener('DOMContentLoaded', () => { document.body.innerHTML = \
+         '<form action=/page/welcome><input name=username id=u><input type=password name=password id=p>\
+         <button id=b>Sign in</button></form>' })",
+    );
+    let page = format!(
+        "{base}/script/{}",
+        encode(&format!(
+            "addEventListener('DOMContentLoaded', () => {{ document.title = 'top'; document.body.innerHTML = '<iframe id=f src=/script/{form}></iframe>' }})"
+        ))
+    );
+    b.nav(&format!("go {page}"));
+    let frame = "document.getElementById('f').contentDocument";
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while b.send(&format!("eval !!{frame}.getElementById('b')")) != "EVAL 1" {
+        assert!(Instant::now() < deadline, "frame never loaded");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    writeln!(b.stdin, "eval (d => {{ d.getElementById('u').value = 'erin'; d.getElementById('p').value = 'pw'; d.getElementById('b').click() }})({frame}), 1").unwrap();
+    assert_eq!(
+        b.wait_all(&["DIALOG", "EVAL"])[0],
+        "DIALOG Save the password for erin on 127.0.0.1?",
+        "saved from the frame"
+    );
+    assert_eq!(b.send("dialog ok"), "ANSWERED 1");
+    b.nav(&format!("go {page}"));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while b.send(&format!("eval !!{frame}.getElementById('u')")) != "EVAL 1" {
+        assert!(Instant::now() < deadline, "frame never loaded");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    writeln!(b.stdin, "eval {frame}.getElementById('u').focus(), 1").unwrap();
+    assert_eq!(b.wait_all(&["PASSWORDS", "EVAL"])[0], "PASSWORDS erin", "offered in the frame");
+    assert_eq!(b.send("fillpassword 0"), "FILLPASSWORD");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while b.send(&format!("eval (d => [d.getElementById('u').value, d.getElementById('p').value].join())({frame})"))
+        != "EVAL erin,pw"
+    {
+        assert!(Instant::now() < deadline, "not filled in the frame");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
 fn private_windows_fill_passwords_but_never_save_them() {
     let base = serve();
     let mut b = launch();

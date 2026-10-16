@@ -559,15 +559,18 @@ creator code `mybr` so the browser lists only its own. Throwaway profiles use
 `Vault::Memory` and never touch the keychain (the keychain itself is covered
 by an opt-in test, `cargo test --release -- --ignored keychain`).
 
-`passwords.js` is a user script at document end in the top frame only, in
-its own `WKContentWorld` ("passwords"), with a message handler that exists
+`passwords.js` is a user script at document end in every frame (sign-in
+forms are often embedded), in its own `WKContentWorld` ("passwords"), with a message handler that exists
 only there, so pages can't post to it or see it. It reports:
 - `focus` on a username or password field (once per field): the browser
   shows a native menu of the accounts saved for the site under the field
   (`Tab::offer_passwords`); picking one reads it from the vault and calls
   `__mybFill` in that world with the values as arguments
   (`callAsyncJavaScript`, no string building), after checking the page is
-  still on that site.
+  still on that site. A frame is its own site: its form gets the accounts of
+  the frame's origin, not the page's, and `__mybFill` itself checks the
+  frame is still on that site (it may have navigated). A frame's menu opens
+  at the pointer, since where a cross-site frame sits in the page is unknown.
 - `submit` (form submit, Enter, or a button click next to a filled password
   field): the browser offers to save unless the tab is private, the site is
   set to never (`passwords` permission = deny), or the same password is saved
@@ -586,7 +589,8 @@ Password (⌥⌘A) offers again for the focused field. Settings → Passwords li
 goes to the settings page), deletes, and imports CSV exports from Apple's
 Passwords app, Safari, Chrome, Edge, Brave and Firefox (`parse_csv`).
 Tests: `passwords_are_offered_saved_and_filled_only_when_picked`,
-`private_windows_fill_passwords_but_never_save_them`.
+`private_windows_fill_passwords_but_never_save_them`,
+`passwords_work_in_frames_for_the_frames_site`.
 
 ## Import from other browsers (`src/import.rs`)
 

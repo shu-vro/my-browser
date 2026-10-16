@@ -221,7 +221,8 @@ define_class!(
             let frame = unsafe { message.frameInfo() };
             let origin = unsafe { frame.securityOrigin() };
             let page = format!("{}://{}/", unsafe { origin.protocol() }, unsafe { origin.host() });
-            let (Some(site), true) = (passwords::site_for(&page), unsafe { frame.isMainFrame() }) else { return };
+            // The frame's own site: a login form in a frame gets that site's accounts.
+            let Some(site) = passwords::site_for(&page) else { return };
             let Some(tab) = unsafe { message.webView() }.and_then(|w| self.tab_of_web(&w)) else { return };
             let body = unsafe { message.body() };
             let Some(body) = body.downcast_ref::<objc2_foundation::NSDictionary>() else { return };
@@ -907,8 +908,9 @@ impl App {
                 &NSString::from_str("browser"),
             )
         };
-        // Saved passwords: resources/passwords.js in its own world, at the
-        // top of each page only, reporting to the "passwords" handler there.
+        // Saved passwords: resources/passwords.js in its own world, in every
+        // frame (sign-in forms are often embedded), reporting to the
+        // "passwords" handler there.
         if tune_value(std::env::var("MYB_TUNE").ok().as_deref(), "passwords_script", true) {
             let world = tab::passwords_world(mtm);
             unsafe {
@@ -916,7 +918,7 @@ impl App {
                     WKUserScript::alloc(mtm),
                     &NSString::from_str(PASSWORDS_JS),
                     WKUserScriptInjectionTime::AtDocumentEnd,
-                    true,
+                    false,
                     &world,
                 );
                 content.addUserScript(&script);
