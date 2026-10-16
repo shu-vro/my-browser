@@ -65,6 +65,8 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Local network shield**: websites can't reach this Mac's servers or
   devices on the network unless allowed per site.
 - **Shields per site**: turn protections down for one site from its site menu.
+- **JavaScript off per site** (site menu → Allow JavaScript): news and
+  documentation sites get lighter and quieter; reader mode still works.
 - No ad-click attribution; safe-browsing lookups off unless turned on.
 - Safari user-agent, to blend in.
 - **No telemetry**: the browser itself never sends anything.

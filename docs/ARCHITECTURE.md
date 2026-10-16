@@ -232,6 +232,10 @@ publish. Rules for these settings:
   next page can load their scripts.
 - On a Shields-down site, the navigation's `WKWebpagePreferences` lose the
   fingerprinting protection.
+- On a site with JavaScript turned off, the navigation's
+  `WKWebpagePreferences.allowsContentJavaScript` is false: neither the page
+  nor its frames run scripts. The browser's own scripts (reader mode,
+  passwords, find) live in other script worlds and still work.
 - `<a download>` and `shouldPerformDownload` become downloads; so does a
   response WebKit can't show, or one with `Content-Disposition: attachment`.
   A page's first download goes ahead, more need the site's "downloads"
@@ -259,7 +263,7 @@ nothing committed shows an empty bar, since its opener can still write into it.
 
 The site button left of the bar shows a lock (HTTPS), a warning (plain HTTP)
 or an info icon, and opens the site menu: Shields, local network access,
-camera, microphone, location and multiple downloads for the site, and a link
+JavaScript, camera, microphone, location and multiple downloads for the site, and a link
 to all site settings.
 
 ### JavaScript dialogs and prompts
@@ -283,6 +287,7 @@ the default.
 | `downloads` | allow, deny | ask from the 2nd download per page | `Tab::allow_download` |
 | `local_network` | allow | blocked | exemptions in the local-network rule list |
 | `shields` | off | on | exemptions in the tracker rule list; no fingerprinting protection or parameter stripping |
+| `javascript` | deny | allowed | `allowsContentJavaScript` on the site's main-frame navigations (`Tab::decide_action`); toggling reloads the tab |
 
 A prompt is a sheet "<site> wants to …" with Allow / Don't Allow and a
 "Remember for this site" checkbox (on; absent in private windows). Web

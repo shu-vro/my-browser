@@ -1082,6 +1082,12 @@ impl App {
         !self.store().sites_with("shields", "off").iter().any(|s| host == *s || host.ends_with(&format!(".{s}")))
     }
 
+    /// Whether the site's own scripts may run: false where the user turned
+    /// JavaScript off for it.
+    pub fn javascript_allowed(&self, url: &str) -> bool {
+        store::site_of(url).is_none_or(|site| self.store().permission(&site, "javascript").as_deref() != Some("deny"))
+    }
+
     /// Safari's own user-agent suffix: sites treat the browser like Safari
     /// (same engine), and it doesn't stand out as a rare user agent.
     fn user_agent(&self) -> Option<&str> {

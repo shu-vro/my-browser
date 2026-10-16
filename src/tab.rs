@@ -172,8 +172,12 @@ define_class!(
         ) {
             let policy = self.action_policy(action);
             let url = unsafe { action.request() }.URL().and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default();
-            if is_main_frame(action) && !self.app().shields_up(&url) {
-                crate::privacy::harden_webpage_preferences(prefs, false);
+            if is_main_frame(action) {
+                if !self.app().shields_up(&url) {
+                    crate::privacy::harden_webpage_preferences(prefs, false);
+                }
+                // JavaScript off for this site: the page and its frames run no scripts.
+                unsafe { prefs.setAllowsContentJavaScript(self.app().javascript_allowed(&url)) };
             }
             if policy == WKNavigationActionPolicy::Download {
                 let (decide, prefs) = (decide.copy(), prefs.retain());
@@ -561,11 +565,17 @@ define_class!(
             let _ = self.app().store().set_permission(&site, kind, value);
         }
 
-        /// Site menu: Shields (tag 0) or local network access (tag 1) toggled.
+        /// Site menu: Shields (tag 0), local network access (tag 1) or
+        /// JavaScript (tag 2) toggled.
         #[unsafe(method(siteToggle:))]
         fn site_toggle_action(&self, sender: &NSMenuItem) {
             let Some(site) = crate::store::site_of(&self.url()) else { return };
             let store = self.app().store();
+            if sender.tag() == 2 {
+                let off = store.permission(&site, "javascript").as_deref() == Some("deny");
+                let _ = store.set_permission(&site, "javascript", if off { "ask" } else { "deny" });
+                return self.reload();
+            }
             let _ = if sender.tag() == 0 {
                 let off = store.permission(&site, "shields").as_deref() == Some("off");
                 store.set_permission(&site, "shields", if off { "ask" } else { "off" })
@@ -2146,6 +2156,8 @@ impl Tab {
         add("Block trackers and fingerprinting", Some(sel!(siteToggle:)), 0, shields);
         let local = store.permission(&site, "local_network").as_deref() == Some("allow");
         add("Allow access to the local network", Some(sel!(siteToggle:)), 1, local);
+        let javascript = store.permission(&site, "javascript").as_deref() != Some("deny");
+        add("Allow JavaScript", Some(sel!(siteToggle:)), 2, javascript);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         for (i, (kind, label, _)) in SITE_PERMISSIONS.iter().enumerate() {
             let current = match store.permission(&site, kind).as_deref() {

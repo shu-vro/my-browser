@@ -298,6 +298,7 @@ async function loadPermissions() {
     };
     toggle("shields", perms.shields !== "off", "Protections", "ask", "off");
     toggle("local_network", perms.local_network === "allow", "Local network", "allow", "ask");
+    toggle("javascript", perms.javascript !== "deny", "JavaScript", "ask", "deny");
     const forget = el("button", null, "Reset"); forget.title = "Forget everything about this site";
     forget.onclick = () => call("perm.forget", site).then(loadPermissions, fail); li.append(forget);
     list.append(li);

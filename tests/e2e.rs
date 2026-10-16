@@ -1337,6 +1337,26 @@ fn tracking_parameters_are_removed_unless_shields_are_down() {
 }
 
 #[test]
+fn javascript_can_be_turned_off_per_site() {
+    let base = serve();
+    let mut b = launch();
+    let page = format!("go {base}/script/{}", encode("document.title = 'ran'"));
+    b.nav(&page);
+    assert!(b.state_until(|s| s.ends_with("title=ran")).ends_with("title=ran"));
+    assert_eq!(b.bridge(&["perm.set", "127.0.0.1", "javascript", "deny"]), "true");
+    b.nav(&page);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(b.send("state").ends_with("title=start"), "the page's script must not run");
+    // Other sites are unaffected.
+    let other = format!("go {}/script/{}", base.replace("127.0.0.1", "localhost"), encode("document.title = 'ran'"));
+    b.nav(&other);
+    assert!(b.state_until(|s| s.ends_with("title=ran")).ends_with("title=ran"));
+    assert_eq!(b.bridge(&["perm.set", "127.0.0.1", "javascript", "ask"]), "true");
+    b.nav(&page);
+    assert!(b.state_until(|s| s.ends_with("title=ran")).ends_with("title=ran"), "back on");
+}
+
+#[test]
 fn unknown_internal_page_fails() {
     let mut b = launch();
     assert!(b.send("go mybrowser://nope").starts_with("FAILED "));

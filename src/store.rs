@@ -80,9 +80,11 @@ pub struct Extension {
 /// Per-site permissions and the values each may hold. A missing row means the
 /// default: ask (camera, microphone, location, more than one download per
 /// page), blocked (local network),
-/// protections on (shields).
-pub const PERMISSIONS: [(&str, [&str; 2]); 8] = [
+/// protections on (shields), allowed (JavaScript).
+pub const PERMISSIONS: [(&str, [&str; 2]); 9] = [
     ("camera", ["allow", "deny"]),
+    // deny = the site's own scripts don't run.
+    ("javascript", ["allow", "deny"]),
     // deny = never offer to save passwords on the site.
     ("passwords", ["allow", "deny"]),
     ("screen", ["allow", "deny"]),
