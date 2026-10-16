@@ -193,9 +193,30 @@ the active tab's window. Private and normal windows have different tabbing
 identifiers, so they never merge and tabs can't be dragged between them.
 Tabs moved to another window (by menu or by dragging) are reported to
 extensions with `didMoveTab:fromIndex:inWindow:` (`App::sync_ext_windows`,
-on each activation), and a window left empty with `didCloseWindow:`. No
-pinned tabs: AppKit's tab bar has no way to pin, and a custom tab bar would
-cost memory and code for every window.
+on each activation), and a window left empty with `didCloseWindow:`. 
+
+**Pinned tabs** (Window → Pin Tab): AppKit's tab bar can't pin, so a
+pinned tab is an ordinary tab with three rules: it moves to the front of its
+window, after the tabs pinned before it (`NSWindowTabGroup` remove + insert
+at index; `addTabbedWindow:ordered:` reordered the window list but not the
+tab bar), it never sleeps on the idle timer (memory pressure still sleeps
+it), and Close Other Tabs leaves it. A pin icon sits in its tab. The session
+keeps it (`session.pinned`, added in 0.3); restored pinned tabs come back
+asleep like the rest.
+
+**Sound**: Window → Mute Tab, or a click on the speaker icon in the tab,
+sets WebKit's page mute (private `_setPageMuted:` with `_WKMediaAudioMuted`;
+`TUNE tab_mute`). The tab remembers it and sets it again on every new web
+view, so it survives sleep. A tab playing sound shows a speaker icon,
+from KVO on the private `_isPlayingAudio` (`TUNE playing_audio`; observed
+only where WebKit has it). The tab icons are `NSWindowTab.accessoryView`: an
+`NSStackView` of borderless buttons (pin, sound, heavy), rebuilt when one
+changes; re-inserting a tab drops it, so it's set again on the next turn.
+Bench: `tabflags` → `TABFLAGS pinned= muted= page_muted= audio=` (page_muted
+read back from `_mediaMutedState`). The Window menu's titles follow the
+active tab (`App::update_window_menu`, its `menuNeedsUpdate:`). Tests:
+`pinned_tabs_go_first_survive_close_others_and_restarts`,
+`tabs_mute_and_show_when_they_play_sound`.
 
 **Search Tabs** (⇧⌘A, `src/tabsearch.rs`): an `NSAlert` sheet on the
 active tab with a search field over a cell-based `NSTableView` of the tabs of
@@ -855,6 +876,7 @@ active tab.
 | `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |
 | `printpdf <path>` | `PRINTED <0\|1>` once the page is saved there as a PDF (also printed when any print panel closes) |
 | `tabsearch <query>` | `TABSEARCH <title>\|…`: Search Tabs opened with that query, the matches as listed; answer with `dialog` |
+| `tabflags` | `TABFLAGS pinned=<0\|1> muted=<0\|1> page_muted=<0\|1> audio=<0\|1>` for the active tab |
 | `savepage <path>` | `SAVED <0\|1>` once the page is saved there as a Web Archive |
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |

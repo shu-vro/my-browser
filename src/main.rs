@@ -124,10 +124,14 @@ define_class!(
 
     unsafe impl NSObjectProtocol for App {}
 
-    /// The Bookmarks menu is filled when it opens: no cost until then.
+    /// The Bookmarks menu is filled when it opens: no cost until then. The
+    /// Window menu's pin and mute items follow the active tab.
     unsafe impl NSMenuDelegate for App {
         #[unsafe(method(menuNeedsUpdate:))]
         fn menu_needs_update(&self, menu: &NSMenu) {
+            if menu.title().to_string() == "Window" {
+                return self.update_window_menu(menu);
+            }
             self.fill_bookmarks_menu(menu);
         }
     }
@@ -562,7 +566,7 @@ define_class!(
 
         #[unsafe(method(closeOtherTabs:))]
         fn close_other_tabs_action(&self, _s: Option<&AnyObject>) {
-            for t in self.ordered_tabs().iter().filter(|t| !self.is_active(t)) {
+            for t in self.ordered_tabs().iter().filter(|t| !self.is_active(t) && !t.is_pinned()) {
                 t.window().performClose(None);
             }
         }
@@ -586,6 +590,16 @@ define_class!(
         #[unsafe(method(searchTabs:))]
         fn search_tabs_action(&self, _s: Option<&AnyObject>) {
             self.with_active(|t| tabsearch::TabSearch::open(self, t, ""));
+        }
+
+        #[unsafe(method(pinTab:))]
+        fn pin_tab_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.set_pinned(!t.is_pinned(), false));
+        }
+
+        #[unsafe(method(muteTab:))]
+        fn mute_tab_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.set_muted(!t.is_muted()));
         }
 
         #[unsafe(method(toggleTabOverview:))]
@@ -829,6 +843,9 @@ impl App {
         for (n, ok) in privacy::harden_webpage_preferences(&*unsafe { WKWebpagePreferences::new(mtm) }, true) {
             report.push(line(n, true, ok));
         }
+        // Per-tab mute and the sound badge.
+        report.push(line("tab_mute", true, WKWebView::class().responds_to(sel!(_setPageMuted:))));
+        report.push(line("playing_audio", true, WKWebView::class().responds_to(sel!(_isPlayingAudio))));
         // Settings → Tabs and the heavy-tab badge read each page's process.
         report.push(line("web_process_id", true, WKWebView::class().responds_to(sel!(_webProcessIdentifier))));
         // The address bar shows the committed address (anti-spoofing).
@@ -915,10 +932,13 @@ impl App {
         // Restored tabs open asleep (no page process until clicked), each
         // window's tabs together.
         let mut prev: Option<(i64, Retained<Tab>)> = None;
-        for (win, url, title) in &session {
+        for (win, url, title, pinned) in &session {
             let tab = Tab::create(self, None, url, title, true, false);
             let next_to = prev.as_ref().filter(|(w, _)| w == win).map(|(_, t)| &**t);
             self.add_tab(&tab, next_to, false);
+            if *pinned {
+                tab.set_pinned(true, true);
+            }
             prev = Some((*win, tab));
         }
         for u in &urls {
@@ -1541,8 +1561,25 @@ impl App {
         let idle = sleep_after(minutes, saving_power());
         for tab in self.ivars().tabs.borrow().clone() {
             let since = tab.ivars().last_active.get().map_or(Duration::ZERO, |t| t.elapsed());
+            // Pinned tabs stay awake, unless macOS runs out of memory.
+            let idle = idle.filter(|_| !tab.is_pinned());
             if !self.is_active(&tab) && (all || idle.is_some_and(|idle| since >= idle)) {
                 tab.sleep();
+            }
+        }
+    }
+
+    /// "Pin Tab" / "Unpin Tab", "Mute Tab" / "Unmute Tab", for the active tab.
+    fn update_window_menu(&self, menu: &NSMenu) {
+        let tab = self.active();
+        let (pinned, muted) = tab.as_ref().map_or((false, false), |t| (t.is_pinned(), t.is_muted()));
+        for (action, title) in [
+            (sel!(pinTab:), if pinned { "Unpin Tab" } else { "Pin Tab" }),
+            (sel!(muteTab:), if muted { "Unmute Tab" } else { "Mute Tab" }),
+        ] {
+            let i = unsafe { menu.indexOfItemWithTarget_andAction(Some(self), Some(action)) };
+            if let Some(item) = menu.itemAtIndex(i).filter(|_| i >= 0) {
+                item.setTitle(&NSString::from_str(title));
             }
         }
     }
@@ -1634,7 +1671,7 @@ impl App {
             .flat_map(|(w, tabs)| tabs.into_iter().map(move |t| (w as i64, t)))
             .filter(|(_, t)| !t.url().is_empty() && !t.url().starts_with(&format!("{INTERNAL}:")))
             .collect();
-        let rows: Vec<(i64, String, String)> = saved.iter().map(|(w, t)| (*w, t.url(), t.title())).collect();
+        let rows: Vec<store::SessionTab> = saved.iter().map(|(w, t)| (*w, t.url(), t.title(), t.is_pinned())).collect();
         self.store().save_session(&rows);
         let active = saved.iter().position(|(_, t)| self.is_active(t));
         self.store().put("session_active", &active.unwrap_or(0).to_string());
@@ -1883,6 +1920,7 @@ impl App {
                 say!("STORECLICK");
             }
             ("star", Some(t)) => say!("{}", t.star_state()),
+            ("tabflags", Some(t)) => say!("{}", t.flags_state()),
             ("reader", Some(t)) => t.toggle_reader(),
             // Pick account `i` from the saved-passwords menu (`PASSWORDS …`).
             ("fillpassword", Some(t)) => {
@@ -1917,13 +1955,21 @@ impl App {
                     m.itemArray().iter().filter_map(|i| i.submenu()).find(|s| s.title().to_string() == name)
                 });
                 let Some(menu) = menu else { return say!("ERR no menu {name}") };
-                menu.update();
+                // As when it opens: the delegate's update, then validation.
+                let open = |menu: &NSMenu| {
+                    if name == "Window" {
+                        self.update_window_menu(menu);
+                    }
+                    menu.update();
+                };
+                open(&menu);
                 if let Some(title) = pick {
                     let index = menu.indexOfItemWithTitle(&NSString::from_str(title));
                     if index < 0 {
                         return say!("ERR no item {title}");
                     }
                     menu.performActionForItemAtIndex(index);
+                    open(&menu);
                 }
                 let titles: Vec<String> = menu
                     .itemArray()
@@ -2485,6 +2531,8 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Previous Tab", sel!(previousTab:), "\t", ctrl_shift, true),
                 ("Show All Tabs", sel!(toggleTabOverview:), "\\", cmd_shift, true),
                 ("Search Tabs…", sel!(searchTabs:), "A", cmd, true),
+                ("Pin Tab", sel!(pinTab:), "", none, true),
+                ("Mute Tab", sel!(muteTab:), "", none, true),
                 ("Move Tab to New Window", sel!(moveTabToNewWindow:), "", none, true),
                 ("Merge All Windows", sel!(mergeAllWindows:), "", none, true),
             ],
@@ -2517,7 +2565,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
             // Lets AppKit list open windows and handle Window-menu conventions.
             app.setWindowsMenu(Some(&menu));
         }
-        if title == "Bookmarks" {
+        if title == "Bookmarks" || title == "Window" {
             menu.setDelegate(Some(ProtocolObject::from_ref(delegate)));
         }
     }

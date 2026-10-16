@@ -53,6 +53,10 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - Native macOS window tabs.
 - New, close, reopen closed tab (⇧⌘T), duplicate, close others, show all
   tabs, move to new window, merge windows.
+- **Pinned tabs** (Window → Pin Tab): first in their window, never put to
+  sleep, kept by Close Other Tabs and by session restore.
+- **Mute a tab** (Window → Mute Tab, or click the speaker in the tab); tabs
+  playing sound show a speaker.
 - **Search Tabs** (⇧⌘A): type part of a title or address, Return switches;
   most recently used first.
 - Switch tabs with ⌘1–⌘9, ⌃Tab / ⌃⇧Tab, ⇧⌘[ / ⇧⌘].

@@ -459,11 +459,13 @@ fn engine_and_privacy_settings_are_applied() {
         "local_network_shield",
         "page_print",
         "pagecache",
+        "playing_audio",
         "picture_in_picture",
         "prewarm",
         "proccache",
         "screen_capture",
         "suspend",
+        "tab_mute",
         "third_party_cookies_blocked",
         "tracking_prevention",
         "trackers",
@@ -565,6 +567,54 @@ fn search_tabs_finds_and_switches_to_a_tab() {
     assert_eq!(b.send("tabsearch nothing like it"), "TABSEARCH ");
     b.send("dialog ok");
     assert!(b.tabs().starts_with("TABS count=3 active=0"), "no match, no switch");
+}
+
+#[test]
+fn pinned_tabs_go_first_survive_close_others_and_restarts() {
+    let base = serve();
+    let profile = TempProfile::new("pinned");
+    let mut b = launch_with(&["--profile", profile.path()]);
+    b.nav(&format!("go {base}/page/one"));
+    b.nav(&format!("newtab {base}/page/two"));
+    b.nav(&format!("newtab {base}/page/three"));
+    let menu = b.send("menu Window/Pin Tab");
+    assert!(menu.contains("|Unpin Tab|"), "{menu}");
+    assert!(b.send("tabflags").starts_with("TABFLAGS pinned=1"));
+    b.send("switch 0");
+    assert!(b.state_until(|s| s.ends_with("title=three")).ends_with("title=three"), "moved to the front");
+    b.send("switch 2");
+    assert!(b.state_until(|s| s.ends_with("title=two")).ends_with("title=two"));
+    b.send("menu File/Close Other Tabs");
+    assert!(b.tabs().starts_with("TABS count=2"), "the pinned tab stays");
+    b.quit();
+    let mut b = launch_with(&["--profile", profile.path()]);
+    b.nav("switch 0");
+    assert!(b.state_until(|s| s.ends_with("title=three")).ends_with("title=three"));
+    assert!(b.send("tabflags").starts_with("TABFLAGS pinned=1"), "pinned after a restart");
+    b.quit();
+}
+
+#[test]
+fn tabs_mute_and_show_when_they_play_sound() {
+    let mut b = launch();
+    b.nav("go about:blank");
+    assert_eq!(b.send("tabflags"), "TABFLAGS pinned=0 muted=0 page_muted=0 audio=0");
+    // A tone, started with the user gesture `eval` carries.
+    b.send("eval (() => { const c = new AudioContext(); const o = c.createOscillator(); const g = c.createGain(); g.gain.value = 0.001; o.connect(g).connect(c.destination); o.start(); return 1 })()");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !b.send("tabflags").ends_with("audio=1") {
+        assert!(Instant::now() < deadline, "playing sound never reported");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(b.send("menu Window/Mute Tab").contains("|Unmute Tab|"));
+    assert_eq!(b.send("tabflags"), "TABFLAGS pinned=0 muted=1 page_muted=1 audio=1");
+    // A sleeping tab comes back muted.
+    b.nav("newtab about:blank");
+    b.send("sleep");
+    b.nav("switch 0");
+    assert!(b.send("tabflags").contains("muted=1 page_muted=1"));
+    b.send("menu Window/Unmute Tab");
+    assert!(b.send("tabflags").contains("muted=0 page_muted=0"));
 }
 
 #[test]

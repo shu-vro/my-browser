@@ -127,6 +127,10 @@ pub struct TabIvars {
     sampled: Cell<Option<(crate::usage::Usage, Instant)>>,
     /// Why this background tab is heavy (badge in its tab), if it is.
     heavy: RefCell<Option<String>>,
+    /// Pinned: kept at the front of its window and never put to sleep.
+    pinned: Cell<bool>,
+    /// The page's sound is off (kept across navigations and sleep).
+    muted: Cell<bool>,
 }
 
 /// The saved-passwords menu: (site, frame of the login form, usernames).
@@ -653,6 +657,9 @@ define_class!(
             if changed != WKWebExtensionTabChangedProperties::None {
                 self.app().ext_tab_changed(self, changed);
             }
+            if key == "_isPlayingAudio" {
+                return self.refresh_badges();
+            }
             if key == "title" {
                 self.remember_page();
                 let title = self.title();
@@ -790,6 +797,12 @@ define_class!(
             self.find(true);
         }
 
+        /// The sound badge in the tab.
+        #[unsafe(method(toggleMute:))]
+        fn toggle_mute_action(&self, _s: Option<&AnyObject>) {
+            self.set_muted(!self.is_muted());
+        }
+
         #[unsafe(method(closeFind:))]
         fn close_find_action(&self, _s: Option<&AnyObject>) {
             self.hide_find();
@@ -876,14 +889,100 @@ impl Tab {
         self.ivars().heavy.borrow().clone()
     }
 
-    /// Small icons in the tab itself (its `NSWindowTab` accessory view): a
-    /// heavy background tab, with the reason as its tooltip.
+    pub fn is_pinned(&self) -> bool {
+        self.ivars().pinned.get()
+    }
+
+    /// Pin or unpin. A pinned tab moves to the front of its window, after
+    /// the tabs pinned before it; `restoring` keeps the order it had.
+    pub fn set_pinned(&self, on: bool, restoring: bool) {
+        self.ivars().pinned.set(on);
+        if on
+            && !restoring
+            && let Some(group) = self.window().tabGroup()
+        {
+            let window = self.window();
+            let app = self.app();
+            let pinned_before = group
+                .windows()
+                .iter()
+                .filter(|w| !std::ptr::eq(&**w, window) && app.tab_for_window(w).is_some_and(|t| t.is_pinned()))
+                .count();
+            let at = group.windows().iter().position(|w| std::ptr::eq(&*w, window));
+            if at != Some(pinned_before) {
+                // (Moving it with addTabbedWindow reordered the list but not the tab bar.)
+                group.removeWindow(window);
+                group.insertWindow_atIndex(window, pinned_before as isize);
+                // The re-inserted tab drops its accessory view after this turn.
+                let this = self.retain();
+                crate::on_main(move || this.refresh_badges());
+            }
+            if app.is_active(self) {
+                app.select(self);
+            }
+        }
+        self.refresh_badges();
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.ivars().muted.get()
+    }
+
+    pub fn set_muted(&self, on: bool) {
+        self.ivars().muted.set(on);
+        self.apply_mute();
+        self.refresh_badges();
+    }
+
+    /// WebKit's page mute (private `_setPageMuted:`, `_WKMediaAudioMuted` = 1).
+    fn apply_mute(&self) {
+        let Some(web) = self.web() else { return };
+        if responds(&web, sel!(_setPageMuted:)) {
+            let state: usize = if self.is_muted() { 1 } else { 0 };
+            let _: () = unsafe { msg_send![&*web, _setPageMuted: state] };
+        }
+    }
+
+    /// Sound is playing in the page (private `_isPlayingAudio`, observed).
+    pub fn playing_audio(&self) -> bool {
+        self.web().is_some_and(|w| responds(&w, sel!(_isPlayingAudio)) && unsafe { msg_send![&*w, _isPlayingAudio] })
+    }
+
+    /// `TABFLAGS pinned=<0|1> muted=<0|1> page_muted=<0|1> audio=<0|1>`;
+    /// page_muted is read back from WebKit.
+    pub fn flags_state(&self) -> String {
+        let page_muted = self.web().is_some_and(|w| {
+            let state: usize =
+                if responds(&w, sel!(_mediaMutedState)) { unsafe { msg_send![&*w, _mediaMutedState] } } else { 0 };
+            state & 1 == 1
+        });
+        format!(
+            "TABFLAGS pinned={} muted={} page_muted={} audio={}",
+            self.is_pinned() as u8,
+            self.is_muted() as u8,
+            page_muted as u8,
+            self.playing_audio() as u8
+        )
+    }
+
+    /// Small icons in the tab itself (its `NSWindowTab` accessory view):
+    /// pinned, sound playing or muted (click to toggle), and a heavy
+    /// background tab, each with its tooltip.
     fn refresh_badges(&self) {
-        let mut badges: Vec<(&str, String)> = Vec::new();
+        let mut badges: Vec<(&str, String, Option<objc2::runtime::Sel>)> = Vec::new();
+        if self.is_pinned() {
+            badges.push(("pin.fill", "Pinned: stays awake".into(), None));
+        }
+        if self.is_muted() {
+            badges.push(("speaker.slash.fill", "Muted. Click to turn sound on".into(), Some(sel!(toggleMute:))));
+        } else if self.playing_audio() {
+            badges.push(("speaker.wave.2.fill", "Playing sound. Click to mute".into(), Some(sel!(toggleMute:))));
+        }
         if let Some(why) = self.heavy() {
             badges.push((
                 "gauge.with.dots.needle.67percent",
                 format!("{why}. It sleeps when left alone; see Settings → Tabs."),
+                None,
             ));
         }
         let tab = self.window().tab();
@@ -895,17 +994,20 @@ impl Tab {
         let mtm = self.mtm();
         let views: Vec<Retained<NSView>> = badges
             .iter()
-            .map(|(symbol, label)| {
-                let image = objc2_app_kit::NSImageView::imageViewWithImage(&symbol_image(symbol, label), mtm);
-                image.setToolTip(Some(&NSString::from_str(label)));
-                image.setContentTintColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
-                Retained::into_super(image).into_super()
+            .map(|(symbol, label, action)| {
+                let b = unsafe {
+                    NSButton::buttonWithImage_target_action(&symbol_image(symbol, label), Some(self), *action, mtm)
+                };
+                b.setBordered(false);
+                b.setToolTip(Some(&NSString::from_str(label)));
+                b.setContentTintColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+                Retained::into_super(Retained::into_super(b))
             })
             .collect();
         let stack = objc2_app_kit::NSStackView::stackViewWithViews(&NSArray::from_retained_slice(&views), mtm);
         stack.setSpacing(2.0);
         tab.setAccessoryView(Some(&stack));
-        let tips: Vec<&str> = badges.iter().map(|(_, l)| l.as_str()).collect();
+        let tips: Vec<&str> = badges.iter().map(|(_, l, _)| l.as_str()).collect();
         tab.setToolTip(Some(&NSString::from_str(&tips.join("\n"))));
     }
 
@@ -1062,7 +1164,7 @@ impl Tab {
             web.setUIDelegate(Some(ProtocolObject::from_ref(self)));
         }
         content.addSubview(&web);
-        for key in OBSERVED {
+        for key in observed(&web) {
             unsafe {
                 web.addObserver_forKeyPath_options_context(
                     self,
@@ -1073,6 +1175,7 @@ impl Tab {
             };
         }
         self.ivars().web.replace(Some(web.clone()));
+        self.apply_mute();
         web
     }
 
@@ -1265,7 +1368,7 @@ impl Tab {
     /// deallocated object crashes.
     fn destroy_web(&self) {
         let Some(web) = self.ivars().web.take() else { return };
-        for key in OBSERVED {
+        for key in observed(&web) {
             unsafe { web.removeObserver_forKeyPath(self, &NSString::from_str(key)) };
         }
         unsafe {
@@ -1284,6 +1387,7 @@ impl Tab {
         self.remember_page();
         self.destroy_web();
         self.refresh_toolbar();
+        self.refresh_badges();
     }
 
     /// Reload an asleep tab's page.
@@ -2418,6 +2522,20 @@ unsafe fn is_attachment(response: &WKNavigationResponse) -> bool {
     let value: Option<Retained<NSString>> =
         unsafe { msg_send![&*r, valueForHTTPHeaderField: &*NSString::from_str("Content-Disposition")] };
     value.is_some_and(|v| v.to_string().trim_start().to_ascii_lowercase().starts_with("attachment"))
+}
+
+fn responds(obj: &AnyObject, sel: objc2::runtime::Sel) -> bool {
+    unsafe { msg_send![obj, respondsToSelector: sel] }
+}
+
+/// Web view properties observed: OBSERVED, and whether sound is playing
+/// where this WebKit reports it (private).
+fn observed(web: &WKWebView) -> Vec<&'static str> {
+    let mut keys = OBSERVED.to_vec();
+    if responds(web, sel!(_isPlayingAudio)) {
+        keys.push("_isPlayingAudio");
+    }
+    keys
 }
 
 fn symbol_image(symbol: &str, label: &str) -> Retained<NSImage> {
