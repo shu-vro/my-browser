@@ -85,9 +85,9 @@ pub struct AppIvars {
     net_blocked: RefCell<Vec<netgate::Blocked>>,
     /// Extension-facing window objects, one per native tab group (keyed by its pointer).
     ext_windows: RefCell<HashMap<usize, Retained<ExtWindow>>>,
-    trackers: RefCell<Option<Retained<WKContentRuleList>>>,
-    /// Blocks websites from reaching this Mac and the local network.
-    local: RefCell<Option<Retained<WKContentRuleList>>>,
+    /// The shared content blockers, in `SHIELD_SETTINGS` order: trackers,
+    /// the local-network shield, cookie banners.
+    shields: RefCell<[Option<Retained<WKContentRuleList>>; 3]>,
     /// `Version/<n> Safari/605.1.15`, so the browser blends in with Safari.
     user_agent: OnceCell<Option<String>>,
     tabs: RefCell<Vec<Retained<Tab>>>,
@@ -865,10 +865,11 @@ impl App {
 
         self.start_extensions();
 
-        self.load_shields(move |this, trackers, local| {
+        self.load_shields(move |this, [trackers, local, banners]| {
             let mut report = this.ivars().report.borrow_mut();
             report.push(line("trackers", true, trackers));
             report.push(line("local_network_shield", true, local));
+            report.push(line("cookie_banners", true, banners));
             drop(report);
             this.ready();
         });
@@ -1021,52 +1022,47 @@ impl App {
         config
     }
 
-    /// Compile (or look up) the tracker blocker and the local-network shield
-    /// with the current per-site exceptions, and put them on every tab.
-    /// `done(app, trackers_ok, local_ok)`.
-    pub fn load_shields(&self, done: impl FnOnce(&App, bool, bool) + 'static) {
+    /// Compile (or look up) the tracker blocker, the local-network shield and
+    /// the cookie-banner hider with the current per-site exceptions, and put
+    /// them on every tab. `done(app, [trackers_ok, local_ok, banners_ok])`.
+    pub fn load_shields(&self, done: impl FnOnce(&App, [bool; 3]) + 'static) {
         let mtm = self.mtm();
         let store = self.store();
         let exempt = store.sites_with("shields", "off");
         let allowed = store.sites_with("local_network", "allow");
         let this = self.retain();
-        privacy::load_tracker_rules(mtm, exempt, move |trackers| {
-            let this2 = this.clone();
+        privacy::load_tracker_rules(mtm, exempt.clone(), move |trackers| {
             privacy::load_local_rules(mtm, allowed, move |local| {
-                let (t, l) = (trackers.is_some(), local.is_some());
-                this2.set_rule_lists(trackers, local);
-                done(&this2, t, l);
+                privacy::load_banner_rules(mtm, exempt, move |banners| {
+                    let ok = [trackers.is_some(), local.is_some(), banners.is_some()];
+                    this.set_rule_lists([trackers, local, banners]);
+                    done(&this, ok);
+                });
             });
         });
     }
 
-    fn set_rule_lists(
-        &self,
-        trackers: Option<Retained<WKContentRuleList>>,
-        local: Option<Retained<WKContentRuleList>>,
-    ) {
+    fn set_rule_lists(&self, lists: [Option<Retained<WKContentRuleList>>; 3]) {
         let content = self.ivars().content.get().unwrap();
-        for old in [self.ivars().trackers.borrow().clone(), self.ivars().local.borrow().clone()].into_iter().flatten() {
-            unsafe { content.removeContentRuleList(&old) };
+        let mut slots = self.ivars().shields.borrow_mut();
+        for (slot, new) in slots.iter_mut().zip(lists) {
+            // Keep an old list if the new one failed to compile: fail closed.
+            if let Some(new) = new
+                && let Some(old) = slot.replace(new)
+            {
+                unsafe { content.removeContentRuleList(&old) };
+            }
         }
-        // Keep an old list if the new one failed to compile: fail closed.
-        if trackers.is_some() {
-            self.ivars().trackers.replace(trackers);
-        }
-        if local.is_some() {
-            self.ivars().local.replace(local);
-        }
+        drop(slots);
         self.apply_trackers();
     }
 
     /// Add or remove the shared blockers on every tab, following the settings.
     pub fn apply_trackers(&self) {
         let content = self.ivars().content.get().unwrap();
-        let lists = [
-            (self.ivars().trackers.borrow().clone(), self.store().flag("block_trackers")),
-            (self.ivars().local.borrow().clone(), self.store().flag("block_local_network")),
-        ];
-        for (list, on) in lists {
+        let lists = self.ivars().shields.borrow().clone();
+        for (list, setting) in lists.into_iter().zip(SHIELD_SETTINGS) {
+            let on = self.store().flag(setting);
             if let Some(list) = list {
                 unsafe {
                     content.removeContentRuleList(&list);
@@ -2106,6 +2102,9 @@ fn url_args() -> Vec<String> {
     }
     out
 }
+
+/// The setting that turns each shared content blocker on.
+const SHIELD_SETTINGS: [&str; 3] = ["block_trackers", "block_local_network", "hide_cookie_banners"];
 
 static PASSWORDS_JS: &str = include_str!("../resources/passwords.js");
 

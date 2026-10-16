@@ -61,6 +61,9 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 ## Privacy and security
 
 - **Tracker blocking** with Disconnect's list (the one Firefox uses).
+- **Cookie banners hidden** (OneTrust, Cookiebot, Quantcast, Didomi and
+  other common consent pop-ups), without consenting to anything; a setting
+  in Privacy.
 - All **third-party cookies blocked**; Intelligent Tracking Prevention on.
 - **HTTPS first**, with automatic fallback.
 - **Global Privacy Control**.

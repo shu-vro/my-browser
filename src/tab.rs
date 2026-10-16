@@ -589,7 +589,7 @@ define_class!(
             };
             // The blockers are recompiled with the new exception, then the page reloads under them.
             let this = self.retain();
-            self.app().load_shields(move |_, _, _| this.reload());
+            self.app().load_shields(move |_, _| this.reload());
         }
 
         /// An extension's toolbar button (tag = extension id).

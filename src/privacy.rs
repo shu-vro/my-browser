@@ -242,6 +242,90 @@ pub fn load_local_rules(
     load_rules(mtm, id, move || Some(local_rules(&allowed)), done);
 }
 
+/// Cookie consent banners of the common consent platforms (OneTrust,
+/// Cookiebot, Quantcast, Didomi, Usercentrics, Sourcepoint, TrustArc,
+/// Google's Funding Choices, …) and popular plugins, hidden with
+/// `css-display-none` rules: no script runs and nothing is clicked, so no
+/// consent is ever given. Specific names only, so page content isn't hit.
+// ponytail: a banner that also locks scrolling (Sourcepoint, Didomi) leaves
+// the page unscrollable; content blockers can only hide. A user script
+// restoring `overflow` would fix it, at a script per page.
+const BANNERS: [&str; 46] = [
+    "#onetrust-banner-sdk",
+    "#onetrust-consent-sdk",
+    "#CybotCookiebotDialog",
+    "#CybotCookiebotDialogBodyUnderlay",
+    "#qc-cmp2-container",
+    ".qc-cmp2-container",
+    "#didomi-host",
+    "#usercentrics-root",
+    "#usercentrics-cmp-ui",
+    "[id^=\"sp_message_container_\"]",
+    ".truste_box_overlay",
+    ".truste_overlay",
+    "#truste-consent-track",
+    ".fc-consent-root",
+    ".osano-cm-window",
+    ".cmplz-cookiebanner",
+    ".cky-consent-container",
+    ".cky-overlay",
+    "#iubenda-cs-banner",
+    "#cookie-notice",
+    "#cookie-law-info-bar",
+    ".cc-window",
+    "#gdpr-cookie-message",
+    "#cmpbox",
+    "#cmpbox2",
+    "#axeptio_overlay",
+    "#ccc",
+    "#hs-eu-cookie-confirmation",
+    "#shopify-pc__banner",
+    "#BorlabsCookieBox",
+    "#termly-code-snippet-support",
+    "#cookiescript_injected",
+    "#cookiescript_injected_wrapper",
+    "#moove_gdpr_cookie_info_bar",
+    "#catapult-cookie-bar",
+    "#cookie-banner",
+    "#cookieBanner",
+    "#cookie-consent",
+    "#cookieConsent",
+    "#cookies-banner",
+    ".cookie-banner",
+    ".cookie-consent-banner",
+    ".js-cookie-consent",
+    "#consent-banner",
+    ".evidon-banner",
+    "#_evidon_banner",
+];
+
+/// The cookie-banner hider, shown again on Shields-down sites.
+pub fn banner_rules(exempt: &[String]) -> String {
+    let mut rules: Vec<String> = BANNERS
+        .iter()
+        .map(|s| {
+            format!(
+                r#"{{"trigger":{{"url-filter":".*"}},"action":{{"type":"css-display-none","selector":{}}}}}"#,
+                json_str(s)
+            )
+        })
+        .collect();
+    if !exempt.is_empty() {
+        rules.push(exemptions(exempt));
+    }
+    format!("[{}]", rules.join(","))
+}
+
+pub fn load_banner_rules(
+    mtm: MainThreadMarker,
+    exempt: Vec<String>,
+    done: impl FnOnce(Option<Retained<WKContentRuleList>>) + 'static,
+) {
+    let json = banner_rules(&exempt);
+    let id = format!("banners-{:016x}", fnv(json.as_bytes(), 0xcbf29ce484222325));
+    load_rules(mtm, id, move || Some(json), done);
+}
+
 /// Tracking parameters removed from addresses before a page loads. Brave's
 /// default list (brave-core query_filter); campaign tags like `utm_*` stay,
 /// as in Brave and Firefox, since sites use them for more than tracking.
@@ -393,6 +477,15 @@ mod tests {
         );
         assert!(local_rules(&["router.example".into()]).contains("ignore-previous-rules"));
         assert_ne!(local_identifier(&[]), local_identifier(&["x".into()]));
+    }
+
+    #[test]
+    fn banner_rules_hide_and_exempt() {
+        let json = banner_rules(&[]);
+        assert!(json.starts_with('[') && json.ends_with(']'));
+        assert_eq!(json.matches("css-display-none").count(), BANNERS.len());
+        assert!(json.contains(r#""selector":"[id^=\"sp_message_container_\"]""#), "quotes escaped");
+        assert!(banner_rules(&["a.example".into()]).ends_with(r#""action":{"type":"ignore-previous-rules"}}]"#));
     }
 
     #[test]

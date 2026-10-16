@@ -151,7 +151,7 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             let (key, value) = (args.get(1).map_or("", |s| s), args.get(2).map_or("", |s| s));
             store.set_setting(key, value).map(|()| {
                 match key {
-                    "block_trackers" | "block_local_network" => app.apply_trackers(),
+                    "block_trackers" | "block_local_network" | "hide_cookie_banners" => app.apply_trackers(),
                     "safe_browsing" => app.apply_safe_browsing(),
                     "theme" => app.apply_theme(),
                     _ => {}
@@ -456,8 +456,8 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             match result {
                 // Shields and local-network exceptions live in the compiled blockers.
                 Ok(()) => {
-                    return app.load_shields(move |_, t, l| {
-                        reply(if t && l { ok() } else { Err("blocker failed to compile".into()) })
+                    return app.load_shields(move |_, compiled| {
+                        reply(if compiled.iter().all(|c| *c) { ok() } else { Err("blocker failed to compile".into()) })
                     });
                 }
                 Err(e) => Err(e),

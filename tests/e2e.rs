@@ -449,6 +449,7 @@ fn engine_and_privacy_settings_are_applied() {
         "ad_attribution_off",
         "committed_url",
         "context_menu",
+        "cookie_banners",
         "display_capture",
         "ext_background_view",
         "fingerprinting_protection",
@@ -1360,6 +1361,25 @@ fn tracking_parameters_are_removed_unless_shields_are_down() {
     assert_eq!(b.bridge(&["perm.list"]), "[]");
     let bad = b.send("bridge perm.set\t127.0.0.1\tcamera\tmaybe");
     assert!(bad.starts_with("BRIDGE err "), "{bad}");
+}
+
+#[test]
+fn cookie_banners_are_hidden_unless_turned_off() {
+    let base = serve();
+    let mut b = launch();
+    let js = "addEventListener('DOMContentLoaded', () => { const d = document.createElement('div'); \
+              d.id = 'onetrust-banner-sdk'; d.textContent = 'We use cookies'; document.body.append(d); \
+              setTimeout(() => document.title = getComputedStyle(d).display, 100) })";
+    let page = format!("go {base}/script/{}", encode(js));
+    b.nav(&page);
+    assert!(b.state_until(|s| s.ends_with("title=none")).ends_with("title=none"), "hidden");
+    assert_eq!(b.bridge(&["settings.set", "hide_cookie_banners", "0"]), "true");
+    b.nav(&page);
+    assert!(b.state_until(|s| s.ends_with("title=block")).ends_with("title=block"), "shown when turned off");
+    assert_eq!(b.bridge(&["settings.set", "hide_cookie_banners", "1"]), "true");
+    assert_eq!(b.bridge(&["perm.set", "127.0.0.1", "shields", "off"]), "true");
+    b.nav(&page);
+    assert!(b.state_until(|s| s.ends_with("title=block")).ends_with("title=block"), "shown with Shields down");
 }
 
 #[test]

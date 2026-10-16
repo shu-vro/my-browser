@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Settings the settings page may change, with their defaults.
-pub const SETTINGS: [(&str, &str); 14] = [
+pub const SETTINGS: [(&str, &str); 15] = [
     // duckduckgo | brave | startpage | google
     ("search", "duckduckgo"),
     // Page for new tabs; empty means a blank page.
@@ -20,6 +20,8 @@ pub const SETTINGS: [(&str, &str); 14] = [
     ("restore_session", "1"),
     // Built-in tracker blocker (Disconnect list).
     ("block_trackers", "1"),
+    // Cookie consent banners hidden (privacy.rs, BANNERS); consent is never given.
+    ("hide_cookie_banners", "1"),
     // Websites can't reach localhost or the local network (sites can be allowed one by one).
     ("block_local_network", "1"),
     // Safe-browsing lookups send hashed URL prefixes to Apple/Google. Off by default.
@@ -189,6 +191,7 @@ impl Store {
             "restore_session"
             | "block_trackers"
             | "block_local_network"
+            | "hide_cookie_banners"
             | "safe_browsing"
             | "jit"
             | "home_art"
