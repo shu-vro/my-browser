@@ -16,7 +16,8 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--text); display: flex; min-height: 100vh; }
-  nav { width: 190px; padding: 24px 12px; border-right: 1px solid var(--line); flex-shrink: 0; }
+  nav { width: 190px; padding: 24px 12px; border-right: 1px solid var(--line); flex-shrink: 0;
+        position: sticky; top: 0; height: 100vh; overflow-y: auto; }
   nav a { display: block; padding: 7px 12px; border-radius: 7px; color: var(--text); text-decoration: none; margin-bottom: 2px; }
   nav a.on { background: var(--accent); color: #fff; }
   main { flex: 1; padding: 28px 36px; max-width: 860px; }

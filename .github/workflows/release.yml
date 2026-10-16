@@ -1,9 +1,9 @@
 name: Release
-# Every push to the `release` branch publishes the next version:
-# v<major.minor from Cargo.toml>.<patch>, the patch counting up from 0 with
-# each release (0.2.0, 0.2.1, ...). Bump the minor in Cargo.toml to start
-# 0.3.0. Assets: a universal (Apple Silicon + Intel) DMG, its SHA-256, and the
-# debug symbols for symbolicating crash reports. The browser's "Check for
+# A push to the `release` branch publishes Cargo.toml's package.version as
+# v<version>. If that tag already exists (the version wasn't bumped), the
+# workflow stops before building anything. Assets: a universal (Apple
+# Silicon + Intel) DMG, its SHA-256, and the debug symbols for symbolicating
+# crash reports. The browser's "Check for
 # Updates…" opens the latest of these releases.
 on:
   push:
@@ -17,29 +17,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  version:
     # Only the owner can push to `release` (repository ruleset "release: owner
     # only"); this check is the second lock.
     if: github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      new: ${{ steps.version.outputs.new }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0 # tags, to see if this version is out already
+      - name: Version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::v$version is already released; bump package.version in Cargo.toml to release."
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: version
+    if: needs.version.outputs.new == 'true'
     runs-on: xcode-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0 # tags, to find the last patch
+          fetch-depth: 0 # history and tags, for the release notes
       - name: Rust
         run: rustup update stable && rustup default stable && rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Test
         run: cargo test --release
-      - name: Version
-        id: version
-        run: |
-          base=$(sed -n 's/^version = "\([0-9]*\.[0-9]*\)\..*"/\1/p' Cargo.toml | head -1)
-          last=$(git tag -l "v$base.*" | sed "s/^v$base\.//" | grep -E '^[0-9]+$' | sort -n | tail -1)
-          echo "version=$base.$(( ${last:--1} + 1 ))" >> "$GITHUB_OUTPUT"
       - name: Build
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
           UNIVERSAL: "1"
           # Symbols go to a separate .dSYM (published, not shipped in the app):
           # the binary stays the same size and crash reports can be symbolicated.
@@ -58,10 +75,19 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
+          # Notes: how to install, then every commit since the last release
+          # with its description and author.
+          prev=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
+          {
+            echo "Open the DMG and drag my-browser to Applications."
+            echo
+            echo "This build isn't notarized by Apple, so macOS blocks its first launch: open it once, then choose **Open Anyway** in System Settings → Privacy & Security. (Or run \`xattr -dr com.apple.quarantine /Applications/my-browser.app\`.)"
+            echo
+            echo "## Changes${prev:+ since $prev}"
+            echo
+            git log --no-merges --format="- **%s** ([%h]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/%H)) by %an%n%n%w(0,2,2)%b" "${prev:+$prev..}HEAD"
+          } > notes.md
           gh release create "v$VERSION" dist/*.dmg dist/*.dSYM.zip dist/SHA256SUMS \
-            --target "$GITHUB_SHA" --title "my-browser $VERSION" --generate-notes \
-            --notes "Open the DMG and drag my-browser to Applications.
-
-          This build isn't notarized by Apple, so macOS blocks its first launch: open it once, then choose **Open Anyway** in System Settings → Privacy & Security. (Or run \`xattr -dr com.apple.quarantine /Applications/my-browser.app\`.)"
+            --target "$GITHUB_SHA" --title "my-browser $VERSION" --notes-file notes.md

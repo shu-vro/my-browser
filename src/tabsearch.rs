@@ -1,6 +1,6 @@
 //! Search Tabs (⇧⌘A): a sheet with a search field over a list of the open
 //! tabs, by title and address. Return switches to the first (or selected)
-//! match, ↑/↓ move, Esc closes. Built when asked for, gone when closed.
+//! match, ↑/↓ move, Tab/⇧Tab go round the list, Esc closes. Built when asked for, gone when closed.
 
 use std::cell::{OnceCell, RefCell};
 
@@ -152,10 +152,15 @@ impl TabSearch {
     fn key(&self, command: Sel) -> bool {
         let Some(table) = self.ivars().table.get() else { return false };
         let n = self.ivars().shown.borrow().len() as NSInteger;
-        let step = if command == sel!(moveUp:) {
-            -1
+        let current = table.selectedRow();
+        let row = if command == sel!(moveUp:) {
+            (current - 1).clamp(0, n - 1)
         } else if command == sel!(moveDown:) {
-            1
+            (current + 1).clamp(0, n - 1)
+        } else if command == sel!(insertTab:) {
+            cycle(current, 1, n)
+        } else if command == sel!(insertBacktab:) {
+            cycle(current, -1, n)
         } else if command == sel!(insertNewline:) {
             self.finish(1000);
             return true;
@@ -166,7 +171,6 @@ impl TabSearch {
             return false;
         };
         if n > 0 {
-            let row = (table.selectedRow() + step).clamp(0, n - 1);
             table.selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row as usize), false);
             table.scrollRowToVisible(row);
         }
@@ -212,6 +216,11 @@ impl TabSearch {
     }
 }
 
+/// Tab/⇧Tab: the row `by` away from `row` among `n`, going round at the ends.
+pub fn cycle(row: NSInteger, by: NSInteger, n: NSInteger) -> NSInteger {
+    if n <= 0 { 0 } else { (row.max(0) + by).rem_euclid(n) }
+}
+
 /// How well a tab matches: lower is better, None if it doesn't. The query's
 /// words must all appear (in any case) in the title or address; a word at
 /// the start of the title beats one inside it, and the title beats the address.
@@ -243,5 +252,14 @@ mod tests {
         assert_eq!(rank("pulls", "Issues", "https://github.com/pulls"), Some(3));
         assert_eq!(rank("RUST book", "Rust Book", ""), Some(1), "words in any case, all must match");
         assert_eq!(rank("rust python", "Rust Book", "https://rust.example/"), None);
+    }
+
+    #[test]
+    fn tab_goes_round_the_list() {
+        assert_eq!(cycle(0, 1, 3), 1);
+        assert_eq!(cycle(2, 1, 3), 0, "past the last, back to the first");
+        assert_eq!(cycle(0, -1, 3), 2, "⇧Tab before the first, to the last");
+        assert_eq!(cycle(-1, 1, 3), 1, "nothing selected counts as the first");
+        assert_eq!(cycle(0, 1, 0), 0, "no rows");
     }
 }

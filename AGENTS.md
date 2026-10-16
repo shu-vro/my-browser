@@ -38,13 +38,14 @@ no devtools; extensions yes. Full vision and rules:
 
 ```sh
 cargo build --release                  # always test release builds
-cargo test --release                   # 132 tests, ~15 s, opens windows (needs GUI session)
+cargo test --release                   # 133 tests, ~15 s, opens windows (needs GUI session)
 git config core.hooksPath .githooks    # once per clone: fmt, clippy, tests before every commit
 ./target/release/bench --runs 1        # ~2 min quick benchmark (floating window)
 ./target/release/bench --only startup  # ~20 s: idle CPU, wakeups, footprint only
 ./target/release/bench                 # ~4 min, compare against benchmark/bars.tsv
 BENCH_VERBOSE=1 ./target/release/bench # per-process footprint at every measurement
 MYB_TUNE=jit=0,pagecache=1 ./target/release/bench --runs 2   # engine experiment
+./scripts/coverage.sh --open           # test coverage report (needs cargo-llvm-cov)
 ./scripts/bundle.sh                    # signed .app (UNIVERSAL=1 for both CPUs)
 ./scripts/dmg.sh                       # DMG from the .app; releases: push to `release`
 python3 scripts/update-trackers.py     # regenerate tracker rules (network)

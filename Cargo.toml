@@ -1,6 +1,6 @@
 [package]
 name = "my-browser"
-version = "0.2.2"
+version = "0.5.0"
 edition = "2024"
 default-run = "my-browser"
 

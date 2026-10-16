@@ -115,6 +115,11 @@ impl Suggest {
             ),
             true,
         );
+        // A column doesn't follow its scroll view's width: without this it
+        // stays 100 points wide and cuts every row short.
+        if let Some(column) = table.tableColumns().firstObject() {
+            column.setWidth(below.size.width - 6.0);
+        }
         if !panel.isVisible() {
             unsafe { window.addChildWindow_ordered(&panel, NSWindowOrderingMode::Above) };
         }

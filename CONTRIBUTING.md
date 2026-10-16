@@ -143,9 +143,11 @@ Push to the `release` branch (`git push origin main:release`).
 [.github/workflows/release.yml](.github/workflows/release.yml) runs the tests,
 builds a universal app (`UNIVERSAL=1 scripts/bundle.sh`), packs it with
 `scripts/dmg.sh` and publishes a GitHub release with the DMG, its SHA-256 and
-the debug symbols (`.dSYM`, for crash reports). Versions are
-`<major.minor from Cargo.toml>.<patch>`, the patch counting up with each
-release: bump the minor in Cargo.toml to start a new series.
+the debug symbols (`.dSYM`, for crash reports). The release is
+`package.version` from Cargo.toml (tag `v<version>`): bump it before pushing.
+If that version is already released, the workflow stops without building.
+The release notes list every commit since the previous release: its
+subject, description and author, so write commit bodies for users too.
 
 Builds are signed ad hoc, not notarized (that needs a paid Apple Developer
 account), so macOS blocks the first launch until the user chooses **Open

@@ -226,7 +226,7 @@ active tab with a search field over a cell-based `NSTableView` of the tabs of
 the same kind (private windows only find private tabs), most recently used
 first. Every word of the query must appear in the title or address
 (`tabsearch::rank`: title start, title, address start, address). ↑/↓ move,
-Return or double-click switches, Esc cancels. Built when asked for; the
+Tab/⇧Tab go round the list (`tabsearch::cycle`), Return or double-click switches, Esc cancels. Built when asked for; the
 sheet's handler holds it and it's freed when the sheet closes. Bench:
 `tabsearch <query>` → `TABSEARCH <title>|…`, answered with `dialog ok|cancel`.
 Test: `search_tabs_finds_and_switches_to_a_tab`.

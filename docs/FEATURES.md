@@ -64,7 +64,7 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Mute a tab** (Window → Mute Tab, or click the speaker in the tab); tabs
   playing sound show a speaker.
 - **Search Tabs** (⇧⌘A): type part of a title or address, Return switches;
-  most recently used first.
+  most recently used first. ↑/↓ or Tab/⇧Tab (going round) choose a tab.
 - Switch tabs with ⌘1–⌘9, ⌃Tab / ⌃⇧Tab, ⇧⌘[ / ⇧⌘].
 - **Session restore**: every window and tab, in order, with the same tab
   selected.
