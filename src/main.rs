@@ -19,6 +19,7 @@ mod passwords;
 mod privacy;
 mod store;
 mod tab;
+mod usage;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
@@ -799,6 +800,8 @@ impl App {
         for (n, ok) in privacy::harden_webpage_preferences(&*unsafe { WKWebpagePreferences::new(mtm) }, true) {
             report.push(line(n, true, ok));
         }
+        // Settings → Tabs and the heavy-tab badge read each page's process.
+        report.push(line("web_process_id", true, WKWebView::class().responds_to(sel!(_webProcessIdentifier))));
         // The address bar shows the committed address (anti-spoofing).
         report.push(line("committed_url", true, WKWebView::class().responds_to(sel!(_committedURL))));
         // Extensions' background pages can play audio (see `host_extension_audio`).
@@ -1519,12 +1522,68 @@ impl App {
         }
     }
 
+    fn check_heavy_tabs(&self) {
+        for tab in self.ivars().tabs.borrow().clone() {
+            tab.check_heavy();
+        }
+    }
+
+    /// Settings → Tabs: every tab with its page process's memory and CPU,
+    /// the browser's own process, and WebKit's other helpers (network,
+    /// graphics). Private tabs are listed without their address or title.
+    pub fn tabs_json(&self) -> String {
+        let tabs = self.ivars().tabs.borrow().clone();
+        let pids: Vec<Option<i32>> = tabs.iter().map(|t| t.pid()).collect();
+        let row = |u: Option<usage::Usage>| {
+            let u = u.unwrap_or_default();
+            format!("\"footprint\":{},\"cpu_ms\":{},\"wakeups\":{}", u.footprint, u.cpu_ns / 1_000_000, u.wakeups)
+        };
+        let items: Vec<String> = tabs
+            .iter()
+            .zip(&pids)
+            .map(|(t, pid)| {
+                let (url, title) = if t.is_private() { (String::new(), "Private tab".to_string()) } else { (t.url(), t.title()) };
+                let shared = pid.is_some() && pids.iter().filter(|p| *p == pid).count() > 1;
+                format!(
+                    "{{\"id\":{},\"url\":{},\"title\":{},\"active\":{},\"asleep\":{},\"private\":{},\"shared\":{shared},\"heavy\":{},\"pid\":{},{}}}",
+                    Retained::as_ptr(t) as usize,
+                    store::json_str(&url),
+                    store::json_str(&title),
+                    self.is_active(t),
+                    t.is_asleep(),
+                    t.is_private(),
+                    store::json_str(&t.heavy().unwrap_or_default()),
+                    pid.unwrap_or(0),
+                    row(pid.and_then(usage::of))
+                )
+            })
+            .collect();
+        let helpers = usage::webkit_helpers().into_iter().filter(|p| !pids.contains(&Some(*p))).filter_map(usage::of);
+        let others = helpers.fold(usage::Usage::default(), |a, u| usage::Usage {
+            footprint: a.footprint + u.footprint,
+            cpu_ns: a.cpu_ns + u.cpu_ns,
+            wakeups: a.wakeups + u.wakeups,
+        });
+        format!(
+            "{{\"shell\":{{{}}},\"helpers\":{{{}}},\"tabs\":[{}]}}",
+            row(usage::of(std::process::id() as i32)),
+            row(Some(others)),
+            items.join(",")
+        )
+    }
+
+    /// A tab by the id `tabs_json` gave it.
+    pub fn tab_by_id(&self, id: usize) -> Option<Retained<Tab>> {
+        self.ivars().tabs.borrow().iter().find(|t| Retained::as_ptr(t) as usize == id).cloned()
+    }
+
     fn start_timer(&self) {
         let ptr = self as *const Self;
         let block = RcBlock::new(move |_t: std::ptr::NonNull<NSTimer>| {
             // The app delegate lives until the process exits.
             let app = unsafe { &*ptr };
             app.sleep_background_tabs(memory_pressure());
+            app.check_heavy_tabs();
             app.save_session();
         });
         let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(30.0, true, &block) };
@@ -1763,6 +1822,13 @@ impl App {
             ("sleep", _) => {
                 self.sleep_background_tabs(true);
                 say!("{}", self.tabs_line());
+            }
+            // Run the heavy-tab check now: `HEAVY <0|1> …` per tab, in tab-bar order.
+            ("heavy", _) => {
+                self.check_heavy_tabs();
+                let flags: Vec<String> =
+                    self.ordered_tabs().iter().map(|t| (t.heavy().is_some() as u8).to_string()).collect();
+                say!("HEAVY {}", flags.join(" "));
             }
             ("key", _) => say!("KEY {}", if self.press(arg) { "ok" } else { "none" }),
             ("find", Some(t)) => {

@@ -123,6 +123,10 @@ pub struct TabIvars {
     home: RefCell<Option<Retained<NSView>>>,
     /// What it shows, for the bench `home` command.
     home_state: RefCell<String>,
+    /// The page process's usage at the last heavy-tab check, and when.
+    sampled: Cell<Option<(crate::usage::Usage, Instant)>>,
+    /// Why this background tab is heavy (badge in its tab), if it is.
+    heavy: RefCell<Option<String>>,
 }
 
 /// The saved-passwords menu: (site, frame of the login form, usernames).
@@ -846,6 +850,63 @@ impl Tab {
 
     pub fn title(&self) -> String {
         self.ivars().title.borrow().clone()
+    }
+
+    /// The page's process, while awake (private `_webProcessIdentifier`).
+    pub fn pid(&self) -> Option<i32> {
+        let web = self.web()?;
+        let known: bool = unsafe { msg_send![&*web, respondsToSelector: sel!(_webProcessIdentifier)] };
+        let pid: i32 = if known { unsafe { msg_send![&*web, _webProcessIdentifier] } } else { 0 };
+        (pid > 0).then_some(pid)
+    }
+
+    /// Mark the tab heavy if it's in the background using a lot of memory or
+    /// CPU (sampled on the sleep timer's tick); clear it otherwise.
+    pub fn check_heavy(&self) {
+        let usage = self.pid().filter(|_| !self.app().is_active(self)).and_then(crate::usage::of);
+        let before = self.ivars().sampled.replace(usage.map(|u| (u, Instant::now())));
+        let heavy = usage.and_then(|u| crate::usage::heavy(u, before.map(|(b, at)| (b, at.elapsed().as_secs_f64()))));
+        if *self.ivars().heavy.borrow() != heavy {
+            self.ivars().heavy.replace(heavy);
+            self.refresh_badges();
+        }
+    }
+
+    pub fn heavy(&self) -> Option<String> {
+        self.ivars().heavy.borrow().clone()
+    }
+
+    /// Small icons in the tab itself (its `NSWindowTab` accessory view): a
+    /// heavy background tab, with the reason as its tooltip.
+    fn refresh_badges(&self) {
+        let mut badges: Vec<(&str, String)> = Vec::new();
+        if let Some(why) = self.heavy() {
+            badges.push((
+                "gauge.with.dots.needle.67percent",
+                format!("{why}. It sleeps when left alone; see Settings → Tabs."),
+            ));
+        }
+        let tab = self.window().tab();
+        if badges.is_empty() {
+            tab.setAccessoryView(None);
+            tab.setToolTip(None);
+            return;
+        }
+        let mtm = self.mtm();
+        let views: Vec<Retained<NSView>> = badges
+            .iter()
+            .map(|(symbol, label)| {
+                let image = objc2_app_kit::NSImageView::imageViewWithImage(&symbol_image(symbol, label), mtm);
+                image.setToolTip(Some(&NSString::from_str(label)));
+                image.setContentTintColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+                Retained::into_super(image).into_super()
+            })
+            .collect();
+        let stack = objc2_app_kit::NSStackView::stackViewWithViews(&NSArray::from_retained_slice(&views), mtm);
+        stack.setSpacing(2.0);
+        tab.setAccessoryView(Some(&stack));
+        let tips: Vec<&str> = badges.iter().map(|(_, l)| l.as_str()).collect();
+        tab.setToolTip(Some(&NSString::from_str(&tips.join("\n"))));
     }
 
     fn build_window(&self, mtm: MainThreadMarker) {

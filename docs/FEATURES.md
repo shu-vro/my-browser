@@ -10,6 +10,11 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Sleeping tabs**: a background tab unloads its page and process after a
   few minutes (setting, default 5), or at once when macOS runs low on memory.
   Clicking it reloads it.
+- **Settings → Tabs**: memory and CPU of every tab's page process, the
+  browser itself and WebKit's network and graphics helpers, refreshed every
+  2 s; sleep or close any tab from there.
+- **Heavy tab badge**: a background tab using 500 MB or more, or 10% CPU or
+  more, gets a gauge icon in its tab, with the reason as its tooltip.
 - **Battery aware**: in Low Power Mode, or when the Mac runs hot, background
   tabs sleep after one minute.
 - **Restored sessions open asleep**: only the selected tab loads, so 50
@@ -130,7 +135,7 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 
 ## Settings and app
 
-- **Settings** at `mybrowser://settings` (⌘,): General, Privacy, Site
+- **Settings** at `mybrowser://settings` (⌘,): General, Tabs, Privacy, Site
   settings, Network, History, Downloads, Bookmarks, Passwords, Import,
   Extensions, Storage, Shortcuts, About.
 - **New tab page**: banner, search bar and most visited sites, each can be

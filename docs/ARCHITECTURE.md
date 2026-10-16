@@ -163,6 +163,22 @@ A tab has two states:
   drops to one minute (`sleep_after`; 0 still means never). The same tick
   saves the session.
 
+**What tabs cost** (`src/usage.rs`): each awake tab's page process id
+comes from the private `_webProcessIdentifier` (`TUNE web_process_id`), and
+its memory (`phys_footprint`, Activity Monitor's "Memory"), CPU time and
+wakeups from `proc_pid_rusage`. WebKit's other helpers are found the way the
+benchmark finds them (started after us, named `com.apple.WebKit…`, charged to
+us by `responsibility_get_pid_responsible_for_pid`). Settings → Tabs
+(`tabs.list`, `tabs.show`, `tabs.sleep`, `tabs.close`; ids are the tab's
+pointer, checked against the open tabs) polls every 2 s while shown and
+computes CPU % from the difference; private tabs are listed without address
+or title. On the 30 s tick, `Tab::check_heavy` samples each awake background
+tab: 500 MB or more, or 10% CPU or more since the previous tick
+(`usage::heavy`), puts a gauge icon in the tab (`NSWindowTab.accessoryView`)
+with the reason as tooltip. Bench: `heavy` runs the check now and prints
+`HEAVY <0|1> …` in tab-bar order. Test:
+`tabs_list_their_memory_and_busy_background_tabs_are_marked_heavy`.
+
 **The active tab** is tracked explicitly (`App.active`), not taken from
 "key window". Menu actions go to the app delegate, which forwards them to the
 active tab. This keeps shortcuts working when the app isn't frontmost; it also
@@ -792,6 +808,7 @@ active tab.
 | `newtab [url]` | `LOADED …` if a URL is given, else a `TABS` line |
 | `switch <i>` | `LOADED …` if the tab was asleep (it wakes), else a `TABS` line |
 | `tabs` / `sleep` | `TABS count=<n> active=<i> asleep=<k> windows=<w>` (`sleep` first puts background tabs to sleep) |
+| `heavy` | `HEAVY <0|1> …`: runs the heavy-tab check now, one flag per tab in tab-bar order |
 | `state` | `STATE back=<0\|1> forward=<0\|1> url=<address bar> title=<window title>`, read from the real UI |
 | `visible` | `VISIBLE <0\|1>` |
 | `key <combo>` | `KEY ok\|none` (whether a menu item took it) |

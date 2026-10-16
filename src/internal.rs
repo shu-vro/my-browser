@@ -175,6 +175,18 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
                 .collect();
             Ok(format!("[{}]", items.join(",")))
         }
+        // Settings → Tabs.
+        "tabs.list" => Ok(app.tabs_json()),
+        "tabs.show" | "tabs.sleep" | "tabs.close" => {
+            let tab = args.get(1).and_then(|s| s.parse().ok()).and_then(|id| app.tab_by_id(id));
+            let Some(tab) = tab else { return reply(Err("no such tab".into())) };
+            match op {
+                "tabs.show" => app.select(&tab),
+                "tabs.sleep" => tab.sleep(),
+                _ => tab.window().performClose(None),
+            }
+            ok()
+        }
         "history.delete" => id_arg(&args, 1).map(|id| {
             store.delete_visit(id);
             "true".into()

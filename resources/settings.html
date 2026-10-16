@@ -60,6 +60,7 @@
 <body>
 <nav>
   <a href="#general">General</a>
+  <a href="#tabs">Tabs</a>
   <a href="#privacy">Privacy</a>
   <a href="#permissions">Site settings</a>
   <a href="#bookmarks">Bookmarks</a>
@@ -104,6 +105,14 @@
     <div class="row"><div><div>Fast JavaScript (JIT)</div><div class="hint">Off saves a lot of memory on heavy sites but makes JavaScript about 2–3× slower. Takes effect after restarting the browser.</div></div>
       <input type="checkbox" data-setting="jit"></div>
     <p class="note" id="profile"></p>
+  </section>
+
+  <section id="tabs">
+    <h1>Tabs</h1>
+    <p class="note">What each tab costs right now, as macOS counts it (the "Memory" column in Activity Monitor). A sleeping tab uses no memory and reloads when you click it. Tabs from the same site may share one page process.</p>
+    <div class="row"><div><div id="tabs-total">Browser</div><div class="hint" id="tabs-parts"></div></div>
+      <button id="tabs-sleep-all">Sleep background tabs</button></div>
+    <ul class="list" id="tabs-list"></ul>
   </section>
 
   <section id="privacy">
@@ -271,6 +280,48 @@ $("make-default").onclick = () => call("default.set").then(loadDefault, e => { f
 loaders.general = () => { loadSettings(); loadDefault(); };
 loaders.privacy = loadSettings;
 $("clear-data").onclick = () => { if (confirm("Sign out of all sites and delete all cookies, caches and site data?")) call("data.clear").then(() => toast("Cleared"), fail); };
+
+// ---- tabs: memory and CPU per tab, refreshed every 2 s while shown
+let tabsPrev = null;
+async function loadTabs() {
+  const t = await call("tabs.list"), now = performance.now();
+  const prev = tabsPrev, cpu = {};
+  tabsPrev = { at: now, cpu };
+  // CPU since the last refresh, from each process's total CPU time.
+  const rate = (key, ms) => { cpu[key] = ms; if (!prev || prev.cpu[key] == null) return null; return Math.max(0, (ms - prev.cpu[key]) / (now - prev.at) * 100); };
+  const pctText = p => p == null ? "" : (p < 10 ? p.toFixed(1) : p.toFixed(0)) + "% CPU";
+  const seen = new Set(); let pages = 0;
+  for (const x of t.tabs) if (x.pid && !seen.has(x.pid)) { seen.add(x.pid); pages += x.footprint; }
+  $("tabs-total").textContent = "Browser: " + size(t.shell.footprint + t.helpers.footprint + pages);
+  const shellCpu = pctText(rate("shell", t.shell.cpu_ms)), helperCpu = pctText(rate("helpers", t.helpers.cpu_ms));
+  $("tabs-parts").textContent = "Window and tabs " + size(t.shell.footprint) + (shellCpu ? " (" + shellCpu + ")" : "") +
+    " · pages " + size(pages) + " · network and graphics " + size(t.helpers.footprint) + (helperCpu ? " (" + helperCpu + ")" : "");
+  const list = $("tabs-list"); list.replaceChildren();
+  const rows = [...t.tabs].sort((a, b) => b.footprint - a.footprint || a.asleep - b.asleep);
+  for (const x of rows) {
+    const li = el("li"); const main = el("div", "main");
+    const link = el("a", "title", x.title || x.url || "New Tab"); link.href = "#";
+    link.onclick = e => { e.preventDefault(); call("tabs.show", x.id).catch(fail); };
+    main.append(link, el("div", "sub", x.heavy || x.url));
+    li.append(main);
+    if (x.active) li.append(el("span", "tag", "showing"));
+    if (x.heavy) li.append(el("span", "tag", "heavy"));
+    const p = x.pid ? rate("p" + x.pid, x.cpu_ms) : null;
+    li.append(el("span", "time", x.asleep ? "asleep" : x.pid ? size(x.footprint) + (x.shared ? " shared" : "") + (p == null ? "" : " · " + pctText(p)) : "no page"));
+    const sleep = el("button", null, "Sleep"); sleep.disabled = x.asleep || x.active || !x.pid;
+    sleep.onclick = () => call("tabs.sleep", x.id).then(loadTabs, fail);
+    const close = el("button", null, "Close"); close.onclick = () => call("tabs.close", x.id).then(loadTabs, fail);
+    li.append(sleep, close); list.append(li);
+  }
+  clearTimeout(loadTabs.t);
+  if (location.hash === "#tabs") loadTabs.t = setTimeout(loadTabs, 2000);
+}
+$("tabs-sleep-all").onclick = async () => {
+  const t = await call("tabs.list");
+  await Promise.all(t.tabs.filter(x => !x.active && !x.asleep && x.pid).map(x => call("tabs.sleep", x.id))).catch(fail);
+  loadTabs();
+};
+loaders.tabs = () => { tabsPrev = null; loadTabs(); };
 
 // ---- site permissions
 const PERM_LABELS = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", downloads: "Multiple downloads", passwords: "Save passwords" };

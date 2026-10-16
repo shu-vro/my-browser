@@ -466,6 +466,7 @@ fn engine_and_privacy_settings_are_applied() {
         "third_party_cookies_blocked",
         "tracking_prevention",
         "trackers",
+        "web_process_id",
     ];
     want.sort();
     assert_eq!(names, want);
@@ -574,6 +575,31 @@ fn background_tabs_sleep_and_wake() {
     assert!(b.state_until(|s| s.contains("title=first")).contains("title=first"));
     // And now the other one can sleep.
     assert!(b.send("sleep").contains("asleep=1"));
+}
+
+#[test]
+fn tabs_list_their_memory_and_busy_background_tabs_are_marked_heavy() {
+    let base = serve();
+    let mut b = launch();
+    // Spins forever once loaded: 100% CPU in the background.
+    let spin = "addEventListener('load', () => setTimeout(() => { for (;;); }, 50))";
+    b.nav(&format!("go {base}/script/{}", encode(spin)));
+    b.nav(&format!("newtab {base}/page/calm"));
+    assert_eq!(b.send("heavy"), "HEAVY 0 0", "no CPU history yet");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(b.send("heavy"), "HEAVY 1 0", "the spinning background tab is heavy, the active one never");
+    let json = b.bridge(&["tabs.list"]);
+    assert!(json.starts_with(r#"{"shell":{"footprint":"#), "{json}");
+    assert!(json.contains(r#""heavy":"Uses "#) && json.contains(r#"% CPU in the background""#), "{json}");
+    assert!(json.contains(r#""title":"calm","active":true,"asleep":false"#), "{json}");
+    // Sleep the heavy one from the list: its process goes, and so does the badge.
+    let id = json.split(r#"{"id":"#).nth(1).unwrap().split(',').next().unwrap().to_string();
+    assert_eq!(b.bridge(&["tabs.sleep", &id]), "true");
+    assert!(b.tabs().contains("asleep=1"));
+    assert_eq!(b.send("heavy"), "HEAVY 0 0");
+    assert_eq!(b.bridge(&["tabs.close", &id]), "true");
+    assert!(b.tabs().starts_with("TABS count=1"));
+    assert!(b.send("bridge tabs.show\t1").starts_with("BRIDGE err no such tab"));
 }
 
 // ---------------------------------------------------------------------------
