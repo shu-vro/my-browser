@@ -831,6 +831,22 @@ prints `PREVIEW <path>` instead, since the panel would take focus.
   - packed `.zip`/`.appex` install,
   - extensions in throwaway (private) profiles.
 
+### Updating Web Store extensions
+
+An extension added from the Chrome Web Store keeps its store id
+(`extensions.webstore`, added in 0.3). Its **Update** button
+(`ext.update <id>`) asks WebKit to download Google's package for that id
+(`startDownloadUsingRequest:` on any awake web view of the profile, so the
+page stays put; the download goes through WebKit, like the first install),
+expects it as a package (`expected_package`), and `App::finish_update`
+unpacks it: the CRX3 signature must prove the same id, or it's refused. If
+the new version asks for permissions or sites it didn't have, it asks first.
+Then the files replace the installed copy (`internal::recopy`) and the
+extension reloads; its storage stays, since its context id is the row id.
+There's no automatic checking: an update happens when you press the button.
+Bench mode may pass the package address and id (`ext.update <id> <url>
+<store id>`). Test: `web_store_extensions_update_in_place`.
+
 ## Network gate (`src/netgate.rs`)
 
 The only code that opens a connection. It exists because some extension

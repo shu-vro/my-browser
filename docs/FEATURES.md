@@ -146,7 +146,10 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   everywhere.
 - Toolbar buttons and popups; install and runtime permission requests ask
   first.
-- Enable, disable, remove, and **Reload** for unpacked folders.
+- Enable, disable, remove, **Reload** for unpacked folders, and **Update**
+  for Web Store extensions (the new package must be signed as the same
+  extension; new permissions are asked for; its data stays). No background
+  update checks.
 - `chrome.offscreen` stand-in so extensions like Edge Read Aloud can play
   audio.
 

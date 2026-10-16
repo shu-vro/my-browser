@@ -583,6 +583,11 @@ async function loadExtensions() {
     toggle.onchange = () => call("ext.toggle", x.id, toggle.checked ? "1" : "0").then(loadExtensions, e => { fail(e); loadExtensions(); });
     const rm = el("button", "danger", "Remove"); rm.onclick = () => { if (confirm("Remove " + (x.name || "this extension") + "?")) call("ext.remove", x.id).then(loadExtensions, fail); };
     li.append(main, access, toggle);
+    if (x.webstore && x.enabled) {
+      const up = el("button", null, "Update"); up.title = "Download its latest version from the Chrome Web Store";
+      up.onclick = () => { up.disabled = true; up.textContent = "Updating…"; call("ext.update", x.id).then(r => { toast("Updated " + r.name + (r.version ? " to " + r.version : "")); loadExtensions(); }, e => { if (String(e.message || e) !== "cancelled") fail(e); loadExtensions(); }); };
+      li.append(up);
+    }
     if (x.local && x.enabled) {
       const rl = el("button", null, "Reload"); rl.title = "Read the folder again after changing its files";
       rl.onclick = () => call("ext.reload", x.id).then(n => { toast("Reloaded " + n); loadExtensions(); }, e => { fail(e); loadExtensions(); });

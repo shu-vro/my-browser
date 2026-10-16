@@ -121,6 +121,8 @@ pub struct AppIvars {
     preview: RefCell<Option<Retained<NSURL>>>,
     /// The Web Store extension whose package the user asked to add.
     expected_package: RefCell<Option<String>>,
+    /// The installed extension that package updates, and who to tell.
+    pending_update: RefCell<Option<(i64, internal::Reply)>>,
 }
 
 define_class!(
@@ -1738,8 +1740,13 @@ impl App {
             say!("DOWNLOAD {status} {path}");
         }
         let package = Path::new(&path).starts_with(extensions::unpack_root()) && path.ends_with(".crx");
-        if package && self.ivars().expected_package.take().is_some() && status == "done" {
-            self.install_package(PathBuf::from(&path));
+        let expected = if package { self.ivars().expected_package.take() } else { None };
+        let update = expected.as_ref().and_then(|_| self.ivars().pending_update.take());
+        match (expected, update) {
+            (Some(_), Some((row, reply))) if status == "done" => self.finish_update(row, PathBuf::from(&path), reply),
+            (Some(_), Some((_, reply))) => reply(Err(format!("The download {status}."))),
+            (Some(webstore), None) if status == "done" => self.install_package(PathBuf::from(&path), webstore),
+            _ => {}
         }
     }
 
@@ -1751,7 +1758,7 @@ impl App {
 
     /// Install a downloaded package, after the usual prompt. Problems show on
     /// the active tab.
-    fn install_package(&self, file: PathBuf) {
+    fn install_package(&self, file: PathBuf, webstore: String) {
         let this = self.retain();
         let f = file.clone();
         internal::install_extension(
@@ -1759,6 +1766,12 @@ impl App {
             file,
             Box::new(move |result| {
                 let _ = std::fs::remove_file(&f);
+                // Remember where it came from, for Update.
+                let row =
+                    result.as_ref().ok().and_then(|j| j.strip_prefix("{\"id\":")?.split(',').next()?.parse().ok());
+                if let Some(row) = row {
+                    this.store().set_extension_webstore(row, &webstore);
+                }
                 match result {
                     Ok(json) if this.is_bench() => say!("INSTALLED {json}"),
                     Err(e) if e != "cancelled" => {

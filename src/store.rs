@@ -91,6 +91,8 @@ pub struct Extension {
     pub access: String,
     /// The user's folder it was copied from ("" for packages): Reload copies it again.
     pub source: String,
+    /// Its Chrome Web Store id if it came from there ("" otherwise): Update downloads it again.
+    pub webstore: String,
 }
 
 /// Per-site permissions and the values each may hold. A missing row means the
@@ -163,6 +165,10 @@ impl Store {
         // Added in 0.2: which window each restored tab goes back to.
         if db.prepare("SELECT win FROM session LIMIT 0").is_err() {
             db.execute_batch("ALTER TABLE session ADD COLUMN win INTEGER NOT NULL DEFAULT 0")?;
+        }
+        // Added in 0.3: the Chrome Web Store id of extensions added from there, for updates.
+        if db.prepare("SELECT webstore FROM extensions LIMIT 0").is_err() {
+            db.execute_batch("ALTER TABLE extensions ADD COLUMN webstore TEXT NOT NULL DEFAULT ''")?;
         }
         // Added in 0.3: pinned tabs.
         if db.prepare("SELECT pinned FROM session LIMIT 0").is_err() {
@@ -413,7 +419,8 @@ impl Store {
     }
 
     pub fn extensions(&self) -> Vec<Extension> {
-        let Ok(mut stmt) = self.db.prepare("SELECT id, path, enabled, access, source FROM extensions ORDER BY id")
+        let Ok(mut stmt) =
+            self.db.prepare("SELECT id, path, enabled, access, source, webstore FROM extensions ORDER BY id")
         else {
             return Vec::new();
         };
@@ -424,10 +431,15 @@ impl Store {
                 enabled: r.get::<_, i64>(2)? == 1,
                 access: r.get(3)?,
                 source: r.get(4)?,
+                webstore: r.get(5)?,
             })
         })
         .map(|rows| rows.filter_map(Result::ok).collect())
         .unwrap_or_default()
+    }
+
+    pub fn set_extension_webstore(&self, id: i64, webstore: &str) {
+        let _ = self.db.execute("UPDATE extensions SET webstore = ?2 WHERE id = ?1", params![id, webstore]);
     }
 
     pub fn set_extension_enabled(&self, id: i64, enabled: bool) {

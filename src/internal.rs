@@ -362,6 +362,16 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             }
             return app.reload_extension(ext.id, &ext.path, Box::new(move |r| reply(r.map(|name| json_str(&name)))));
         }
+        // A Web Store extension: download its latest package and put it in
+        // place. (Bench mode may pass the package's address and id: tests
+        // can't reach the Web Store.)
+        "ext.update" => match id_arg(&args, 1) {
+            Ok(id) => {
+                let test = app.is_bench().then(|| (args.get(2).cloned(), args.get(3).cloned()));
+                return app.update_extension(id, test.and_then(|(u, w)| u.zip(w)), reply);
+            }
+            Err(e) => Err(e),
+        },
         "ext.access" => id_arg(&args, 1)
             .and_then(|id| app.set_extension_access(id, args.get(2).map_or("", |s| s)).map(|()| "true".to_string())),
         "ext.remove" => id_arg(&args, 1).map(|id| {
@@ -554,8 +564,9 @@ fn extensions_json(app: &App) -> String {
             errors.dedup();
             let local = !e.source.is_empty() || !extensions_dir(app).is_some_and(|d| Path::new(&e.path).starts_with(d));
             format!(
-                "{{\"id\":{},\"local\":{},\"path\":{},\"enabled\":{},\"read\":{},\"running\":{},\"access\":{},\"name\":{},\"version\":{},\"description\":{},\"permissions\":[{}],\"errors\":[{}]}}",
+                "{{\"id\":{},\"webstore\":{},\"local\":{},\"path\":{},\"enabled\":{},\"read\":{},\"running\":{},\"access\":{},\"name\":{},\"version\":{},\"description\":{},\"permissions\":[{}],\"errors\":[{}]}}",
                 e.id,
+                !e.webstore.is_empty(),
                 local,
                 json_str(&e.path),
                 e.enabled,
@@ -695,7 +706,7 @@ fn copy_and_register(app: &App, source: PathBuf, reply: Reply) {
 }
 
 /// Delete a package's temporary unpacked copy (anything else is left alone).
-fn drop_unpacked(path: &Path) {
+pub fn drop_unpacked(path: &Path) {
     let root = crate::extensions::unpack_root();
     if let Ok(rest) = path.strip_prefix(&root)
         && let Some(first) = rest.components().next()
@@ -706,7 +717,7 @@ fn drop_unpacked(path: &Path) {
 
 /// Replace the profile's copy `to` with a fresh copy of `from`. The old copy
 /// stays until the new one is complete.
-fn recopy(from: &Path, to: &Path) -> std::io::Result<()> {
+pub fn recopy(from: &Path, to: &Path) -> std::io::Result<()> {
     if !from.join("manifest.json").is_file() {
         return Err(std::io::Error::other(format!("{} has no manifest.json", from.display())));
     }

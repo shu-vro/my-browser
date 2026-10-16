@@ -166,6 +166,113 @@ impl App {
         );
     }
 
+    /// Update a Web Store extension: download its latest package (through
+    /// WebKit, like any download, without leaving the page), check it is
+    /// signed as the same extension, ask again if it wants more than it had,
+    /// then replace its files and reload it. Its storage stays: it is keyed
+    /// by the row id. `test` = (package address, Web Store id), bench only.
+    pub fn update_extension(&self, id: i64, test: Option<(String, String)>, reply: crate::internal::Reply) {
+        let Some(ext) = self.store().extensions().into_iter().find(|e| e.id == id) else {
+            return reply(Err("no such extension".into()));
+        };
+        let (url, webstore) = match test {
+            Some((url, webstore)) => (url, webstore),
+            None if !ext.webstore.is_empty() => (webstore_package_url(&ext.webstore), ext.webstore.clone()),
+            None => return reply(Err("Only extensions added from the Chrome Web Store can be updated here.".into())),
+        };
+        let Some(nsurl) = NSURL::URLWithString(&NSString::from_str(&url)) else {
+            return reply(Err("bad address".into()));
+        };
+        // Any web view of the profile can start it; a new one if none is awake.
+        let web = self.all_tabs().iter().filter(|t| !t.is_private()).find_map(|t| t.web());
+        let web = web.unwrap_or_else(|| unsafe {
+            objc2_web_kit::WKWebView::initWithFrame_configuration(
+                objc2_web_kit::WKWebView::alloc(self.mtm()),
+                objc2_foundation::NSRect::ZERO,
+                &self.make_config(false),
+            )
+        });
+        self.expect_package(&webstore);
+        self.ivars().pending_update.replace(Some((id, reply)));
+        let this = self.retain();
+        let keep = web.clone();
+        let started = RcBlock::new(move |download: std::ptr::NonNull<objc2_web_kit::WKDownload>| {
+            let _ = &keep;
+            this.start_download(unsafe { download.as_ref() });
+        });
+        unsafe {
+            web.startDownloadUsingRequest_completionHandler(
+                &objc2_foundation::NSURLRequest::requestWithURL(&nsurl),
+                &started,
+            )
+        };
+    }
+
+    /// The update's package arrived: unpack it (its signature must match
+    /// the id it was asked for), then swap the files in.
+    pub fn finish_update(&self, id: i64, file: std::path::PathBuf, reply: crate::internal::Reply) {
+        let unpacked = unpack(&file);
+        let _ = std::fs::remove_file(&file);
+        let (dir, ext) = match (unpacked, self.store().extensions().into_iter().find(|e| e.id == id)) {
+            (Ok(dir), Some(ext)) => (dir, ext),
+            (Err(e), _) => return reply(Err(e)),
+            (Ok(dir), None) => {
+                crate::internal::drop_unpacked(&dir);
+                return reply(Err("no such extension".into()));
+            }
+        };
+        let had: Vec<String> = self.extension_meta(id).map_or_else(Vec::new, |m| permissions(&m));
+        let this = self.retain();
+        let path = dir.to_string_lossy().into_owned();
+        read_extension(
+            self.mtm(),
+            &path,
+            Box::new(move |result| {
+                let new = match result {
+                    Ok(new) => new,
+                    Err(e) => {
+                        crate::internal::drop_unpacked(&dir);
+                        return reply(Err(e));
+                    }
+                };
+                let more: Vec<String> = permissions(&new).into_iter().filter(|p| !had.contains(p)).collect();
+                if !more.is_empty() && !this.is_bench() {
+                    let alert = objc2_app_kit::NSAlert::new(this.mtm());
+                    alert.setMessageText(&NSString::from_str(&format!("Update “{}”?", extension_name(&new))));
+                    alert.setInformativeText(&NSString::from_str(&format!(
+                        "The new version also asks for: {}.",
+                        more.join(", ")
+                    )));
+                    alert.addButtonWithTitle(&NSString::from_str("Update"));
+                    alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+                    if alert.runModal() != 1000 {
+                        crate::internal::drop_unpacked(&dir);
+                        return reply(Err("cancelled".into()));
+                    }
+                }
+                let version = unsafe { new.displayVersion() }.map(|v| v.to_string()).unwrap_or_default();
+                let copied = crate::internal::recopy(&dir, Path::new(&ext.path));
+                crate::internal::drop_unpacked(&dir);
+                if let Err(e) = copied {
+                    return reply(Err(format!("Couldn't copy the update: {e}")));
+                }
+                this.reload_extension(
+                    id,
+                    &ext.path,
+                    Box::new(move |r| {
+                        reply(r.map(|name| {
+                            format!(
+                                "{{\"name\":{},\"version\":{}}}",
+                                crate::store::json_str(&name),
+                                crate::store::json_str(&version)
+                            )
+                        }))
+                    }),
+                );
+            }),
+        );
+    }
+
     /// Switch between `click` and `always`. A running extension restarts
     /// under the new access.
     pub fn set_extension_access(&self, id: i64, access: &str) -> Result<(), String> {
@@ -558,6 +665,13 @@ pub fn webstore_package_url(id: &str) -> String {
     format!(
         "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=140.0&acceptformat=crx3&x=id%3D{id}%26uc"
     )
+}
+
+/// Everything an extension asks for: API permissions and sites.
+fn permissions(ext: &WKWebExtension) -> Vec<String> {
+    let mut p: Vec<String> = unsafe { ext.requestedPermissions() }.iter().map(|p| p.to_string()).collect();
+    p.extend(unsafe { ext.allRequestedMatchPatterns() }.iter().map(|m| unsafe { m.string() }.to_string()));
+    p
 }
 
 /// What an extension asks for, in words, for the install prompt.

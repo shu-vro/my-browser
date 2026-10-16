@@ -154,7 +154,7 @@ impl Browser {
 /// A tiny local web server for tests. Routes:
 /// `/page/<t>` (title t), `/setcookie`, `/echo` (title = Cookie header),
 /// `/file.txt` (a download), `/script/<js>` (runs the URL-decoded js),
-/// `/slow/<t>` (title t after 2 s).
+/// `/slow/<t>` (title t after 2 s), `/crx/<name>` (the test package).
 fn serve() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -194,6 +194,10 @@ fn handle(mut s: TcpStream) {
     } else if let Some(t) = path.strip_prefix("/slow/") {
         std::thread::sleep(Duration::from_secs(2));
         html(format!("<title>{t}</title>"))
+    } else if let Some(name) = path.strip_prefix("/crx/") {
+        // The signed test package, served under any file name (as Google serves `<id>_<version>.crx`).
+        let crx = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/title.crx")).unwrap();
+        ("application/x-chrome-extension", format!("Content-Disposition: attachment; filename=\"{name}\"\r\n"), crx)
     } else if let Some(js) = path.strip_prefix("/script/") {
         html(format!("<title>start</title><script>{}</script>", percent_decode(js)))
     } else {
@@ -1791,6 +1795,35 @@ fn chrome_extension_packages_install_from_crx_and_zip() {
     let refused = b.send(&format!("bridge ext.install\t{}", tampered.display()));
     assert!(refused.starts_with("BRIDGE err This package can't be trusted"), "{refused}");
     assert_eq!(b.bridge(&["ext.list"]).matches("\"id\":").count(), 2, "nothing more installed");
+    b.quit();
+}
+
+#[test]
+fn web_store_extensions_update_in_place() {
+    let base = serve();
+    let profile = TempProfile::new("ext-update");
+    let id = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/title.crx.id")).unwrap();
+    let id = id.trim();
+    let mut b = launch_with(&["--profile", profile.path()]);
+    let crx = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/title.crx");
+    let installed = b.bridge(&["ext.install", crx]);
+    let row = installed.strip_prefix("{\"id\":").unwrap().split(',').next().unwrap().to_string();
+    let not_store = b.send(&format!("bridge ext.update\t{row}"));
+    assert!(not_store.starts_with("BRIDGE err Only extensions added from the Chrome Web Store"), "{not_store}");
+    // The installed copy loses a file; the update puts the package's files back.
+    let list = b.bridge(&["ext.list"]);
+    let path = list.split("\"path\":\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+    std::fs::remove_file(Path::new(&path).join("content.js")).unwrap();
+    b.nav("go about:blank");
+    writeln!(b.stdin, "bridge ext.update\t{row}\t{base}/crx/{id}_1_0.crx\t{id}").unwrap();
+    let done = b.wait_for("BRIDGE");
+    assert_eq!(done, r#"BRIDGE ok {"name":"Title Marker","version":"1.0"}"#);
+    assert!(Path::new(&path).join("content.js").is_file(), "files replaced in place");
+    assert!(b.bridge(&["ext.list"]).contains("\"read\":true"));
+    // A package signed by another extension is refused.
+    let other = "a".repeat(32);
+    writeln!(b.stdin, "bridge ext.update\t{row}\t{base}/crx/{other}_1_0.crx\t{other}").unwrap();
+    assert!(b.wait_for("BRIDGE").starts_with("BRIDGE err This package can't be trusted"));
     b.quit();
 }
 
