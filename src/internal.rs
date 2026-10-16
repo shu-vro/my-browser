@@ -12,7 +12,7 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{AnyThread, MainThreadOnly, Message};
-use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSModalResponseOK, NSOpenPanel, NSWorkspace};
+use objc2_app_kit::{NSModalResponseOK, NSOpenPanel, NSWorkspace};
 use objc2_foundation::{NSArray, NSData, NSDate, NSError, NSString, NSURL};
 use objc2_web_kit::{WKScriptMessage, WKURLSchemeTask, WKWebsiteDataStore};
 
@@ -86,48 +86,6 @@ pub fn message_args(message: &WKScriptMessage) -> Option<Vec<String>> {
 
 fn id_arg(args: &[String], i: usize) -> Result<i64, String> {
     args.get(i).and_then(|s| s.parse().ok()).ok_or_else(|| "missing id".to_string())
-}
-
-/// Every menu item with a key, read from the menu bar itself (so it shows
-/// changes made in System Settings → Keyboard → App Shortcuts):
-/// `[{"menu","title","keys"}]`.
-fn shortcuts_json(app: &App) -> String {
-    let mut rows = Vec::new();
-    let Some(bar) = NSApplication::sharedApplication(app.mtm()).mainMenu() else { return "[]".into() };
-    for holder in bar.itemArray() {
-        let Some(menu) = holder.submenu() else { continue };
-        for item in menu.itemArray() {
-            let key = item.keyEquivalent().to_string();
-            if key.is_empty() {
-                continue;
-            }
-            let m = item.keyEquivalentModifierMask();
-            let mut keys = String::new();
-            for (flag, sign) in [
-                (NSEventModifierFlags::Control, "⌃"),
-                (NSEventModifierFlags::Option, "⌥"),
-                (NSEventModifierFlags::Shift, "⇧"),
-                (NSEventModifierFlags::Command, "⌘"),
-            ] {
-                // An uppercase key implies Shift.
-                let shift = flag == NSEventModifierFlags::Shift && key.chars().any(char::is_uppercase);
-                if m.contains(flag) || shift {
-                    keys.push_str(sign);
-                }
-            }
-            keys.push_str(&match key.as_str() {
-                "\t" => "⇥".to_string(),
-                k => k.to_uppercase(),
-            });
-            rows.push(format!(
-                "{{\"menu\":{},\"title\":{},\"keys\":{}}}",
-                json_str(&menu.title().to_string()),
-                json_str(&item.title().to_string()),
-                json_str(&keys)
-            ));
-        }
-    }
-    format!("[{}]", rows.join(","))
 }
 
 fn ok() -> Result<String, String> {
@@ -487,7 +445,11 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             ok()
         }
         "app.uninstall" => return uninstall(app, reply),
-        "keys.list" => Ok(shortcuts_json(app)),
+        "keys.list" => Ok(crate::shortcuts::json(app)),
+        // Settings → Shortcuts: `keys.set <id> <keys>` ("" = none), `keys.reset <id>`.
+        "keys.set" => crate::shortcuts::set(app, args.get(1).map_or("", |s| s), args.get(2).map_or("", |s| s))
+            .map(|()| "true".into()),
+        "keys.reset" => crate::shortcuts::reset(app, args.get(1).map_or("", |s| s)).map(|()| "true".into()),
         "keys.open" => {
             // System Settings → Keyboard, where App Shortcuts are changed.
             let url = "x-apple.systempreferences:com.apple.Keyboard-Settings.extension";

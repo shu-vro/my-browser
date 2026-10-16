@@ -577,6 +577,9 @@ fn pinned_tabs_go_first_survive_close_others_and_restarts() {
     b.nav(&format!("go {base}/page/one"));
     b.nav(&format!("newtab {base}/page/two"));
     b.nav(&format!("newtab {base}/page/three"));
+    // (Hidden bench windows can get a late "became key" for the previous tab.)
+    b.send("switch 2");
+    assert!(b.state_until(|s| s.ends_with("title=three")).ends_with("title=three"));
     let menu = b.send("menu Window/Pin Tab");
     assert!(menu.contains("|Unpin Tab|"), "{menu}");
     assert!(b.send("tabflags").starts_with("TABFLAGS pinned=1"));
@@ -633,6 +636,36 @@ fn zoom_is_remembered_per_site() {
     b.key("cmd+0");
     b.nav(&format!("go {base}/page/d"));
     assert_eq!(b.send("zoom"), "ZOOM 1.00", "actual size forgets it");
+}
+
+#[test]
+fn shortcuts_can_be_changed_reset_and_are_kept() {
+    let profile = TempProfile::new("shortcuts");
+    let mut b = launch_with(&["--profile", profile.path()]);
+    let list = b.bridge(&["keys.list"]);
+    assert!(
+        list.contains(r#"{"id":"newTab:#0","menu":"File","title":"New Tab","keys":"⌘T","custom":false}"#),
+        "{list}"
+    );
+    assert!(
+        list.contains(r#""id":"duplicateTab:#0","menu":"File","title":"Duplicate Tab","keys":"""#),
+        "items without keys can get one"
+    );
+    assert_eq!(b.bridge(&["keys.set", "newTab:#0", "cmd+alt+shift+k"]), "true");
+    assert_eq!(b.send("key cmd+t"), "KEY none", "the old keys are free");
+    b.key("cmd+alt+shift+k");
+    assert!(b.tabs().starts_with("TABS count=2"), "the new keys open a tab");
+    let taken = b.send("bridge keys.set\tduplicateTab:#0\tcmd+alt+shift+k");
+    assert!(taken.starts_with("BRIDGE err ⌥⇧⌘K is already File → New Tab"), "{taken}");
+    assert!(b.send("bridge keys.set\tnewTab:#0\tk").starts_with("BRIDGE err a shortcut needs"));
+    b.quit();
+    let mut b = launch_with(&["--profile", profile.path()]);
+    assert!(b.bridge(&["keys.list"]).contains(r#""title":"New Tab","keys":"⌥⇧⌘K","custom":true"#), "kept");
+    assert_eq!(b.bridge(&["keys.reset", "newTab:#0"]), "true");
+    b.key("cmd+t");
+    assert!(b.tabs().starts_with("TABS count=2"), "back to ⌘T");
+    assert_eq!(b.bridge(&["keys.set", "duplicateTab:#0", ""]), "true");
+    b.quit();
 }
 
 #[test]
@@ -1311,7 +1344,7 @@ fn settings_page_loads_and_its_bridge_works() {
     assert_eq!(b.bridge(&["app.version"]), format!("\"{}\"", env!("CARGO_PKG_VERSION")));
     // Settings → Shortcuts lists the menu bar's keys.
     let keys = b.bridge(&["keys.list"]);
-    assert!(keys.contains("{\"menu\":\"File\",\"title\":\"New Tab\",\"keys\":\"⌘T\"}"), "{keys}");
+    assert!(keys.contains("\"menu\":\"File\",\"title\":\"New Tab\",\"keys\":\"⌘T\""), "{keys}");
     assert!(keys.contains("\"title\":\"New Private Window\",\"keys\":\"⇧⌘N\""), "{keys}");
     assert!(keys.contains("\"title\":\"Next Tab\",\"keys\":\"⌃⇥\""), "{keys}");
     let unknown = b.send("bridge nope");

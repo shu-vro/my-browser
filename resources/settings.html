@@ -232,7 +232,7 @@
 
   <section id="shortcuts">
     <h1>Keyboard shortcuts</h1>
-    <p class="note">Every shortcut is a menu item. To change one, add it in System Settings → Keyboard → Keyboard Shortcuts → App Shortcuts: pick my-browser, type the menu item's exact name, then the new keys. Restart the browser to see the change here.</p>
+    <p class="note">Every shortcut is a menu item. Click a shortcut, then press the new keys (with ⌘, ⌥ or ⌃); Esc cancels, Delete removes it. Changes apply at once and are kept in this profile. Shortcuts set in System Settings → Keyboard → App Shortcuts also work, and show here after a restart.</p>
     <p><button id="keys-open">Open Keyboard Settings</button></p>
     <div id="keys-list"></div>
   </section>
@@ -624,13 +624,46 @@ async function loadNetwork() {
 loaders.network = loadNetwork;
 
 // ---- keyboard shortcuts
+// Recording: the next key press with ⌘, ⌥ or ⌃ becomes the shortcut. Keys
+// are named by position (e.code) so ⌥ doesn't turn K into ˚.
+const PLAIN = { Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Semicolon: ";", Quote: "'", Comma: ",", Period: ".", Slash: "/", Backquote: "`" };
+const SHIFTED = { Minus: "_", Equal: "+", BracketLeft: "{", BracketRight: "}", Backslash: "|", Semicolon: ":", Quote: "\"", Comma: "<", Period: ">", Slash: "?", Backquote: "~",
+  Digit1: "!", Digit2: "@", Digit3: "#", Digit4: "$", Digit5: "%", Digit6: "^", Digit7: "&", Digit8: "*", Digit9: "(", Digit0: ")" };
+const ARROWS = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down", Tab: "tab" };
+function keySpec(e) {
+  let key = null;
+  if (e.code.startsWith("Key")) key = e.code.slice(3).toLowerCase();
+  else if (e.shiftKey && SHIFTED[e.code]) key = SHIFTED[e.code];
+  else if (e.code.startsWith("Digit")) key = e.code.slice(5);
+  else if (PLAIN[e.code]) key = PLAIN[e.code];
+  else if (ARROWS[e.code]) key = ARROWS[e.code];
+  if (!key) return null;
+  return [e.metaKey && "cmd", e.altKey && "alt", e.ctrlKey && "ctrl", e.shiftKey && "shift"].filter(Boolean).concat(key).join("+");
+}
+let recording = null;
+addEventListener("keydown", e => {
+  if (!recording) return;
+  e.preventDefault(); e.stopPropagation();
+  const { id, tag } = recording;
+  if (e.key === "Escape") { recording = null; loadShortcuts(); return; }
+  if (e.key === "Backspace" || e.key === "Delete") { recording = null; call("keys.set", id, "").then(loadShortcuts, fail); return; }
+  if (["Meta", "Alt", "Control", "Shift"].includes(e.key)) return;
+  const spec = keySpec(e);
+  if (!spec || !(e.metaKey || e.altKey || e.ctrlKey)) { tag.textContent = "Use ⌘, ⌥ or ⌃ with a key"; return; }
+  recording = null;
+  call("keys.set", id, spec).then(() => { toast("Saved"); loadShortcuts(); }, err => { fail(err); loadShortcuts(); });
+}, true);
 async function loadShortcuts() {
   const list = $("keys-list"); list.replaceChildren();
   let menu = "", ul = null;
   for (const k of await call("keys.list")) {
     if (k.menu !== menu) { menu = k.menu; list.append(el("h2", "day", menu)); ul = el("ul", "list"); list.append(ul); }
     const li = el("li"); const main = el("div", "main"); main.append(el("div", "title", k.title));
-    li.append(main, el("span", "tag", k.keys)); ul.append(li);
+    const tag = el("button", "tag", k.keys || "—"); tag.title = "Click, then press the new keys";
+    tag.onclick = () => { if (recording) recording.tag.textContent = recording.was; recording = { id: k.id, tag, was: tag.textContent }; tag.textContent = "Press keys…"; };
+    li.append(main);
+    if (k.custom) { const r = el("button", null, "Reset"); r.title = "Back to the built-in shortcut"; r.onclick = () => call("keys.reset", k.id).then(loadShortcuts, fail); li.append(r); }
+    li.append(tag); ul.append(li);
   }
 }
 $("keys-open").onclick = () => call("keys.open").catch(fail);

@@ -190,6 +190,10 @@ impl Store {
         );
     }
 
+    pub fn delete(&self, key: &str) {
+        let _ = self.db.execute("DELETE FROM settings WHERE key = ?1", [key]);
+    }
+
     /// A user setting, falling back to its default.
     pub fn setting(&self, key: &str) -> String {
         let default = SETTINGS.iter().find(|(k, _)| *k == key).map_or("", |(_, d)| d);

@@ -65,6 +65,7 @@ name and start time (see benchmark/README.md).
 | `src/privacy.rs` | Tracking protection switches, the tracker and local-network content blockers, per-page protections, tracking-parameter stripping |
 | `src/crx.rs` | CRX3 package signatures (Security.framework), and the extension id they prove |
 | `src/netgate.rs` | The network gate: extension WebSockets the browser connects for, each blocked until allowed |
+| `src/shortcuts.rs` | Changing keyboard shortcuts (Settings → Shortcuts) |
 | `src/sitedata.rs` | Site data per site: list and delete (site menu sheet, Settings → Site data) |
 | `src/suggest.rs` | Address bar suggestions: the list under the bar |
 | `src/store.rs` | `Store`: SQLite tables for settings, history, bookmarks, downloads, extensions, session, site permissions, allowed network rules |
@@ -484,9 +485,17 @@ to the page (⌘R reloads), as the owner asked.
 ### Keyboard shortcuts
 
 Every shortcut is a menu item (`build_menu`). Settings → Shortcuts lists
-them from the live menu bar (`keys.list`); changing one is left to macOS
-(System Settings → Keyboard → App Shortcuts, opened by `keys.open`), which
-needs no code of ours. About my-browser (app menu) opens Settings → About.
+them from the live menu bar (`keys.list`, `src/shortcuts.rs`) and changes
+them: click a shortcut, press the new keys (named by `e.code`, so ⌥ doesn't
+change the letter), Esc cancels, Delete removes. `keys.set <id> <keys>`
+validates (one key with ⌘, ⌥ or ⌃; refused if another item has it),
+stores `shortcut:<id>` in the profile's settings and sets the item's key
+equivalent at once; `keys.reset <id>` goes back to the built-in keys,
+remembered at launch. Ids are action and tag (`newTab:#0`), with `.2` for a
+second item with the same action, so they survive title changes (Pin/Unpin).
+Saved changes are applied at launch (`shortcuts::apply_saved`). macOS's App
+Shortcuts (System Settings → Keyboard, `keys.open`) still work on top. Test:
+`shortcuts_can_be_changed_reset_and_are_kept`. About my-browser (app menu) opens Settings → About.
 
 ### Updates
 

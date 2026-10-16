@@ -138,6 +138,11 @@ uppercase or symbols. There's no global key monitor to leak keystrokes. Tests
 send real `NSEvent`s through `NSMenu.performKeyEquivalent`, the same path a key
 press takes.
 
+Changing a shortcut in Settings rewrites that menu item's key equivalent
+and keeps the change in the profile's database, not in macOS's
+`NSUserKeyEquivalents` defaults: those are shared by every profile, and
+tests would have changed the owner's shortcuts.
+
 ### Why does the address bar give up focus when a page loads?
 
 While you type, the address bar must not change under you, so updates pause

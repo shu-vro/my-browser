@@ -163,8 +163,9 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Storage controls**: see and clear cookies, cache (logins kept), history
   and the downloads list; delete data left behind by older builds.
 - **Uninstall** button that lists every path before deleting it.
-- **Keyboard shortcuts** for everything, listed in Settings → Shortcuts;
-  changed through macOS App Shortcuts.
+- **Keyboard shortcuts** for everything, **changed in Settings →
+  Shortcuts** (click one, press the new keys; conflicts are refused, Reset
+  goes back), kept per profile; macOS App Shortcuts work too.
 - **About** page with the version and "Check for updates" (opens the GitHub
   releases page; no background checks).
 - **Default browser** (Settings → General): links from other apps and HTML

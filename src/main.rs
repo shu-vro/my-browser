@@ -17,6 +17,7 @@ mod internal;
 mod netgate;
 mod passwords;
 mod privacy;
+mod shortcuts;
 mod sitedata;
 mod store;
 mod suggest;
@@ -114,6 +115,8 @@ pub struct AppIvars {
     pending_urls: RefCell<Vec<String>>,
     /// Saved passwords: the keychain, or memory for throwaway profiles.
     vault: OnceCell<passwords::Vault>,
+    /// Every menu item's built-in shortcut, by `shortcuts` id, for Reset.
+    default_keys: RefCell<HashMap<String, (String, NSEventModifierFlags)>>,
     /// The file Quick Look shows (a download).
     preview: RefCell<Option<Retained<NSURL>>>,
     /// The Web Store extension whose package the user asked to add.
@@ -797,6 +800,10 @@ impl App {
         self.ivars().store.get().unwrap()
     }
 
+    pub fn default_keys(&self) -> &RefCell<HashMap<String, (String, NSEventModifierFlags)>> {
+        &self.ivars().default_keys
+    }
+
     pub fn is_bench(&self) -> bool {
         self.ivars().bench.get()
     }
@@ -841,6 +848,7 @@ impl App {
         let _ = self.ivars().profile.set(profile.clone());
         let _ = self.ivars().store.set(store);
         self.apply_theme();
+        shortcuts::apply_saved(self);
 
         // Cookies and site data: WebKit's store for this profile, or memory only.
         let data_store = match &profile {
