@@ -483,6 +483,14 @@ define_class!(
         // than through the responder chain, so they also work when the app
         // isn't frontmost.
 
+        /// Quit (⌘Q). Open sheets close first, as cancelled: AppKit
+        /// silently refuses to quit while one holding a text field (a page's
+        /// prompt(), Search Tabs) is up.
+        #[unsafe(method(quit:))]
+        fn quit_action(&self, _s: Option<&AnyObject>) {
+            self.quit();
+        }
+
         #[unsafe(method(newTab:))]
         fn new_tab_action(&self, _s: Option<&AnyObject>) {
             self.new_tab();
@@ -723,6 +731,15 @@ impl App {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(AppIvars::default());
         unsafe { msg_send![super(this), init] }
+    }
+
+    fn quit(&self) {
+        for t in self.ivars().tabs.borrow().clone() {
+            if let Some(sheet) = t.window().attachedSheet() {
+                t.window().endSheet_returnCode(&sheet, 1001);
+            }
+        }
+        NSApplication::sharedApplication(self.mtm()).terminate(None);
     }
 
     pub fn store(&self) -> &Store {
@@ -2002,7 +2019,7 @@ impl App {
                     Err(e) => say!("BRIDGE err {e}"),
                 }),
             ),
-            ("quit", _) => NSApplication::sharedApplication(self.mtm()).terminate(None),
+            ("quit", _) => self.quit(),
             // Tests the crash reporter.
             ("crash", _) => panic!("crash requested by the bench harness"),
             _ => say!("ERR unknown command: {cmd}"),
@@ -2381,7 +2398,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("About my-browser", sel!(showAbout:), "", none, true),
                 ("Settings…", sel!(openSettings:), ",", cmd, true),
                 ("Check for Updates…", sel!(checkForUpdates:), "", none, true),
-                ("Quit my-browser", sel!(terminate:), "q", cmd, false),
+                ("Quit my-browser", sel!(quit:), "q", cmd, true),
             ],
         ),
         (

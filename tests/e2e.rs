@@ -1288,6 +1288,16 @@ fn pages_cannot_trap_the_tab_with_dialogs() {
 }
 
 #[test]
+fn quitting_closes_an_open_prompt_first() {
+    let mut b = launch();
+    b.nav("go about:blank");
+    b.send("eval setTimeout(() => prompt('name?'), 10)");
+    assert!(b.wait_for("DIALOG").contains("name?"));
+    // AppKit refused to quit while a sheet with a text field was up.
+    b.quit();
+}
+
+#[test]
 fn address_bar_cannot_be_spoofed_by_a_slow_navigation() {
     let base = serve();
     let other = base.replace("127.0.0.1", "localhost");
