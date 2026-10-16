@@ -1051,7 +1051,8 @@ impl App {
         for url in &urls {
             self.open_tab_in(false, url, false);
         }
-        if !urls.is_empty() && !self.is_on_top() {
+        // Test browsers never take focus from the app the owner is using.
+        if !urls.is_empty() && !self.is_bench() {
             #[allow(deprecated)]
             NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
         }
@@ -2667,7 +2668,10 @@ fn main() {
     delegate.ivars().on_top.set(on_top);
     build_menu(&app, &delegate, mtm);
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-    if !on_top {
+    // Benchmarks and tests run in the background: an active test browser
+    // took the owner's typing, and when it quit macOS handed activation to
+    // another test browser (which then failed `bench_window_is_on_screen`).
+    if !bench {
         #[allow(deprecated)]
         app.activateIgnoringOtherApps(true);
     }
