@@ -736,6 +736,12 @@ it starts at the top. The field's delegate maps Enter, Shift+Enter and Esc;
   size on disk.
 - **After a crash:** rows still marked active at launch are marked failed.
 
+**Quick Look** (a download's button, or Space on its row): the app delegate
+is Quick Look's panel controller (`acceptsPreviewPanelControl:` and its data
+source; it's at the end of the responder chain). Quartz is loaded on first
+use (`NSBundle.load`), so it costs nothing until then. In bench mode it
+prints `PREVIEW <path>` instead, since the panel would take focus.
+
 ## Extensions (`src/extensions.rs`)
 
 - **Install:** the user picks a folder, a `.zip` or a Chrome package

@@ -354,6 +354,10 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             }
             ok()
         }),
+        "downloads.preview" => id_arg(&args, 1).and_then(|id| {
+            let d = store.download(id).ok_or("no such download")?;
+            app.quick_look(&d.path).map(|()| "true".to_string())
+        }),
         "downloads.cancel" => id_arg(&args, 1).map(|id| {
             app.cancel_download(id);
             "true".into()

@@ -131,8 +131,8 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **History** (⌘Y): searchable, delete one entry or clear all.
 - **Most visited sites** on the new tab page.
 - **Downloads** (⌥⌘L): to ~/Downloads or a chosen folder, unique and
-  sanitized file names, a list with progress, open, show in Finder, cancel
-  and remove.
+  sanitized file names, a list with progress, open, **Quick Look** (or Space),
+  show in Finder, cancel and remove.
 - **Import** bookmarks, history and passwords from Chrome, Brave, Edge,
   Vivaldi, Arc, Chromium or Safari (Settings → Import), or a bookmarks file.
 

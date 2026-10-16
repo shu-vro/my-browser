@@ -114,6 +114,8 @@ pub struct AppIvars {
     pending_urls: RefCell<Vec<String>>,
     /// Saved passwords: the keychain, or memory for throwaway profiles.
     vault: OnceCell<passwords::Vault>,
+    /// The file Quick Look shows (a download).
+    preview: RefCell<Option<Retained<NSURL>>>,
     /// The Web Store extension whose package the user asked to add.
     expected_package: RefCell<Option<String>>,
 }
@@ -480,6 +482,32 @@ define_class!(
     }
 
     impl App {
+        // Quick Look's panel finds its controller in the responder chain;
+        // the app delegate is the end of it.
+        #[unsafe(method(acceptsPreviewPanelControl:))]
+        fn accepts_preview(&self, _panel: Option<&AnyObject>) -> bool {
+            true
+        }
+
+        #[unsafe(method(beginPreviewPanelControl:))]
+        fn begin_preview(&self, panel: &AnyObject) {
+            let _: () = unsafe { msg_send![panel, setDataSource: self] };
+        }
+
+        #[unsafe(method(endPreviewPanelControl:))]
+        fn end_preview(&self, _panel: Option<&AnyObject>) {}
+
+        #[unsafe(method(numberOfPreviewItemsInPreviewPanel:))]
+        fn preview_count(&self, _panel: Option<&AnyObject>) -> isize {
+            self.ivars().preview.borrow().is_some() as isize
+        }
+
+        /// NSURL is a QLPreviewItem.
+        #[unsafe(method(previewPanel:previewItemAtIndex:))]
+        fn preview_item(&self, _panel: Option<&AnyObject>, _i: isize) -> *mut NSURL {
+            self.ivars().preview.borrow().as_ref().map_or(std::ptr::null_mut(), |u| Retained::as_ptr(u) as *mut NSURL)
+        }
+
         /// Bench command from stdin, bounced to the main thread.
         #[unsafe(method(command:))]
         fn command_action(&self, cmd: &NSString) {
@@ -1768,6 +1796,31 @@ impl App {
         std::env::var_os("HOME")
             .map(|h| PathBuf::from(h).join("Downloads").to_string_lossy().into_owned())
             .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned())
+    }
+
+    /// Quick Look a file (Settings → Downloads). Quartz loads on first use,
+    /// so the preview costs nothing until then. Bench mode reports it
+    /// instead: the panel would take keyboard focus.
+    pub fn quick_look(&self, path: &str) -> Result<(), String> {
+        if !Path::new(path).exists() {
+            return Err("the file is gone".into());
+        }
+        self.ivars().preview.replace(Some(NSURL::fileURLWithPath(&NSString::from_str(path))));
+        if self.is_bench() {
+            say!("PREVIEW {path}");
+            return Ok(());
+        }
+        let quartz = objc2_foundation::NSBundle::bundleWithPath(&NSString::from_str(
+            "/System/Library/Frameworks/Quartz.framework",
+        ));
+        let class = quartz
+            .filter(|b| unsafe { b.load() })
+            .and_then(|_| AnyClass::get(c"QLPreviewPanel"))
+            .ok_or("Quick Look isn't available")?;
+        let panel: Retained<AnyObject> = unsafe { msg_send![class, sharedPreviewPanel] };
+        let _: () = unsafe { msg_send![&*panel, reloadData] };
+        let _: () = unsafe { msg_send![&*panel, makeKeyAndOrderFront: Option::<&AnyObject>::None] };
+        Ok(())
     }
 
     // ---- extensions

@@ -499,6 +499,9 @@ async function loadDownloads() {
     } else {
       li.append(el("span", "time", d.status === "done" ? size(d.bytes) : d.status));
       if (d.status === "done" && d.exists) {
+        const ql = el("button", null, "Quick Look"); ql.title = "Preview it (or select the row and press Space)";
+        ql.onclick = () => call("downloads.preview", d.id).catch(fail); li.append(ql);
+        li.tabIndex = 0; li.onkeydown = e => { if (e.key === " ") { e.preventDefault(); call("downloads.preview", d.id).catch(fail); } };
         const o = el("button", null, "Open"); o.onclick = () => call("downloads.open", d.id).catch(fail);
         const r = el("button", null, "Show in Finder"); r.onclick = () => call("downloads.reveal", d.id).catch(fail);
         li.append(o, r);

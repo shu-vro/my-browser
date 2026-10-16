@@ -1254,6 +1254,10 @@ fn downloads_go_to_the_chosen_folder() {
 
     let list = b.bridge(&["downloads.list"]);
     assert!(list.contains("\"status\":\"done\"") && list.contains("\"bytes\":14"), "{list}");
+    // Quick Look (reported in bench mode: the panel would take focus).
+    let id = list.split("\"id\":").nth(1).unwrap().split(',').next().unwrap().to_string();
+    assert!(b.send(&format!("bridge downloads.preview\t{id}")).starts_with("PREVIEW "));
+    assert_eq!(b.next(), "BRIDGE ok true");
 }
 
 #[test]
