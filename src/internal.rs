@@ -429,6 +429,16 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             "true".into()
         }),
         "data.clear" => return clear_site_data(app.data_store(), reply),
+        // Settings → Site data: every site's data, and deleting one site's.
+        "sitedata.list" => {
+            return crate::sitedata::fetch(app.data_store(), move |r| reply(Ok(crate::sitedata::json(&r))));
+        }
+        "sitedata.delete" => {
+            let name = args.get(1).cloned().unwrap_or_default();
+            return crate::sitedata::delete(app.data_store(), &name, move |found| {
+                reply(if found { ok() } else { Err("no data for that site".into()) })
+            });
+        }
         "storage.get" => Ok(storage_json(app)),
         "storage.clear_cache" => return clear_cache(app.data_store(), reply),
         "downloads.clear" => {

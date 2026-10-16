@@ -69,6 +69,7 @@
   <a href="#history">History</a>
   <a href="#downloads">Downloads</a>
   <a href="#storage">Storage</a>
+  <a href="#sitedata">Site data</a>
   <a href="#extensions">Extensions</a>
   <a href="#network">Network</a>
   <a href="#shortcuts">Shortcuts</a>
@@ -202,6 +203,13 @@
       <ul class="list" id="st-uninstall"></ul>
       <p><button class="danger" id="st-uninstall-btn">Uninstall my-browser…</button></p>
     </div>
+  </section>
+
+  <section id="sitedata">
+    <h1>Site data</h1>
+    <p class="note">What each website keeps on your Mac: sign-ins (cookies), saved settings (local storage and databases), offline copies and caches. Deleting a site's data signs you out of it. The site menu left of the address bar shows the same for the site you're on (Site Data…).</p>
+    <input type="search" id="sitedata-q" placeholder="Search sites">
+    <ul class="list" id="sitedata-list"></ul>
   </section>
 
   <section id="extensions">
@@ -532,6 +540,23 @@ $("st-clear-downloads").onclick = () => call("downloads.clear").then(() => { toa
 $("st-clear-leftovers").onclick = () => { if (confirm("Delete the leftover data listed here? This can't be undone.")) call("legacy.clear").then(r => { toast("Freed " + size(r.bytes)); loadStorage(); }, fail); };
 $("st-uninstall-btn").onclick = () => { if (confirm("Delete my-browser and all of its data, then quit? Logins, history and extensions will be gone. This can't be undone.")) call("app.uninstall").catch(fail); };
 loaders.storage = loadStorage;
+
+// ---- site data
+async function loadSiteData() {
+  const q = $("sitedata-q").value.toLowerCase();
+  const rows = (await call("sitedata.list")).filter(r => r.name.toLowerCase().includes(q));
+  const list = $("sitedata-list"); list.replaceChildren();
+  if (!rows.length) list.append(el("li", "empty", q ? "No matches." : "No site keeps anything on this Mac."));
+  for (const r of rows) {
+    const li = el("li"); const main = el("div", "main");
+    main.append(el("div", "title", r.name), el("div", "sub", r.kinds.join(", ")));
+    const del = el("button", "danger", "Delete"); del.title = "Delete everything " + r.name + " keeps";
+    del.onclick = () => call("sitedata.delete", r.name).then(() => { toast("Deleted"); loadSiteData(); }, fail);
+    li.append(main, del); list.append(li);
+  }
+}
+$("sitedata-q").addEventListener("input", () => { clearTimeout(loadSiteData.t); loadSiteData.t = setTimeout(loadSiteData, 150); });
+loaders.sitedata = loadSiteData;
 
 // ---- extensions
 async function loadExtensions() {

@@ -157,6 +157,9 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   Extensions, Storage, Shortcuts, About.
 - **New tab page**: banner, search bar and most visited sites, each can be
   turned off.
+- **Site data per site**: the site menu's Site Data… lists what the site and
+  its subdomains keep (cookies, local storage, databases, cache) with a
+  delete button each; Settings → Site data lists and deletes every site's.
 - **Storage controls**: see and clear cookies, cache (logins kept), history
   and the downloads list; delete data left behind by older builds.
 - **Uninstall** button that lists every path before deleting it.

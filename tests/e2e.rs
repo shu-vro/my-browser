@@ -1257,6 +1257,23 @@ fn downloads_go_to_the_chosen_folder() {
 }
 
 #[test]
+fn site_data_is_listed_per_site_and_deleted_one_site_at_a_time() {
+    let base = serve();
+    let mut b = launch();
+    b.nav(&format!("go {base}/setcookie"));
+    b.nav(&format!("go {base}/script/{}", encode("localStorage.setItem('k', 'v')")));
+    let list = b.bridge(&["sitedata.list"]);
+    assert!(list.contains(r#"{"name":"127.0.0.1","kinds":["#) && list.contains("Cookies"), "{list}");
+    assert!(b.send("sitedata").starts_with("SITEDATA 127.0.0.1:"), "the site menu's sheet lists it");
+    assert_eq!(b.send("dialog ok"), "ANSWERED 1");
+    assert_eq!(b.bridge(&["sitedata.delete", "127.0.0.1"]), "true");
+    assert!(!b.bridge(&["sitedata.list"]).contains("127.0.0.1"));
+    b.nav(&format!("go {base}/echo"));
+    assert!(b.state_until(|s| s.contains("title=cookie:")).ends_with("title=cookie:none"), "signed out");
+    assert!(b.send("bridge sitedata.delete\tnothing.example").starts_with("BRIDGE err no data"));
+}
+
+#[test]
 fn clearing_site_data_signs_out() {
     let base = serve();
     let mut b = launch();

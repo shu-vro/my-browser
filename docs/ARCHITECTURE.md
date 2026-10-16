@@ -65,6 +65,8 @@ name and start time (see benchmark/README.md).
 | `src/privacy.rs` | Tracking protection switches, the tracker and local-network content blockers, per-page protections, tracking-parameter stripping |
 | `src/crx.rs` | CRX3 package signatures (Security.framework), and the extension id they prove |
 | `src/netgate.rs` | The network gate: extension WebSockets the browser connects for, each blocked until allowed |
+| `src/sitedata.rs` | Site data per site: list and delete (site menu sheet, Settings → Site data) |
+| `src/suggest.rs` | Address bar suggestions: the list under the bar |
 | `src/store.rs` | `Store`: SQLite tables for settings, history, bookmarks, downloads, extensions, session, site permissions, allowed network rules |
 | `src/passwords.rs` | Saved passwords: the keychain (or memory for throwaway profiles), CSV import |
 | `src/import.rs` | Import bookmarks, history and passwords from Chromium browsers and Safari, and bookmarks files |
@@ -506,6 +508,21 @@ processes don't write it back, then deletes the paths and exits without saving
 the session. It is refused unless the browser runs on the main profile:
 `--bench` and `--profile` sessions can never wipe the owner's data.
 
+### Site data
+
+`src/sitedata.rs` reads WebKit's own records of what sites keep
+(`fetchDataRecordsOfTypes:` over all types; a record is a site, usually its
+registrable domain, and its data types, named for people: Cookies, Local
+storage, Databases, Cache…) and deletes one site's
+(`removeDataOfTypes:forDataRecords:`). The site menu's **Site Data…** shows
+the records that belong to the page's host (`sitedata::belongs`: the same
+host, a parent domain or a subdomain) in a sheet, each with a trash button;
+deleting shows the sheet again. **Manage All Site Data…** opens Settings →
+Site data (`sitedata.list`, `sitedata.delete <name>`), a searchable list of
+every site. Private tabs show the private windows' store. Bench: `sitedata`
+→ `SITEDATA <name>:<kinds>|…`. Test:
+`site_data_is_listed_per_site_and_deleted_one_site_at_a_time`.
+
 ### Storage and leftover cleanup
 
 The Storage section shows what the browser keeps on disk, and clears it:
@@ -911,6 +928,7 @@ active tab.
 | `zoom` | `ZOOM <level>`: the active tab's page zoom |
 | `bartype <text>` / `barkey up\|down\|enter\|esc` | `SUGGEST [*]search:<text>\|[*]page:<url>\|…`: the address bar's suggestion list after typing or a key (`*` = chosen; empty when closed) |
 | `savesearch <text>` | `SAVEDSEARCH`: save a search as Return in the bar would, without loading it |
+| `sitedata` | `SITEDATA <name>:<kinds>\|…`: the site data sheet for the active tab's site (answer with `dialog`) |
 | `savepage <path>` | `SAVED <0\|1>` once the page is saved there as a Web Archive |
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |

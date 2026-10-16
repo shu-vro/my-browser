@@ -17,6 +17,7 @@ mod internal;
 mod netgate;
 mod passwords;
 mod privacy;
+mod sitedata;
 mod store;
 mod suggest;
 mod tab;
@@ -1930,6 +1931,8 @@ impl App {
             }
             ("star", Some(t)) => say!("{}", t.star_state()),
             ("tabflags", Some(t)) => say!("{}", t.flags_state()),
+            // The site data sheet: `SITEDATA <name>:<kinds>|…`.
+            ("sitedata", Some(t)) => t.show_site_data(),
             ("zoom", Some(t)) => say!("{}", t.zoom_state()),
             ("reader", Some(t)) => t.toggle_reader(),
             // Pick account `i` from the saved-passwords menu (`PASSWORDS …`).

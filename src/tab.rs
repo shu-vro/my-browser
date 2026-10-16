@@ -646,6 +646,24 @@ define_class!(
             self.app().open_settings_page("settings#general");
         }
 
+        /// Site menu: "Site Data…".
+        #[unsafe(method(showSiteData:))]
+        fn show_site_data_action(&self, _s: Option<&AnyObject>) {
+            self.show_site_data();
+        }
+
+        /// A trash button in the site data sheet: delete that site's data,
+        /// then show the sheet again.
+        #[unsafe(method(deleteSiteData:))]
+        fn delete_site_data_action(&self, sender: &AnyObject) {
+            let Some(name) = crate::sitedata::button_site(sender) else { return };
+            if let Some(sheet) = self.window().attachedSheet() {
+                self.window().endSheet_returnCode(&sheet, 1000);
+            }
+            let this = self.retain();
+            crate::sitedata::delete(&self.data_store(), &name, move |_| this.show_site_data());
+        }
+
         #[unsafe(method(openSiteSettings:))]
         fn open_site_settings_action(&self, _s: Option<&AnyObject>) {
             self.app().open_settings_page("settings#permissions");
@@ -2466,6 +2484,29 @@ impl Tab {
         }
     }
 
+    /// This tab's cookies and site data: the profile's, or the private windows'.
+    fn data_store(&self) -> Retained<objc2_web_kit::WKWebsiteDataStore> {
+        match self.web() {
+            Some(w) => unsafe { w.configuration().websiteDataStore() },
+            None => self.app().data_store().retain(),
+        }
+    }
+
+    /// "On-device site data" for the site on screen.
+    pub fn show_site_data(&self) {
+        if let Some(host) = crate::store::site_of(&self.url()) {
+            crate::sitedata::show(self, &self.data_store(), &host);
+        }
+    }
+
+    pub fn app_is_bench(&self) -> bool {
+        self.app().is_bench()
+    }
+
+    pub fn open_settings(&self, page: &str) {
+        self.app().open_settings_page(page);
+    }
+
     /// The site menu under the site button: protections, permissions, settings.
     fn show_site_menu(&self) {
         let mtm = self.mtm();
@@ -2534,6 +2575,7 @@ impl Tab {
             item.setSubmenu(Some(&sub));
         }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
+        add("Site Data…", Some(sel!(showSiteData:)), 0, false);
         add("All site settings…", Some(sel!(openSiteSettings:)), 0, false);
         let Some(button) = self.ivars().site_button.get() else { return };
         let below = NSPoint::new(0.0, button.bounds().size.height + 4.0);
