@@ -102,7 +102,7 @@ pub fn history(home: &Path, id: &str) -> Result<Vec<Visit>, String> {
         let db = rusqlite::Connection::open_with_flags(copy.join("db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let mut stmt = db.prepare(query)?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.filter_map(Result::ok);
-        Ok(rows.filter(|(u, ..): &Visit| u.starts_with("http://") || u.starts_with("https://")).collect())
+        Ok(rows.filter(|(u, ..): &Visit| is_web(u)).collect())
     })();
     let _ = std::fs::remove_dir_all(&copy);
     rows.map_err(|e| format!("{name}'s history isn't readable: {e}"))
@@ -185,7 +185,9 @@ fn children(d: &NSDictionary, key: &str) -> Vec<objc2::rc::Retained<NSDictionary
 fn walk_chromium(node: &NSDictionary, folder: &str, out: &mut Vec<Bookmark>) {
     for child in children(node, "children") {
         match text(&child, "type").as_str() {
-            "url" => out.push((folder.to_string(), text(&child, "name"), text(&child, "url"))),
+            "url" if is_web(&text(&child, "url")) => {
+                out.push((folder.to_string(), text(&child, "name"), text(&child, "url")))
+            }
             "folder" => walk_chromium(&child, &format!("{folder}/{}", clean_folder(&text(&child, "name"))), out),
             _ => {}
         }
@@ -212,7 +214,7 @@ fn safari_bookmarks(path: &Path, top: &str) -> Option<Vec<Bookmark>> {
 fn walk_safari(node: &NSDictionary, folder: &str, out: &mut Vec<Bookmark>) {
     for child in children(node, "Children") {
         match text(&child, "WebBookmarkType").as_str() {
-            "WebBookmarkTypeLeaf" => {
+            "WebBookmarkTypeLeaf" if is_web(&text(&child, "URLString")) => {
                 let title = child
                     .objectForKey(&NSString::from_str("URIDictionary"))
                     .and_then(|d| d.downcast::<NSDictionary>().ok())
@@ -232,6 +234,11 @@ fn walk_safari(node: &NSDictionary, folder: &str, out: &mut Vec<Bookmark>) {
             _ => {}
         }
     }
+}
+
+/// Only http(s) URLs are imported: no `javascript:`, `file:` or `data:`.
+fn is_web(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
 }
 
 /// A folder name can't hold `/` (it separates folders here) or be empty.
@@ -280,7 +287,7 @@ pub fn html_bookmarks(html: &str, top: &str) -> Vec<Bookmark> {
             i = end;
         }
     }
-    out.retain(|(_, _, url)| url.starts_with("http://") || url.starts_with("https://"));
+    out.retain(|(_, _, url)| is_web(url));
     out
 }
 
@@ -392,6 +399,7 @@ mod tests {
     fn chromium_bookmarks_keep_their_folders() {
         let json = br#"{"roots":{"bookmark_bar":{"type":"folder","children":[
             {"type":"url","name":"Rust","url":"https://rust-lang.org/"},
+            {"type":"url","name":"Bookmarklet","url":"javascript:alert(1)"},
             {"type":"folder","name":"Work/Docs","children":[{"type":"url","name":"Docs","url":"https://docs.example/"}]}]},
             "other":{"type":"folder","children":[]},"synced":{"type":"folder","children":[{"type":"url","name":"M","url":"https://m.example/"}]}}}"#;
         let b = chromium_bookmarks(json, "Imported from Brave").unwrap();

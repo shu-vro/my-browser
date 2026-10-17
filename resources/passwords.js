@@ -57,6 +57,9 @@
   window.__mybFill = (username, password, site) => {
     const host = location.hostname.toLowerCase();
     if (site && host !== site && "[" + host + "]" !== site) return;
+    // Same rule as `site_for`: HTTPS, or plain HTTP only on this Mac.
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(site);
+    if (location.protocol !== "https:" && !(local && location.protocol === "http:")) return;
     const el = document.activeElement;
     const { user, password: field } = fields(el && el.tagName === "INPUT" ? scope(el) : document);
     const set = (input, value) => {
