@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Regenerate resources/trackers.json, the browser's built-in tracker blocker.
+"""Regenerate resources/trackers.bin, the browser's built-in tracker and ad blocker.
 
-Source: Disconnect's tracking-protection lists (the lists Firefox's Enhanced
-Tracking Protection uses). License: CC BY-NC-SA 4.0, so non-commercial use only.
+Sources:
+- Disconnect's tracking-protection lists (the lists Firefox's Enhanced
+  Tracking Protection uses). License: CC BY-NC-SA 4.0, so non-commercial use only.
+- EasyList's ad-server and popup-server domains (the network part of what
+  Brave and uBlock Origin block). License: GPLv3 or CC BY-SA 3.0.
 
 A tracker domain is blocked only when loaded as a third party on a site its
 owner doesn't run. For example, Facebook's servers are blocked on news sites
@@ -32,8 +35,8 @@ BLOCKED = [
     "Email",
     "EmailAggressive",
 ]
-# Raw DEFLATE with an 8-byte little-endian length header. The JSON is ~6.5 MB
-# (each rule repeats its owner's site list) but compresses ~25x; the browser
+# Raw DEFLATE with an 8-byte little-endian length header. The JSON is ~13 MB
+# (each Disconnect rule repeats its owner's site list) but compresses ~18x; the browser
 # inflates it with macOS's built-in libcompression on first launch.
 OUT = pathlib.Path(__file__).resolve().parent.parent / "resources" / "trackers.bin"
 
@@ -74,6 +77,42 @@ def owner_sites(entities):
     return owners
 
 
+EASYLIST = "https://raw.githubusercontent.com/easylist/easylist/master/easylist/"
+# Only plain domain rules ("||ads.example^$opts"): WebKit's url-filter can't
+# express EasyList's paths, wildcards or per-site options, and a few hundred
+# skipped rules out of ~50,000 don't matter.
+DOMAIN_RULE = re.compile(r"\|\|([a-z0-9.-]+)\^(?:\$([a-z,-]+))?")
+
+
+def easylist_rules(name, known):
+    """WebKit rules for EasyList's domain rules, skipping domains (and their
+    subdomains) Disconnect already covers: its rules carry owner exemptions
+    that a plain block would override."""
+    out = subprocess.run(["curl", "-sSfL", "--max-time", "60", EASYLIST + name], check=True, capture_output=True)
+    rules = {}
+    for line in out.stdout.decode().splitlines():
+        m = DOMAIN_RULE.fullmatch(line.strip())
+        if not m:
+            continue
+        host, opts = m.group(1), set((m.group(2) or "").split(",")) - {""}
+        parts = host.split(".")
+        if any(".".join(parts[i:]) in known for i in range(len(parts))):
+            continue
+        pattern = "^[^:]+://+([^:/]+\\.)?" + re.escape(host).replace("\\-", "-") + "[:/]"
+        if opts == {"popup"} or opts == {"popup", "third-party"}:
+            # Pop-ups and pop-unders opened to the domain (click hijacks).
+            trigger = {"url-filter": pattern, "resource-type": ["popup"]}
+        elif opts <= {"document", "popup"} and opts:
+            # The domain is only ever an ad: block it everywhere, even as a page.
+            trigger = {"url-filter": pattern}
+        elif opts <= {"third-party"}:
+            trigger = {"url-filter": pattern, "load-type": ["third-party"]}
+        else:
+            continue
+        rules[host] = {"trigger": trigger, "action": {"type": "block"}}
+    return rules
+
+
 def rule(entry, exempt_sites):
     # An entry is a domain ("doubleclick.net") or a domain plus path prefix
     # ("google.com/pagead/1p-user-list"). WebKit's url-filter is a restricted
@@ -93,6 +132,13 @@ def main():
     owners = owner_sites(entities)
     domains = sorted(tracker_domains(services))
     rules = [rule(d, owners.get(d, {d.partition("/")[0]})) for d in domains]
+    known = {d.partition("/")[0] for d in domains}
+    ads = {}
+    # A domain on both lists keeps the ad-server rule, which blocks more.
+    for name in ["easylist_adservers.txt", "easylist_adservers_popup.txt"]:
+        for host, r in easylist_rules(name, known).items():
+            ads.setdefault(host, r)
+    rules += [ads[h] for h in sorted(ads)]
     data = json.dumps(rules, separators=(",", ":")).encode()
     deflate = zlib.compressobj(9, zlib.DEFLATED, -15)
     packed = struct.pack("<Q", len(data)) + deflate.compress(data) + deflate.flush()

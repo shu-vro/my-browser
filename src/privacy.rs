@@ -1,6 +1,7 @@
 //! Anti-tracking: WebKit's tracking prevention, third-party cookie blocking,
-//! no ad-click attribution, and a built-in tracker blocker compiled from
-//! Disconnect's list (resources/trackers.bin, see scripts/update-trackers.py).
+//! no ad-click attribution, and a built-in tracker and ad blocker compiled from
+//! Disconnect's list and EasyList's ad servers (resources/trackers.bin, see
+//! scripts/update-trackers.py).
 //! The browser itself sends nothing anywhere.
 
 use std::cell::RefCell;
@@ -457,6 +458,9 @@ mod tests {
         let fb = json.split(r#"{"trigger""#).find(|r| r.contains(r"facebook\\.net[")).expect("facebook.net rule");
         assert!(fb.contains(r#""*messenger.com""#), "{fb}");
         assert!(fb.contains(r#""load-type":["third-party"]"#));
+        // EasyList's ad servers: the click-hijacking pop-under network on fojik.com.
+        assert!(json.contains(r"llvpn\\.com[:/]"), "ad server blocked");
+        assert!(json.contains(r#""resource-type":["popup"]"#), "pop-up servers blocked");
     }
 
     #[test]

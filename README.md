@@ -14,6 +14,7 @@ worse is rejected.
   tabs cost about the same as one.
 - **Private by default.**
   - Built-in tracker blocking: Disconnect's list, the one Firefox uses.
+  - Built-in ad blocking: EasyList's ad-server and pop-up domains.
   - All third-party cookies blocked, and WebKit's Intelligent Tracking
     Prevention on.
   - HTTPS first, Global Privacy Control, Safari's fingerprinting protection,
@@ -170,3 +171,4 @@ tests/             end-to-end tests and fixtures
 
 The tracker list comes from Disconnect and is licensed **CC BY-NC-SA 4.0**:
 non-commercial use only. Replace it before any commercial distribution.
+The ad-server lists come from EasyList, licensed GPLv3 or CC BY-SA 3.0.

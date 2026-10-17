@@ -197,10 +197,31 @@ only when it's loaded as a third party, and **not** on sites owned by the same
 company (Disconnect's entity list, the same logic Firefox uses). So
 `fbcdn.net` is blocked on a news site but allowed on `messenger.com`.
 
+### Why EasyList's ad servers, and only their domain rules?
+
+Disconnect lists trackers, not ad networks: on fojik.com a click anywhere
+opened the site in a new tab and sent the old one to an ad (a Monetag
+pop-under from `llvpn.com`). Brave stops it with adblock-rust running
+EasyList and uBlock Origin's lists; the part of that doing the work here is
+the network rule `||llvpn.com^`. WebKit's content blocker can express
+EasyList's plain domain rules (`||domain^`, `$third-party`, `$popup` as the
+`popup` resource type, `$document` as a block everywhere) but not its paths,
+wildcards or per-site options, so those few hundred are skipped. Domains
+Disconnect already lists are skipped too: a plain block would override its
+owner exemptions (Facebook's CDN on Messenger).
+
+Measured (2026-10-17): 4,042 → 53,196 rules; compiling takes 0.70 s → 1.39 s
+(first launch after an update, or a Shields change); the compiled list grows
+12 → 31 MB on disk, mapped by WebKit. Warm A/B, base → new: idle footprint
+78.3 → 78.8 MB, shell 32.7 → 33.3 MB, startup 150 → 150 ms, text page
+170.4 → 170.8 MB: noise. The binary grows by 460 KB. Cosmetic filters and
+scriptlets (Brave's other layers) would need a script in every frame, which
+costs memory per frame; not done.
+
 ### Why is the rule list compressed, and why with libcompression?
 
-The JSON is 6.5 MB, because each rule repeats its owner's site list. Raw
-DEFLATE brings it to 261 KB. macOS's built-in `libcompression` inflates it,
+The JSON is 12.9 MB, because each Disconnect rule repeats its owner's site
+list. Raw DEFLATE brings it to 720 KB. macOS's built-in `libcompression` inflates it,
 so there's no new crate. It's inflated once; WebKit caches the compiled
 blocker under a hash of the file.
 
@@ -232,7 +253,7 @@ Each has a counterpart here:
 
 | Brave | Here |
 |---|---|
-| Ad/tracker blocking | Disconnect list in WebKit's content blocker (trackers, not cosmetic ad hiding) |
+| Ad/tracker blocking | Disconnect list plus EasyList's ad-server and pop-up domains in WebKit's content blocker (network rules, not cosmetic hiding or scriptlets) |
 | HTTPS by default | WebKit's `preferredHTTPSNavigationPolicy`, automatic fallback |
 | Farbling | Safari's Advanced Tracking and Fingerprinting Protection, the same idea in WebKit |
 | Query filtering | Brave's default parameter list, plus WebKit's link decoration filtering |

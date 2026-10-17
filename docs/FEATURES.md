@@ -75,6 +75,9 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 ## Privacy and security
 
 - **Tracker blocking** with Disconnect's list (the one Firefox uses).
+- **Ad blocking** with EasyList's ad-server and pop-up lists (the network
+  part of what Brave and uBlock Origin block): ad scripts never load, and
+  click-hijacking pop-ups and pop-unders are stopped.
 - **Cookie banners hidden** (OneTrust, Cookiebot, Quantcast, Didomi and
   other common consent pop-ups), without consenting to anything; a setting
   in Privacy.
