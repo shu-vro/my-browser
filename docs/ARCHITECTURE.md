@@ -75,6 +75,7 @@ name and start time (see benchmark/README.md).
 | `src/translate.rs` | Translate Page: the helper process and its requests |
 | `helpers/translate.swift` | `my-browser-translate`, the helper: Apple's Translation and NaturalLanguage frameworks (built by `build.rs`) |
 | `src/autofill.rs` | Addresses and cards: settings bridge, labels, the values a form gets |
+| `src/profiles.rs` | Profiles: listing, adding, opening (another copy of the app), deleting |
 | `resources/translate.js`, `find.js`, `picker.js` | Translate Page's text collector, find's highlights and count, Hide Element's picker (all in the browser's own script world, run on demand) |
 | `resources/settings.html` | The internal page: settings, privacy, site settings, bookmarks, passwords, import, history, downloads, storage, extensions, network |
 | `resources/passwords.js` | The saved-passwords and autofill form script (its own script world) |
@@ -788,6 +789,22 @@ offered and filled only where passwords are (HTTPS, or this Mac), after
 Touch ID (`password_auth`). Bench: `AUTOFILL <label>|…`, `fillautofill <i>`.
 Test: `addresses_and_cards_fill_forms_when_picked`.
 
+## Profiles (`src/profiles.rs`)
+
+The main profile ("Default") is `~/Library/Application Support/my-browser`;
+others are folders in its `profiles/` (names: letters, digits, spaces, `-`,
+`_`; up to 40). Each runs as its own copy of the app (`open_profile`
+starts the executable with `--profile <folder>`; the profile lock still
+allows one copy per profile; "open" in the list = its lock is held). A
+named profile's Dock icon carries its name (`dockTile.badgeLabel`) and its
+address bar says "Work: search or enter address". File → Profiles lists
+them (filled when it opens) and Settings → Profiles adds, opens and deletes
+them (`profiles.list/create/open/delete`). Deleting asks natively, refuses
+Default, this profile and open ones, then removes WebKit's data store for
+the profile id (`removeDataStoreForIdentifier:`), its extension storage and
+its folder. Uninstall removes them all with the main folder. Test:
+`profiles_are_listed_added_opened_and_deleted` (a made-up `$HOME`).
+
 ## Developer tools
 
 The `devtools` setting (on) sets every web view's `isInspectable` (Safari's
@@ -1115,6 +1132,7 @@ active tab.
 | `spell` | `SPELL continuous=<0\|1> grammar=<0\|1> correct=<0\|1>` |
 | `inspector` | `INSPECTOR <0\|1>`: there's a Web Inspector to show |
 | `fillautofill <i>` | `FILLAUTOFILL`: picks entry `i` from the last `AUTOFILL <label>\|…` menu |
+| `profile` | `PROFILE <name> <address bar placeholder>` |
 | `crash` | panics (tests the crash reporter) |
 | `quit` or stdin EOF | exits |
 

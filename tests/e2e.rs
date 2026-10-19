@@ -2273,6 +2273,37 @@ fn addresses_and_cards_fill_forms_when_picked() {
 }
 
 #[test]
+fn profiles_are_listed_added_opened_and_deleted() {
+    let home = TempProfile::new("profiles-home");
+    let work = home.0.join("Library/Application Support/my-browser/profiles/Work");
+    std::fs::create_dir_all(&work).unwrap();
+    let mut b = launch_env(&["--profile", work.to_str().unwrap()], &[("HOME", home.path())]);
+    assert_eq!(b.send("profile"), "PROFILE Work Work: search or enter address", "the window says which profile");
+    assert_eq!(
+        b.bridge(&["profiles.list"]),
+        r#"{"current":"Work","profiles":[{"name":"Default","open":false},{"name":"Work","open":true}]}"#
+    );
+    assert_eq!(b.bridge(&["profiles.create", "Home"]), "true");
+    assert!(b.send("bridge profiles.create\thome").starts_with("BRIDGE err"), "names are unique, whatever the case");
+    assert!(b.send("bridge profiles.create\t../x").starts_with("BRIDGE err"));
+    assert!(b.bridge(&["profiles.open", "Home"]).ends_with("/profiles/Home\""));
+    assert!(b.send("bridge profiles.delete\tWork").ends_with("Close that profile's windows first."));
+    assert!(b.send("bridge profiles.delete\tDefault").starts_with("BRIDGE err"));
+    assert_eq!(b.bridge(&["profiles.delete", "Home"]), "true");
+    assert!(!home.0.join("Library/Application Support/my-browser/profiles/Home").exists());
+    b.quit();
+    // (The profile's WebKit data lives under the real home; clean it up.)
+    let id = rusqlite::Connection::open(work.join("browser.db")).and_then(|db| {
+        db.query_row("SELECT value FROM settings WHERE key='profile_id'", [], |r| r.get::<_, String>(0))
+    });
+    if let (Ok(id), Some(real)) = (id, std::env::var_os("HOME")) {
+        let _ = std::fs::remove_dir_all(
+            Path::new(&real).join("Library/WebKit/my-browser/WebsiteDataStore").join(id.to_lowercase()),
+        );
+    }
+}
+
+#[test]
 fn developer_tools_can_be_turned_off() {
     let mut b = launch();
     b.nav("go about:blank");

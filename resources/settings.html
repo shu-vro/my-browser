@@ -61,6 +61,7 @@
   .grid input { width: 100%; }
   .bar.add { margin-top: 14px; }
   .bar.add input { flex: 1; }
+  .avatar { width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center; font-weight: 600; font-size: 14px; color: #fff; }
   .bangs { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 14px; margin: 6px 0 4px; }
   .bangs label { display: flex; align-items: center; gap: 8px; padding: 5px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .bangs code { font-weight: 600; }
@@ -84,6 +85,7 @@
   <a href="#extensions">Extensions</a>
   <a href="#network">Network</a>
   <a href="#shortcuts">Shortcuts</a>
+  <a href="#profiles">Profiles</a>
   <a href="#about">About</a>
 </nav>
 <main>
@@ -286,6 +288,13 @@
     <p class="note">Every shortcut is a menu item. Click a shortcut, then press the new keys (with ⌘, ⌥ or ⌃); Esc cancels, Delete removes it. Changes apply at once and are kept in this profile. Shortcuts set in System Settings → Keyboard → App Shortcuts also work, and show here after a restart.</p>
     <p><button id="keys-open">Open Keyboard Settings</button></p>
     <div id="keys-list"></div>
+  </section>
+
+  <section id="profiles">
+    <h1>Profiles</h1>
+    <p class="note">Each profile is a separate browser: its own sign-ins, history, bookmarks, settings and extensions. A profile opens in its own copy of my-browser, with its name on the Dock icon and in the address bar. Also in File → Profiles. Saved passwords and cards are in your keychain, shared by every profile.</p>
+    <ul class="list" id="profiles-list"></ul>
+    <div class="bar add"><input type="text" id="profile-name" placeholder="New profile's name, like Work or Home" maxlength="40"><button class="primary" id="profile-add">Add profile</button></div>
   </section>
 
   <section id="about">
@@ -799,6 +808,32 @@ for (const kind of ["address", "card"]) {
   $("af-" + kind + "-cancel").onclick = () => afReset(kind);
 }
 loaders.autofill = loadAutofill;
+
+// ---- profiles
+async function loadProfiles() {
+  const p = await call("profiles.list");
+  const list = $("profiles-list"); list.replaceChildren();
+  for (const x of p.profiles) {
+    const li = el("li"); const main = el("div", "main");
+    const avatar = el("div", "avatar", x.name.slice(0, 1).toUpperCase());
+    avatar.style.background = "hsl(" + [...x.name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7) + " 45% 48%)";
+    const title = el("div", "title", x.name);
+    if (x.name === p.current) title.append(" ", el("span", "tag", "This window"));
+    else if (x.open) title.append(" ", el("span", "tag", "Open"));
+    main.append(title, el("div", "sub", x.name === "Default" ? "The profile my-browser opens with" : "Its own sign-ins, history and settings"));
+    li.append(avatar, main);
+    if (x.name !== p.current) {
+      const open = el("button", null, "Open"); open.onclick = () => call("profiles.open", x.name).catch(fail); li.append(open);
+    }
+    if (x.name !== "Default" && x.name !== p.current) {
+      const del = el("button", "danger", "Delete…"); del.onclick = () => call("profiles.delete", x.name).then(() => { toast("Deleted"); loadProfiles(); }, e => { if (String(e.message || e) !== "cancelled") fail(e); });
+      li.append(del);
+    }
+    list.append(li);
+  }
+}
+$("profile-add").onclick = () => call("profiles.create", $("profile-name").value.trim()).then(() => { $("profile-name").value = ""; toast("Added"); loadProfiles(); }, fail);
+loaders.profiles = loadProfiles;
 
 loaders.shortcuts = loadShortcuts;
 $("repo").onclick = e => { e.preventDefault(); call("open", "https://github.com/shu-vro/my-browser").catch(fail); };

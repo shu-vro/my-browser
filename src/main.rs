@@ -18,6 +18,7 @@ mod internal;
 mod netgate;
 mod passwords;
 mod privacy;
+mod profiles;
 mod shortcuts;
 mod sitedata;
 mod store;
@@ -148,6 +149,7 @@ define_class!(
                 "Window" => self.update_window_menu(menu),
                 "View" => self.update_view_menu(menu),
                 "Bookmarks" => self.fill_bookmarks_menu(menu),
+                "Profiles" => self.fill_profiles_menu(menu),
                 _ => {}
             }
         }
@@ -686,6 +688,19 @@ define_class!(
             self.run_extension_command(sender.tag() as i64);
         }
 
+        /// File → Profiles → a profile (its name is the item's title).
+        #[unsafe(method(openProfile:))]
+        fn open_profile_action(&self, sender: &NSMenuItem) {
+            if let Err(e) = self.open_profile(&sender.title().to_string()) {
+                self.with_active(|t| t.confirm(&e, &["OK"], |_| {}));
+            }
+        }
+
+        #[unsafe(method(manageProfiles:))]
+        fn manage_profiles_action(&self, _s: Option<&AnyObject>) {
+            self.open_internal("settings#profiles");
+        }
+
         #[unsafe(method(showExtensions:))]
         fn show_extensions_action(&self, _s: Option<&AnyObject>) {
             self.open_internal("settings#extensions");
@@ -894,6 +909,10 @@ impl App {
         let _ = self.ivars().store.set(store);
         self.apply_theme();
         shortcuts::apply_saved(self);
+        // Which profile this copy of the browser is: on its Dock icon.
+        if let Some(name) = self.profile_name() {
+            NSApplication::sharedApplication(mtm).dockTile().setBadgeLabel(Some(&NSString::from_str(&name)));
+        }
 
         // Cookies and site data: WebKit's store for this profile, or memory only.
         let data_store = match &profile {
@@ -1650,6 +1669,23 @@ impl App {
         }
     }
 
+    /// File → Profiles: every profile (this one ticked), then Manage.
+    fn fill_profiles_menu(&self, menu: &NSMenu) {
+        menu.removeAllItems();
+        let current = self.profile_dir().and_then(profiles::name_of);
+        for name in profiles::all() {
+            let item = menu_item(self.mtm(), &name, sel!(openProfile:), "", NSEventModifierFlags::empty());
+            unsafe { item.setTarget(Some(self)) };
+            item.setState((current.as_deref() == Some(name.as_str())) as isize);
+            menu.addItem(&item);
+        }
+        menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
+        let manage =
+            menu_item(self.mtm(), "Add or Manage Profiles…", sel!(manageProfiles:), "", NSEventModifierFlags::empty());
+        unsafe { manage.setTarget(Some(self)) };
+        menu.addItem(&manage);
+    }
+
     /// The menu bar's Bookmarks menu.
     fn bookmarks_menu(&self) -> Option<Retained<NSMenu>> {
         let main = NSApplication::sharedApplication(self.mtm()).mainMenu()?;
@@ -2204,6 +2240,8 @@ impl App {
                 say!("MENU {}", titles.join("|"));
             }
             ("private", Some(t)) => say!("{}", t.private_state()),
+            // `PROFILE <name> <address bar placeholder>`.
+            ("profile", Some(t)) => say!("PROFILE {} {}", self.profile_name().unwrap_or_default(), t.placeholder()),
             // `linkmenu <url> [i]`: WebKit's link menu after our changes (and
             // picking item i): `LINKMENU <title>|…`.
             ("linkmenu", Some(t)) => {
@@ -2837,6 +2875,15 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 unsafe { item.setTarget(Some(delegate)) };
             }
             menu.addItem(&item);
+        }
+        if title == "File" {
+            // Filled when it opens (`fill_profiles_menu`).
+            let profiles = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Profiles"));
+            profiles.setDelegate(Some(ProtocolObject::from_ref(delegate)));
+            let holder = menu_item(mtm, "Profiles", sel!(submenuAction:), "", none);
+            holder.setSubmenu(Some(&profiles));
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
+            menu.addItem(&holder);
         }
         if title == "Edit" {
             // To the first responder (the page, or a text field), like Safari's.

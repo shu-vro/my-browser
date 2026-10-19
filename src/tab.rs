@@ -1146,6 +1146,9 @@ impl Tab {
             )));
             bar.setTextColor(Some(&objc2_app_kit::NSColor::whiteColor()));
             bar.setPlaceholderString(Some(&NSString::from_str("Private: search or enter address")));
+        } else if let Some(profile) = self.app().profile_name() {
+            // Which profile this window is (Settings → Profiles).
+            bar.setPlaceholderString(Some(&NSString::from_str(&format!("{profile}: search or enter address"))));
         } else {
             bar.setPlaceholderString(Some(&NSString::from_str("Search or enter address")));
         }
@@ -2737,6 +2740,10 @@ impl Tab {
 
     pub fn is_private(&self) -> bool {
         self.ivars().private.get()
+    }
+
+    pub fn placeholder(&self) -> String {
+        self.ivars().bar.get().and_then(|b| b.placeholderString()).map(|p| p.to_string()).unwrap_or_default()
     }
 
     /// `PRIVATE <0|1>`, read from the address bar's placeholder.

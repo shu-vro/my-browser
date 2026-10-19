@@ -211,6 +211,11 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   releases page; no background checks).
 - **Default browser** (Settings → General): links from other apps and HTML
   files from Finder open in new tabs.
+- **Profiles** (File → Profiles, Settings → Profiles): separate browsers
+  for work and home, each with its own sign-ins, history, bookmarks,
+  settings and extensions, opened as their own copy of the app with the
+  profile's name on the Dock icon and in the address bar. Saved passwords
+  and cards are in the keychain and shared by every profile.
 - **Crash reports**: after a crash, asks once whether to report it as a
   GitHub issue you read first. Nothing is sent automatically.
 

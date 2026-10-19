@@ -401,6 +401,11 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             app.net_forget(ext, args.get(2).map_or("", |s| s));
             "true".into()
         }),
+        // Settings → Profiles.
+        "profiles.list" => Ok(app.profiles_json()),
+        "profiles.create" => app.create_profile(args.get(1).map_or("", |s| s)).map(|()| "true".into()),
+        "profiles.open" => app.open_profile(args.get(1).map_or("", |s| s)).map(|p| json_str(&p)),
+        "profiles.delete" => return app.delete_profile(args.get(1).map_or("", |s| s), reply),
         // Settings → Autofill: `autofill.save <id or 0> <kind> <field> <value>…`.
         "autofill.list" => Ok(crate::autofill::list_json(app)),
         "autofill.save" => {
@@ -803,6 +808,11 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 
 fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
+/// `~/Library/WebKit/<app id>`: this app's WebKit data, every profile's.
+pub fn webkit_dir() -> PathBuf {
+    home().join("Library/WebKit").join(webkit_app_id())
 }
 
 /// WebKit keeps an app's data under its bundle id, or the executable's name
