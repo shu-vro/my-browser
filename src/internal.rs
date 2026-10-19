@@ -411,6 +411,30 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             app.net_forget(ext, args.get(2).map_or("", |s| s));
             "true".into()
         }),
+        // Settings → Sync: a file with settings, bookmarks, history… (syncfile.rs).
+        "sync.export" => match args.get(1) {
+            Some(path) if app.is_bench() => {
+                std::fs::write(path, crate::syncfile::export(app)).map(|()| "true".into()).map_err(|e| e.to_string())
+            }
+            _ => return save_sync_file(app, reply),
+        },
+        "sync.import" => match args.get(1) {
+            Some(path) if app.is_bench() => return crate::syncfile::import(app, Path::new(path), reply),
+            _ => {
+                let panel = NSOpenPanel::openPanel(app.mtm());
+                panel.setMessage(Some(&NSString::from_str("Choose a my-browser sync file")));
+                let state = std::cell::RefCell::new(Some(reply));
+                let (this, p) = (app.retain(), panel.clone());
+                let handler = RcBlock::new(move |response: isize| {
+                    let Some(reply) = state.take() else { return };
+                    match (response == NSModalResponseOK).then(|| p.URL()).flatten().and_then(|u| u.path()) {
+                        Some(path) => crate::syncfile::import(&this, Path::new(&path.to_string()), reply),
+                        None => reply(Err("cancelled".into())),
+                    }
+                });
+                return panel.beginWithCompletionHandler(&handler);
+            }
+        },
         // Settings → Profiles.
         "profiles.list" => Ok(app.profiles_json()),
         "profiles.create" => app.create_profile(args.get(1).map_or("", |s| s)).map(|()| "true".into()),
@@ -554,6 +578,30 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
         _ => Err(format!("unknown op {op}")),
     };
     reply(result);
+}
+
+/// Sync → Export: where to save the file (a save panel).
+fn save_sync_file(app: &App, reply: Reply) {
+    let panel = objc2_app_kit::NSSavePanel::savePanel(app.mtm());
+    let profile = app.profile_name().map_or(String::new(), |p| format!(" {p}"));
+    panel.setNameFieldStringValue(&NSString::from_str(&format!("my-browser{profile} sync.json")));
+    panel.setMessage(Some(&NSString::from_str(
+        "Keep it somewhere you can reach from your other Mac. Passwords and cards aren't in it.",
+    )));
+    let state = std::cell::RefCell::new(Some(reply));
+    let (this, p) = (app.retain(), panel.clone());
+    let handler = RcBlock::new(move |response: isize| {
+        let Some(reply) = state.take() else { return };
+        match (response == NSModalResponseOK).then(|| p.URL()).flatten().and_then(|u| u.path()) {
+            Some(path) => reply(
+                std::fs::write(path.to_string(), crate::syncfile::export(&this))
+                    .map(|()| "true".into())
+                    .map_err(|e| format!("Couldn't save it: {e}")),
+            ),
+            None => reply(Err("cancelled".into())),
+        }
+    });
+    panel.beginWithCompletionHandler(&handler);
 }
 
 fn import_bookmarks_file(app: &App, path: &Path) -> String {

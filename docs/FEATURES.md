@@ -223,7 +223,7 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 
 - **Settings** at `mybrowser://settings` (⌘,): General, Tabs, Privacy, Site
   settings, Network, History, Downloads, Bookmarks, Passwords, Import,
-  Extensions, Storage, Shortcuts, About.
+  Extensions, Storage, Shortcuts, Autofill, Profiles, Sync, About.
 - **New tab page**: banner, search bar and most visited sites, each can be
   turned off.
 - **Site data per site**: the site menu's Site Data… lists what the site and
@@ -244,6 +244,10 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   settings and extensions, opened as their own copy of the app with the
   profile's name on the Dock icon and in the address bar. Saved passwords
   and cards are in the keychain and shared by every profile.
+- **Sync by file** (Settings → Sync): export settings, bookmarks, history,
+  keywords, filters, addresses, site settings, zoom levels and shortcuts to
+  a file, and import it on another Mac or profile (it adds to what's there).
+  Nothing is uploaded; passwords and cards aren't in it.
 - **Crash reports**: after a crash, asks once whether to report it as a
   GitHub issue you read first. Nothing is sent automatically.
 

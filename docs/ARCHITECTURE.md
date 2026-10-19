@@ -78,6 +78,7 @@ name and start time (see benchmark/README.md).
 | `src/files.rs` | Paths in the address bar, folder pages (`mybrowser://files/…`), opening local files |
 | `src/autofill.rs` | Addresses and cards: settings bridge, labels, the values a form gets |
 | `src/profiles.rs` | Profiles: listing, adding, opening (another copy of the app), deleting |
+| `src/syncfile.rs` | Sync by file: export and import |
 | `resources/translate.js`, `find.js`, `picker.js` | Translate Page's text collector, find's highlights and count, Hide Element's picker (all in the browser's own script world, run on demand) |
 | `resources/settings.html` | The internal page: settings, privacy, site settings, bookmarks, passwords, import, history, downloads, storage, extensions, network |
 | `resources/passwords.js` | The saved-passwords and autofill form script (its own script world) |
@@ -491,7 +492,9 @@ Arguments must be an array of strings. Each op validates its input, and
 The page inserts all data from websites (titles, URLs, file names) with
 `textContent`, never as HTML.
 
-Bridge ops: `settings.get/set`, `history.list/delete/clear`,
+Bridge ops: `settings.get/set`, `keywords.list/set/delete`, `filters.get/set`,
+`autofill.list/save/delete`, `profiles.list/create/open/delete`,
+`sync.export/import`, `history.list/delete/clear`,
 `downloads.list/open/reveal/cancel/remove/clear`,
 `ext.list/install/toggle/access/remove`, `perm.list/set/forget`,
 `net.list/allow/deny/forget`, `data.clear`
@@ -845,6 +848,20 @@ Default, this profile and open ones, then removes WebKit's data store for
 the profile id (`removeDataStoreForIdentifier:`), its extension storage and
 its folder. Uninstall removes them all with the main folder. Test:
 `profiles_are_listed_added_opened_and_deleted` (a made-up `$HOME`).
+
+## Sync by file (`src/syncfile.rs`)
+
+Settings → Sync exports one JSON file (`"format":"my-browser sync"`):
+settings (not `downloads_dir`), keywords, filters, changed shortcuts, site
+permissions, zoom levels, addresses, bookmarks and history. Passwords and
+cards stay in the keychain and aren't in it. Import merges: bookmarks and
+visits that are already there are skipped (as for browser imports),
+settings, keywords and permissions are set through their validators,
+addresses are added unless identical, filter lines are added, then the
+blockers are rebuilt and the settings applied. Nothing is uploaded: where
+the file goes is the user's choice. Bench: `bridge sync.export\t<path>`,
+`sync.import\t<path>`. Test:
+`a_sync_file_carries_settings_bookmarks_and_more_to_another_browser`.
 
 ## Developer tools
 

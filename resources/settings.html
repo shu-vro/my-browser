@@ -86,6 +86,7 @@
   <a href="#network">Network</a>
   <a href="#shortcuts">Shortcuts</a>
   <a href="#profiles">Profiles</a>
+  <a href="#sync">Sync</a>
   <a href="#about">About</a>
 </nav>
 <main>
@@ -307,6 +308,14 @@
     <p class="note">Each profile is a separate browser: its own sign-ins, history, bookmarks, settings and extensions. A profile opens in its own copy of my-browser, with its name on the Dock icon and in the address bar. Also in File → Profiles. Saved passwords and cards are in your keychain, shared by every profile.</p>
     <ul class="list" id="profiles-list"></ul>
     <div class="bar add"><input type="text" id="profile-name" placeholder="New profile's name, like Work or Home" maxlength="40"><button class="primary" id="profile-add">Add profile</button></div>
+  </section>
+
+  <section id="sync">
+    <h1>Sync</h1>
+    <p class="note">Move your browser to another Mac, or into another profile, with a file: your settings, bookmarks, history, search keywords, filters, addresses, site settings, zoom levels and shortcuts. my-browser never uploads it; you choose where it goes (AirDrop, iCloud Drive, a USB stick).</p>
+    <p class="note">Not in the file: passwords and cards (they stay in your keychain; use Passwords → Import on the other Mac with an export from Apple's Passwords app), cookies and sign-ins, extensions and downloads.</p>
+    <div class="row"><div><div>Export</div><div class="hint">Save everything above to a file.</div></div><button class="primary" id="sync-export">Export to file…</button></div>
+    <div class="row"><div><div>Import</div><div class="hint">Add a file's bookmarks, history and the rest to this profile. What's already here is kept; its settings, keywords and site settings replace these.</div></div><button id="sync-import">Import from file…</button></div>
   </section>
 
   <section id="about">
@@ -847,6 +856,9 @@ async function loadProfiles() {
 $("profile-add").onclick = () => call("profiles.create", $("profile-name").value.trim()).then(() => { $("profile-name").value = ""; toast("Added"); loadProfiles(); }, fail);
 loaders.profiles = loadProfiles;
 
+// ---- sync file
+$("sync-export").onclick = () => call("sync.export").then(() => toast("Exported"), e => { if (String(e.message || e) !== "cancelled") fail(e); });
+$("sync-import").onclick = () => call("sync.import").then(r => toast("Added " + r.bookmarks + " bookmarks, " + r.history + " visits, " + r.settings + " settings"), e => { if (String(e.message || e) !== "cancelled") fail(e); });
 loaders.shortcuts = loadShortcuts;
 $("repo").onclick = e => { e.preventDefault(); call("open", "https://github.com/shu-vro/my-browser").catch(fail); };
 

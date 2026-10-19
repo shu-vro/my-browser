@@ -560,6 +560,13 @@ frame), its links go through the browser (WebKit refuses links from there to
 `file:`), and files WebKit can't show open in their app, except anything
 that would run code, which is only shown in Finder.
 
+### Why a sync file and not sync?
+
+No accounts, no cloud (CONTRIBUTING). A file the user moves themselves
+covers the need (a new Mac, a second one) without a server. Passwords and
+card numbers aren't in it: a plain file in iCloud Drive or on a USB stick
+would expose them, and they're in the keychain, which has its own ways.
+
 ### Why ⌘ + scroll zoom with an event monitor?
 
 WebKit has no setting for it. A local monitor sees every scroll-wheel event

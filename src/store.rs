@@ -685,6 +685,18 @@ impl Store {
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map(|rows| rows.flatten().collect()).unwrap_or_default()
     }
 
+    /// Raw settings rows whose key starts with `prefix` (`shortcut:`).
+    pub fn settings_with_prefix(&self, prefix: &str) -> Vec<(String, String)> {
+        let Ok(mut stmt) =
+            self.db.prepare("SELECT key, value FROM settings WHERE substr(key, 1, ?2) = ?1 ORDER BY key")
+        else {
+            return Vec::new();
+        };
+        stmt.query_map(params![prefix, prefix.len() as i64], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default()
+    }
+
     // ---- bookmarks
 
     /// Bookmark `url` in `folder`; an existing bookmark of it there is kept.

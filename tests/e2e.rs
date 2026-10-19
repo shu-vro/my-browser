@@ -2358,6 +2358,40 @@ fn profiles_are_listed_added_opened_and_deleted() {
 }
 
 #[test]
+fn a_sync_file_carries_settings_bookmarks_and_more_to_another_browser() {
+    let dir = TempProfile::new("sync");
+    let file = dir.0.join("sync.json");
+    let base = serve();
+    let mut a = launch();
+    a.nav(&format!("go {base}/page/visited"));
+    a.key("cmd+d");
+    a.bridge(&["settings.set", "theme", "dark"]);
+    a.bridge(&["keywords.set", "q", "https://q.example/?s=%s"]);
+    a.bridge(&["filters.set", "##.ad"]);
+    a.bridge(&["autofill.save", "0", "address", "name", "Ada"]);
+    a.bridge(&["autofill.save", "0", "card", "number", "4242424242424242"]);
+    a.bridge(&["perm.set", "a.example", "camera", "allow"]);
+    assert_eq!(a.bridge(&["sync.export", file.to_str().unwrap()]), "true");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains("4242"), "no cards (or passwords) in the file");
+    let mut b = launch();
+    let added = b.bridge(&["sync.import", file.to_str().unwrap()]);
+    assert_eq!(
+        added,
+        r#"{"settings":1,"bookmarks":1,"history":1,"keywords":1,"filters":1,"addresses":1,"permissions":1}"#
+    );
+    assert_eq!(
+        b.bridge(&["sync.import", file.to_str().unwrap()]),
+        r#"{"settings":0,"bookmarks":0,"history":0,"keywords":0,"filters":0,"addresses":0,"permissions":0}"#,
+        "importing twice adds nothing twice"
+    );
+    assert!(b.bridge(&["bookmarks.list"]).contains("/page/visited"));
+    assert!(b.bridge(&["settings.get"]).contains(r#""theme":"dark""#));
+    std::fs::write(&file, "{}").unwrap();
+    assert!(b.send(&format!("bridge sync.import\t{}", file.display())).starts_with("BRIDGE err"));
+}
+
+#[test]
 fn developer_tools_can_be_turned_off() {
     let mut b = launch();
     b.nav("go about:blank");

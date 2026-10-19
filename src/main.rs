@@ -26,6 +26,7 @@ mod shortcuts;
 mod sitedata;
 mod store;
 mod suggest;
+mod syncfile;
 mod tab;
 mod tabsearch;
 mod translate;
