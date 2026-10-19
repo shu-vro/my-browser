@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Settings the settings page may change, with their defaults.
-pub const SETTINGS: [(&str, &str); 20] = [
+pub const SETTINGS: [(&str, &str); 21] = [
     // duckduckgo | brave | startpage | google
     ("search", "duckduckgo"),
     // Page for new tabs; empty means a blank page.
@@ -49,6 +49,8 @@ pub const SETTINGS: [(&str, &str); 20] = [
     // Built-in bangs that are on (`!w rust`), comma-separated: none until the
     // user turns them on in Settings → General.
     ("bangs", ""),
+    // file | clipboard: where Take Screenshot puts the picture (last chosen).
+    ("screenshot_to", "file"),
 ];
 
 pub struct Store {
@@ -269,6 +271,7 @@ impl Store {
             | "auto_pip" => value == "0" || value == "1",
             "downloads_dir" => value.is_empty() || Path::new(value).is_dir(),
             "translate_to" => crate::translate::valid_language(value),
+            "screenshot_to" => ["file", "clipboard"].contains(&value),
             "bangs" => value.is_empty() || value.split(',').all(|b| crate::BANGS.iter().any(|(k, _)| *k == b)),
             _ => return Err(format!("unknown setting {key}")),
         };

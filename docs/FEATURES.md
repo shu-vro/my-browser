@@ -74,6 +74,14 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   highlight text, read aloud (each word selected as it's read, the page
   follows along), find (every match highlighted), print, and save with your
   highlights.
+- **Take Screenshot** (File menu, and the page's right-click menu): **Select
+  Area…** (⇧⌘S, drag over the page, Esc cancels), **Visible Part**, or
+  **Full Page** (the whole page, not just what's on screen), as a PNG.
+  **Save to File** or **Copy to Clipboard**, whichever you picked last.
+  **Record Screen…** opens macOS's Screenshot app to record all or part of
+  the screen.
+- **Right-click on a page** (not on a link): Translate Page and Take
+  Screenshot.
 - **Print and save as PDF** (⌘P, and `window.print()`).
 - **Save Page As** (⌘S): the page with its images and styles in one Web
   Archive file, readable offline here, in Safari or with Quick Look.

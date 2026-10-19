@@ -21,6 +21,7 @@ mod passwords;
 mod pdf;
 mod privacy;
 mod profiles;
+mod screenshot;
 mod shortcuts;
 mod sitedata;
 mod store;
@@ -153,6 +154,7 @@ define_class!(
                 "Bookmarks" => self.fill_bookmarks_menu(menu),
                 "History" => self.fill_history_menu(menu),
                 "Profiles" => self.fill_profiles_menu(menu),
+                "Take Screenshot" => self.update_screenshot_menu(menu),
                 _ => {}
             }
         }
@@ -724,6 +726,35 @@ define_class!(
         #[unsafe(method(savePage:))]
         fn save_page_action(&self, _s: Option<&AnyObject>) {
             self.with_active(|t| t.save_page(None));
+        }
+
+        #[unsafe(method(screenshotArea:))]
+        fn screenshot_area_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.screenshot(screenshot::Shot::Area, None, None));
+        }
+
+        #[unsafe(method(screenshotVisible:))]
+        fn screenshot_visible_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.screenshot(screenshot::Shot::Visible, None, None));
+        }
+
+        #[unsafe(method(screenshotFullPage:))]
+        fn screenshot_full_page_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.screenshot(screenshot::Shot::Full, None, None));
+        }
+
+        /// Take Screenshot → Save to File / Copy to Clipboard (remembered).
+        #[unsafe(method(screenshotTo:))]
+        fn screenshot_to_action(&self, sender: &NSMenuItem) {
+            let _ = self.store().set_setting("screenshot_to", if sender.tag() == 1 { "clipboard" } else { "file" });
+        }
+
+        /// Take Screenshot → Record Screen…: macOS's own Screenshot app,
+        /// which records the whole screen or a part of it.
+        #[unsafe(method(recordScreen:))]
+        fn record_screen_action(&self, _s: Option<&AnyObject>) {
+            let app = NSURL::fileURLWithPath(&NSString::from_str("/System/Applications/Utilities/Screenshot.app"));
+            objc2_app_kit::NSWorkspace::sharedWorkspace().openURL(&app);
         }
 
         #[unsafe(method(printPage:))]
@@ -1812,6 +1843,65 @@ impl App {
         }
     }
 
+    /// Take Screenshot's items: what to capture, then where it goes (checked
+    /// by `update_screenshot_menu`).
+    pub fn screenshot_menu(&self, keys: bool) -> Retained<NSMenu> {
+        let mtm = self.mtm();
+        let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Take Screenshot"));
+        let shift_cmd = NSEventModifierFlags::Command | NSEventModifierFlags::Shift;
+        for (title, action, key, tag) in [
+            ("Select Area…", sel!(screenshotArea:), "S", 0),
+            ("Visible Part", sel!(screenshotVisible:), "", 0),
+            ("Full Page", sel!(screenshotFullPage:), "", 0),
+            ("-", sel!(screenshotTo:), "", 0),
+            ("Save to File", sel!(screenshotTo:), "", 0),
+            ("Copy to Clipboard", sel!(screenshotTo:), "", 1),
+            ("-", sel!(recordScreen:), "", 0),
+            ("Record Screen…", sel!(recordScreen:), "", 0),
+        ] {
+            if title == "-" {
+                menu.addItem(&NSMenuItem::separatorItem(mtm));
+                continue;
+            }
+            let key = if keys { key } else { "" };
+            let item = menu_item(
+                mtm,
+                title,
+                action,
+                key,
+                if key.is_empty() { NSEventModifierFlags::empty() } else { shift_cmd },
+            );
+            item.setTag(tag);
+            unsafe { item.setTarget(Some(self)) };
+            menu.addItem(&item);
+        }
+        menu
+    }
+
+    /// A check next to Save to File or Copy to Clipboard.
+    fn update_screenshot_menu(&self, menu: &NSMenu) {
+        let copy = self.store().setting("screenshot_to") == "clipboard";
+        for item in menu.itemArray().iter().filter(|i| i.action() == Some(sel!(screenshotTo:))) {
+            item.setState(((item.tag() == 1) == copy) as isize);
+        }
+    }
+
+    /// The page's right-click menu (not on a link): Translate Page and
+    /// Take Screenshot, so they're found where people look.
+    pub fn add_page_items(&self, menu: &NSMenu, translated: bool) {
+        let mtm = self.mtm();
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        let title = if translated { "Show Original" } else { "Translate Page" };
+        let translate = menu_item(mtm, title, sel!(translatePage:), "", NSEventModifierFlags::empty());
+        unsafe { translate.setTarget(Some(self)) };
+        menu.addItem(&translate);
+        let holder = menu_item(mtm, "Take Screenshot", sel!(submenuAction:), "", NSEventModifierFlags::empty());
+        let shots = self.screenshot_menu(false);
+        self.update_screenshot_menu(&shots);
+        holder.setSubmenu(Some(&shots));
+        menu.addItem(&holder);
+    }
+
     /// "Translate Page" / "Show Original", for the active tab.
     fn update_view_menu(&self, menu: &NSMenu) {
         let translated = self.active().is_some_and(|t| t.is_translated());
@@ -2333,6 +2423,35 @@ impl App {
             ("printpdf", Some(t)) => t.print(Some(arg)),
             // Save the page as a Web Archive there: `SAVED <0|1>`.
             ("savepage", Some(t)) => t.save_page(Some(arg)),
+            // The whole page as a PNG there: `SCREENSHOT <0|1> <width>x<height>`.
+            ("screenshot", Some(t)) => {
+                let mut words = arg.split(' ');
+                let Some(shot) = words.next().and_then(screenshot::Shot::parse) else { return say!("ERR shot") };
+                let mut next = words.next();
+                // `area x,y,w,h`: that area, without the picker.
+                let area = (shot == screenshot::Shot::Area)
+                    .then(|| {
+                        let n: Vec<f64> = next?.split(',').filter_map(|v| v.parse().ok()).collect();
+                        let r = (n.len() == 4).then(|| {
+                            objc2_foundation::NSRect::new(
+                                NSPoint::new(n[0], n[1]),
+                                objc2_foundation::NSSize::new(n[2], n[3]),
+                            )
+                        })?;
+                        next = words.next();
+                        Some(r)
+                    })
+                    .flatten();
+                t.screenshot(shot, next, area);
+            }
+            // Drag on the area picker: `screenshotdrag x1,y1,x2,y2`.
+            ("screenshotdrag", Some(t)) => {
+                let n: Vec<f64> = arg.split(',').filter_map(|v| v.parse().ok()).collect();
+                match (t.area_picker(), n.len()) {
+                    (Some(p), 4) => p.drag(NSPoint::new(n[0], n[1]), NSPoint::new(n[2], n[3])),
+                    _ => say!("ERR no picker"),
+                }
+            }
             // The Bookmarks or History menu as it would open:
             // `BOOKMARKSMENU a|b|-|Folder/|c`. With an index, picks that item
             // (as a click would) first.
@@ -2947,6 +3066,12 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
             menu.addItem(&item);
         }
         if title == "File" {
+            // Take Screenshot, before Print.
+            let shots = delegate.screenshot_menu(true);
+            shots.setDelegate(Some(ProtocolObject::from_ref(delegate)));
+            let holder = menu_item(mtm, "Take Screenshot", sel!(submenuAction:), "", none);
+            holder.setSubmenu(Some(&shots));
+            menu.insertItem_atIndex(&holder, menu.indexOfItemWithTitle(&NSString::from_str("Print…")));
             // Filled when it opens (`fill_profiles_menu`).
             let profiles = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Profiles"));
             profiles.setDelegate(Some(ProtocolObject::from_ref(delegate)));

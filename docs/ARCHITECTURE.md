@@ -758,6 +758,31 @@ panel, one at a time (ignored while any sheet is up, or after the user
 blocked the page's dialogs). Test: `pages_print_to_pdf_and_window_print_opens_the_panel`
 (bench `printpdf <path>` saves straight to a PDF through the same operation).
 
+### Screenshots
+
+File → Take Screenshot (a submenu, also in the page's right-click menu
+through `App::add_page_items`; `Tab::screenshot`, screenshot.rs) takes:
+
+- **Select Area…** (⇧⌘S): `AreaPicker`, a flipped view over the page that
+  dims all but the dragged rectangle; Esc or a click without dragging
+  cancels. The area goes to WebKit's `takeSnapshotWithConfiguration:` as its
+  `rect`.
+- **Visible Part**: the same snapshot of the whole view.
+- **Full Page**: the page as one tall PDF page (`createPDFWithConfiguration:`
+  with no rectangle: the whole page, backgrounds included) drawn into a
+  bitmap at 2× (`png_of_pdf`), smaller for very long pages (at most 16,384
+  pixels tall and 60 megapixels).
+
+Over the PDF viewer, AppKit draws the area (`cacheDisplayInRect:`). The PNG
+then goes where setting `screenshot_to` says (`file`: a save panel;
+`clipboard`: the general pasteboard and a "Screenshot copied" note that
+fades), chosen with the submenu's Save to File / Copy to Clipboard. Record
+Screen… opens macOS's Screenshot app. Bench: `screenshot <visible|full|area
+[x,y,w,h]> [path]` → `SCREENSHOT <0|1> <w>x<h>` with a path, else `SCREENSHOT
+copied=1 …` (a private pasteboard in bench mode), `SCREENSHOT picking` /
+`cancelled` for the picker; `screenshotdrag x1,y1,x2,y2` drags on it. Test:
+`screenshots_take_the_whole_page_the_visible_part_or_an_area`.
+
 ### Saving pages
 
 Save Page As (⌘S) asks WebKit for the page as a Web Archive
@@ -1122,6 +1147,7 @@ key press does.
 | ⌥⌘P | Picture in picture |
 | ⌥⌘T | Translate Page / Show Original |
 | ⌥⌘I | Show Web Inspector |
+| ⇧⌘S | Take Screenshot → Select Area |
 | ⌘: / ⌘; | Show Spelling and Grammar / Check Document Now |
 | An extension's keys | Its command (Extensions menu) |
 | ⇧⌘R | Reader mode |
@@ -1192,6 +1218,8 @@ active tab.
 | `picker` | `PICKER`; then a click in the page picks, a sheet asks (`DIALOG`), and `HIDDEN <0\|1>` |
 | `spell` | `SPELL continuous=<0\|1> grammar=<0\|1> correct=<0\|1>` |
 | `inspector` | `INSPECTOR <0\|1>`: there's a Web Inspector to show |
+| `screenshot <visible\|full\|area [x,y,w,h]> [path]` | `SCREENSHOT <0\|1> <w>x<h>` (a PNG there), `SCREENSHOT copied=1 <w>x<h>`, `SCREENSHOT picking` |
+| `screenshotdrag x1,y1,x2,y2` | drags on the area picker: `SCREENSHOT …` or `SCREENSHOT cancelled` |
 | `fillautofill <i>` | `FILLAUTOFILL`: picks entry `i` from the last `AUTOFILL <label>\|…` menu |
 | `profile` | `PROFILE <name> <address bar placeholder>` |
 | `pdf`, `pdfcmd <i>`, `pdfselect <page>` | `PDF pages= page= sidebar= twoup= rotation= highlights=` (or `PDF none`); a viewer button; select a page's start |

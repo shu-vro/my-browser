@@ -2141,6 +2141,37 @@ fn spelling_is_checked_while_typing() {
 }
 
 #[test]
+fn screenshots_take_the_whole_page_the_visible_part_or_an_area() {
+    let dir = TempProfile::new("screenshot");
+    let path = |n: &str| dir.0.join(n).display().to_string();
+    let size = |line: &str| -> (u32, u32) {
+        let (w, h) = line.rsplit(' ').next().and_then(|s| s.split_once('x')).unwrap_or_else(|| panic!("{line}"));
+        (w.parse().unwrap(), h.parse().unwrap())
+    };
+    let mut b = launch();
+    b.nav("go data:text/html,<body style=margin:0><div style=height:3000px;background:red>tall</div>");
+    let full = b.send(&format!("screenshot full {}", path("full.png")));
+    assert!(full.starts_with("SCREENSHOT 1 ") && size(&full).1 >= 3000, "the whole page, not the window: {full}");
+    assert!(std::fs::read(path("full.png")).unwrap().starts_with(b"\x89PNG"));
+    let visible = b.send(&format!("screenshot visible {}", path("visible.png")));
+    assert!(visible.starts_with("SCREENSHOT 1 ") && size(&visible).1 < 3000, "{visible}");
+    let area = b.send(&format!("screenshot area 0,0,100,50 {}", path("area.png")));
+    let (w, h) = size(&area);
+    assert!(area.starts_with("SCREENSHOT 1 ") && w == 2 * h && w >= 100, "{area}");
+    // The picker: a drag takes that area; a click without dragging cancels.
+    assert_eq!(b.send(&format!("screenshot area {}", path("picked.png"))), "SCREENSHOT picking");
+    let picked = b.send("screenshotdrag 10,10,90,50");
+    let (w, h) = size(&picked);
+    assert!(picked.starts_with("SCREENSHOT 1 ") && w * 40 == h * 80, "{picked}");
+    assert_eq!(b.send("screenshot area"), "SCREENSHOT picking");
+    assert_eq!(b.send("screenshotdrag 5,5,6,6"), "SCREENSHOT cancelled");
+    assert_eq!(b.send("screenshotdrag 5,5,60,60"), "ERR no picker", "gone after cancelling");
+    // Copy to Clipboard is remembered (tests copy to a private pasteboard).
+    assert_eq!(b.bridge(&["settings.set", "screenshot_to", "clipboard"]), "true");
+    assert!(b.send("screenshot visible").starts_with("SCREENSHOT copied=1 "));
+}
+
+#[test]
 fn a_playing_video_goes_picture_in_picture_when_its_tab_is_left() {
     let base = serve();
     let mut b = launch_with(&["--on-top"]);

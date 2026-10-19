@@ -144,6 +144,8 @@ pub struct TabIvars {
     /// The PDF viewer over the page (pdf.rs), and a PDF on its way.
     pdf: RefCell<Option<crate::pdf::Viewer>>,
     pdf_expected: Cell<bool>,
+    /// Take Screenshot → Select Area: the overlay the user drags on.
+    area_picker: RefCell<Option<Retained<crate::screenshot::AreaPicker>>>,
 }
 
 /// The saved-passwords menu: (site, frame of the login form, usernames).
@@ -792,7 +794,11 @@ define_class!(
             _info: Option<&AnyObject>,
             done: &DynBlock<dyn Fn(*mut NSMenu)>,
         ) {
-            self.link_menu(menu, link_url(element).as_deref());
+            let link = link_url(element);
+            self.link_menu(menu, link.as_deref());
+            if link.is_none() {
+                self.app().add_page_items(menu, self.is_translated());
+            }
             done.call((menu as *const NSMenu as *mut NSMenu,));
         }
 
@@ -2491,6 +2497,171 @@ impl Tab {
         panel.beginSheetModalForWindow_completionHandler(self.window(), &handler);
     }
 
+    /// Take Screenshot: what's on screen, the whole page, or an area the user
+    /// drags out (screenshot.rs), saved or copied as last chosen. With `to`,
+    /// saved there (tests): `SCREENSHOT <0|1> <width>x<height>`. With `area`
+    /// (picker coordinates), that area without the picker (tests).
+    pub fn screenshot(&self, shot: crate::screenshot::Shot, to: Option<&str>, area: Option<NSRect>) {
+        use crate::screenshot::{AreaPicker, Shot};
+        if self.web().is_none() || self.window().attachedSheet().is_some() {
+            return;
+        }
+        if let Some(old) = self.ivars().area_picker.take() {
+            old.finish(None);
+        }
+        let to = to.map(str::to_string);
+        match (shot, area) {
+            (Shot::Full, _) => self.screenshot_page(to),
+            (Shot::Visible, _) => self.capture(None, to),
+            (Shot::Area, Some(r)) => self.capture(Some(r), to),
+            (Shot::Area, None) => {
+                let this = self.retain();
+                let content = self.window().contentView().unwrap();
+                let picker = AreaPicker::show(
+                    &content,
+                    self.web_frame(),
+                    move |r| {
+                        this.ivars().area_picker.replace(None);
+                        match r {
+                            Some(r) => this.capture(Some(r), to),
+                            None => this.bench_line("SCREENSHOT cancelled"),
+                        }
+                    },
+                    self.mtm(),
+                );
+                self.ivars().area_picker.replace(Some(picker));
+                self.bench_line("SCREENSHOT picking");
+            }
+        }
+    }
+
+    /// The area picker, if it's up (tests drag on it).
+    pub fn area_picker(&self) -> Option<Retained<crate::screenshot::AreaPicker>> {
+        self.ivars().area_picker.borrow().clone()
+    }
+
+    /// What's on screen, or `area` of it (top-left coordinates over the
+    /// page). The PDF viewer is drawn by AppKit; web pages by WebKit.
+    fn capture(&self, area: Option<NSRect>, to: Option<String>) {
+        let Some(web) = self.web() else { return };
+        let frame = self.web_frame();
+        let area = area.unwrap_or(NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
+        if let Some(pdf) = self.ivars().pdf.borrow().as_ref() {
+            // Picker coordinates are top-left; the viewer's are bottom-left.
+            let r = NSRect::new(
+                NSPoint::new(area.origin.x, frame.size.height - area.origin.y - area.size.height),
+                area.size,
+            );
+            let png = pdf.root.bitmapImageRepForCachingDisplayInRect(r).and_then(|rep| {
+                pdf.root.cacheDisplayInRect_toBitmapImageRep(r, &rep);
+                crate::screenshot::png_of_rep(&rep)
+            });
+            return self.deliver_screenshot(png, to);
+        }
+        let config = unsafe { objc2_web_kit::WKSnapshotConfiguration::new(self.mtm()) };
+        // WebKit's view is flipped like the picker, unless a future one isn't.
+        let r = if web.isFlipped() {
+            area
+        } else {
+            NSRect::new(NSPoint::new(area.origin.x, frame.size.height - area.origin.y - area.size.height), area.size)
+        };
+        unsafe { config.setRect(r) };
+        let this = self.retain();
+        let done = RcBlock::new(move |image: *mut NSImage, _e: *mut NSError| {
+            let png = unsafe { image.as_ref() }.and_then(crate::screenshot::png_of_image);
+            this.deliver_screenshot(png, to.clone());
+        });
+        unsafe { web.takeSnapshotWithConfiguration_completionHandler(Some(&config), &done) };
+    }
+
+    /// The whole page: WebKit lays it out as one tall PDF page.
+    fn screenshot_page(&self, to: Option<String>) {
+        let Some(web) = self.web() else { return };
+        let this = self.retain();
+        let done = RcBlock::new(move |pdf: *mut objc2_foundation::NSData, _e: *mut NSError| {
+            let png = unsafe { pdf.as_ref() }.and_then(png_of_pdf);
+            this.deliver_screenshot(png, to.clone());
+        });
+        unsafe { web.createPDFWithConfiguration_completionHandler(None, &done) };
+    }
+
+    /// A screenshot is ready: to `to` (tests), the clipboard, or a file.
+    fn deliver_screenshot(
+        &self,
+        png: Option<(Retained<objc2_foundation::NSData>, (usize, usize))>,
+        to: Option<String>,
+    ) {
+        let Some((data, (w, h))) = png else {
+            if to.is_some() {
+                say!("SCREENSHOT 0 0x0");
+            } else {
+                self.confirm("Couldn't take a screenshot of this page.", &["OK"], |_| {});
+            }
+            return;
+        };
+        if let Some(path) = to {
+            let ok = data.writeToFile_atomically(&NSString::from_str(&path), true);
+            return say!("SCREENSHOT {} {w}x{h}", ok as u8);
+        }
+        if self.app().store().setting("screenshot_to") == "clipboard" {
+            let ok = crate::screenshot::copy_png(&data, self.app().is_bench());
+            self.bench_line(&format!("SCREENSHOT copied={} {w}x{h}", ok as u8));
+            return self.show_hud(if ok { "Screenshot copied" } else { "Couldn't copy the screenshot" });
+        }
+        self.save_screenshot(data);
+    }
+
+    /// A short message over the page that fades away.
+    fn show_hud(&self, text: &str) {
+        let label = NSTextField::labelWithString(&NSString::from_str(&format!("  {text}  ")), self.mtm());
+        label.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(15.0)));
+        label.setDrawsBackground(true);
+        label.setBackgroundColor(Some(&objc2_app_kit::NSColor::colorWithWhite_alpha(0.1, 0.85)));
+        label.setTextColor(Some(&objc2_app_kit::NSColor::whiteColor()));
+        label.sizeToFit();
+        let (frame, size) = (self.web_frame(), label.frame().size);
+        let height = size.height + 12.0;
+        label.setFrame(NSRect::new(
+            NSPoint::new((frame.size.width - size.width) / 2.0, (frame.size.height - height) / 2.0),
+            NSSize::new(size.width, height),
+        ));
+        label.setWantsLayer(true);
+        if let Some(layer) = label.layer() {
+            let _: () = unsafe { msg_send![&*layer, setCornerRadius: 8.0f64] };
+        }
+        self.window().contentView().unwrap().addSubview(&label);
+        let fade = label.clone();
+        let timer = RcBlock::new(move |_t: NonNull<objc2_foundation::NSTimer>| {
+            let gone = fade.clone();
+            let animate = RcBlock::new(move |ctx: NonNull<objc2_app_kit::NSAnimationContext>| {
+                unsafe { ctx.as_ref() }.setDuration(0.4);
+                let animator: Retained<AnyObject> = unsafe { msg_send![&*gone, animator] };
+                let _: () = unsafe { msg_send![&*animator, setAlphaValue: 0.0f64] };
+            });
+            let removed = fade.clone();
+            let done = RcBlock::new(move || removed.removeFromSuperview());
+            objc2_app_kit::NSAnimationContext::runAnimationGroup_completionHandler(&animate, Some(&done));
+        });
+        unsafe { objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(1.2, false, &timer) };
+    }
+
+    fn save_screenshot(&self, png: Retained<objc2_foundation::NSData>) {
+        let panel = objc2_app_kit::NSSavePanel::savePanel(self.mtm());
+        let name = crate::sanitize_filename(&self.title());
+        let name = if name == "download" { "Page".to_string() } else { name };
+        panel.setNameFieldStringValue(&NSString::from_str(&format!("{name}.png")));
+        let (p, this) = (panel.clone(), self.retain());
+        let handler = RcBlock::new(move |response: isize| {
+            let Some(path) = (response == NSModalResponseOK).then(|| p.URL()).flatten().and_then(|u| u.path()) else {
+                return;
+            };
+            if !png.writeToFile_atomically(&path, true) {
+                this.confirm("Couldn't save the screenshot.", &["OK"], |_| {});
+            }
+        });
+        panel.beginSheetModalForWindow_completionHandler(self.window(), &handler);
+    }
+
     /// Bookmark this page, or remove its bookmark (⌘D, the star).
     pub fn toggle_bookmark(&self) {
         let url = self.web().and_then(|w| unsafe { w.URL() }).and_then(|u| u.absoluteString()).map(|u| u.to_string());
@@ -3313,6 +3484,52 @@ fn reader_page(json: &str) -> Option<String> {
         t = escape_html(&title),
         s = escape_html(&site),
     ))
+}
+
+/// A one-page PDF drawn into a PNG at Retina scale, smaller for very long
+/// pages (at most 16,384 pixels tall and 60 megapixels, ~240 MB while drawn).
+/// Returns the PNG and its size in pixels.
+fn png_of_pdf(pdf: &objc2_foundation::NSData) -> Option<(Retained<objc2_foundation::NSData>, (usize, usize))> {
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSBitmapImageRep, NSGraphicsContext, NSPDFImageRep};
+    let rep = NSPDFImageRep::imageRepWithData(pdf)?;
+    let size = rep.bounds().size;
+    let (w, h) = (size.width, size.height);
+    if w < 1.0 || h < 1.0 {
+        return None;
+    }
+    let scale = 2.0f64.min(16384.0 / h).min((60e6 / (w * h)).sqrt());
+    let (pw, ph) = ((w * scale).round() as isize, (h * scale).round() as isize);
+    let bitmap = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            pw,
+            ph,
+            8,
+            4,
+            true,
+            false,
+            objc2_app_kit::NSDeviceRGBColorSpace,
+            0,
+            0,
+        )
+    }?;
+    let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap)?;
+    let area = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(pw as f64, ph as f64));
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&context));
+    objc2_app_kit::NSColor::whiteColor().setFill();
+    objc2_app_kit::NSRectFill(area);
+    let _: Bool = unsafe { msg_send![&*rep, drawInRect: area] };
+    NSGraphicsContext::restoreGraphicsState_class();
+    let png = unsafe {
+        bitmap.representationUsingType_properties(
+            objc2_app_kit::NSBitmapImageFileType::PNG,
+            &objc2_foundation::NSDictionary::new(),
+        )
+    }?;
+    Some((png, (pw as usize, ph as usize)))
 }
 
 /// The link under the pointer, from WebKit's context-menu element info.
