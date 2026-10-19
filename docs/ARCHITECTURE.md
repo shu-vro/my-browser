@@ -853,8 +853,12 @@ A `bookmarks` table in `browser.db` (url, title, `/`-separated folder).
 page, or removes its bookmark. The star follows the page in
 `refresh_toolbar` (one indexed lookup per toolbar refresh). The Bookmarks
 menu keeps two fixed items (so ⌘D and ⌥⌘B always match) and fills the rest in
-`menuNeedsUpdate:`, only when it opens: folders become submenus, at most 500
-bookmarks per folder. ⌘ while choosing one opens a new tab. Settings →
+`menuNeedsUpdate:`, only when it opens: the 10 newest bookmarks, then, with
+more than 10, All Bookmarks, where folders become submenus (at most 500
+bookmarks per folder). The History menu likewise adds the 10 latest pages
+(each address once) after its four fixed items (`fill_history_menu`). Both
+open their page through `openMenuURL:` (the address is the item's
+represented object); ⌘ while choosing one opens a new tab. Settings →
 Bookmarks lists, searches, renames, moves and deletes them through the
 `bookmarks.*` bridge ops, which validate titles and folders. Test:
 `bookmarks_toggle_with_cmd_d_and_fill_the_menu`.
@@ -1126,7 +1130,7 @@ active tab.
 | `sitedata` | `SITEDATA <name>:<kinds>\|…`: the site data sheet for the active tab's site (answer with `dialog`) |
 | `savepage <path>` | `SAVED <0\|1>` once the page is saved there as a Web Archive |
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
-| `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |
+| `bookmarksmenu [i]`, `historymenu [i]` | `BOOKMARKSMENU <item>\|…` (or `HISTORYMENU`) as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |
 | `translate` | `TRANSLATED <from> <n>`, `TRANSLATE off` or `TRANSLATE err <code>`: Translate Page / Show Original |
 | `picker` | `PICKER`; then a click in the page picks, a sheet asks (`DIALOG`), and `HIDDEN <0\|1>` |
 | `spell` | `SPELL continuous=<0\|1> grammar=<0\|1> correct=<0\|1>` |

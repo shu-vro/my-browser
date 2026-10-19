@@ -140,8 +140,8 @@ define_class!(
 
     unsafe impl NSObjectProtocol for App {}
 
-    /// The Bookmarks menu is filled when it opens: no cost until then. The
-    /// Window menu's pin and mute items follow the active tab.
+    /// The Bookmarks and History menus are filled when they open: no cost
+    /// until then. The Window menu's pin and mute items follow the active tab.
     unsafe impl NSMenuDelegate for App {
         #[unsafe(method(menuNeedsUpdate:))]
         fn menu_needs_update(&self, menu: &NSMenu) {
@@ -149,6 +149,7 @@ define_class!(
                 "Window" => self.update_window_menu(menu),
                 "View" => self.update_view_menu(menu),
                 "Bookmarks" => self.fill_bookmarks_menu(menu),
+                "History" => self.fill_history_menu(menu),
                 "Profiles" => self.fill_profiles_menu(menu),
                 _ => {}
             }
@@ -738,18 +739,19 @@ define_class!(
             self.open_internal("settings#bookmarks");
         }
 
-        /// A bookmark in the Bookmarks menu (tag = its id): opens in this tab,
-        /// or a new one with ⌘ held.
-        #[unsafe(method(openBookmark:))]
-        fn open_bookmark_action(&self, sender: &NSMenuItem) {
-            let Some(b) = self.store().bookmark(sender.tag() as i64) else { return };
+        /// A page in the Bookmarks or History menu (its address is the
+        /// item's represented object): opens in this tab, or a new one with ⌘.
+        #[unsafe(method(openMenuURL:))]
+        fn open_menu_url_action(&self, sender: &NSMenuItem) {
+            let Some(url) = sender.representedObject().and_then(|o| o.downcast::<NSString>().ok()) else { return };
+            let url = url.to_string();
             let cmd = NSApplication::sharedApplication(self.mtm())
                 .currentEvent()
                 .is_some_and(|e| e.modifierFlags().contains(NSEventModifierFlags::Command));
             match self.active() {
-                Some(t) if !cmd => t.load(&b.url),
+                Some(t) if !cmd => t.load(&url),
                 _ => {
-                    self.open_tab(&b.url, false);
+                    self.open_tab(&url, false);
                 }
             }
         }
@@ -1616,8 +1618,9 @@ impl App {
         }
     }
 
-    /// The Bookmarks menu: its two fixed items, then every bookmark, folders
-    /// as submenus. Rebuilt each time it opens.
+    /// The Bookmarks menu: its two fixed items, the 10 newest bookmarks,
+    /// then (if there are more) every bookmark in a submenu, folders as
+    /// submenus. Rebuilt each time it opens.
     fn fill_bookmarks_menu(&self, menu: &NSMenu) {
         while menu.numberOfItems() > 2 {
             menu.removeItemAtIndex(2);
@@ -1628,10 +1631,51 @@ impl App {
             first.setTitle(&NSString::from_str(if on { "Remove Bookmark" } else { "Bookmark This Page" }));
         }
         let all = self.store().bookmarks("");
-        if !all.is_empty() {
-            menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
-            self.add_bookmark_items(menu, &all, "");
+        if all.is_empty() {
+            return;
         }
+        menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
+        let mut newest: Vec<&store::Bookmark> = all.iter().collect();
+        newest.sort_by_key(|b| std::cmp::Reverse(b.id));
+        for b in newest.iter().take(10) {
+            menu.addItem(&self.page_item(&b.title, &b.url));
+        }
+        if all.len() > 10 {
+            let sub = NSMenu::initWithTitle(NSMenu::alloc(self.mtm()), &NSString::from_str("All Bookmarks"));
+            self.add_bookmark_items(&sub, &all, "");
+            let item = NSMenuItem::new(self.mtm());
+            item.setTitle(&NSString::from_str("All Bookmarks"));
+            item.setSubmenu(Some(&sub));
+            menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
+            menu.addItem(&item);
+        }
+    }
+
+    /// The History menu: its fixed items, then the 10 latest pages.
+    fn fill_history_menu(&self, menu: &NSMenu) {
+        let fixed = 4;
+        while menu.numberOfItems() > fixed {
+            menu.removeItemAtIndex(fixed);
+        }
+        let mut seen = std::collections::HashSet::new();
+        let visits = self.store().history("", 100);
+        let recent: Vec<_> = visits.iter().filter(|v| seen.insert(v.url.as_str())).take(10).collect();
+        if !recent.is_empty() {
+            menu.addItem(&NSMenuItem::separatorItem(self.mtm()));
+        }
+        for v in recent {
+            menu.addItem(&self.page_item(&v.title, &v.url));
+        }
+    }
+
+    /// A menu item that opens `url` (`openMenuURL:`).
+    fn page_item(&self, title: &str, url: &str) -> Retained<NSMenuItem> {
+        let title: String = if title.is_empty() { url } else { title }.chars().take(70).collect();
+        let item = menu_item(self.mtm(), &title, sel!(openMenuURL:), "", NSEventModifierFlags::empty());
+        unsafe { item.setRepresentedObject(Some(&NSString::from_str(url))) };
+        item.setToolTip(Some(&NSString::from_str(url)));
+        unsafe { item.setTarget(Some(self)) };
+        item
     }
 
     /// Items for the bookmarks directly in `folder`, after a submenu for each
@@ -1660,12 +1704,7 @@ impl App {
         }
         // ponytail: a huge folder shows its first 500; the rest are in Settings → Bookmarks.
         for b in all.iter().filter(|b| b.folder == folder).take(500) {
-            let title: String = if b.title.is_empty() { &b.url } else { &b.title }.chars().take(70).collect();
-            let item = menu_item(mtm, &title, sel!(openBookmark:), "", NSEventModifierFlags::empty());
-            item.setTag(b.id as isize);
-            item.setToolTip(Some(&NSString::from_str(&b.url)));
-            unsafe { item.setTarget(Some(self)) };
-            menu.addItem(&item);
+            menu.addItem(&self.page_item(&b.title, &b.url));
         }
     }
 
@@ -1686,10 +1725,10 @@ impl App {
         menu.addItem(&manage);
     }
 
-    /// The menu bar's Bookmarks menu.
-    fn bookmarks_menu(&self) -> Option<Retained<NSMenu>> {
+    /// One of the menu bar's menus, by title.
+    fn menu_named(&self, title: &str) -> Option<Retained<NSMenu>> {
         let main = NSApplication::sharedApplication(self.mtm()).mainMenu()?;
-        main.itemArray().iter().filter_map(|i| i.submenu()).find(|m| m.title().to_string() == "Bookmarks")
+        main.itemArray().iter().filter_map(|i| i.submenu()).find(|m| m.title().to_string() == title)
     }
 
     pub fn ordered_tabs(&self) -> Vec<Retained<Tab>> {
@@ -2271,11 +2310,19 @@ impl App {
             ("printpdf", Some(t)) => t.print(Some(arg)),
             // Save the page as a Web Archive there: `SAVED <0|1>`.
             ("savepage", Some(t)) => t.save_page(Some(arg)),
-            // The Bookmarks menu as it would open: `BOOKMARKSMENU a|b|-|Folder/|c`.
-            // With an index, picks that item (as a click would) first.
-            ("bookmarksmenu", _) => {
-                let Some(menu) = self.bookmarks_menu() else { return say!("ERR no menu") };
-                self.fill_bookmarks_menu(&menu);
+            // The Bookmarks or History menu as it would open:
+            // `BOOKMARKSMENU a|b|-|Folder/|c`. With an index, picks that item
+            // (as a click would) first.
+            ("bookmarksmenu" | "historymenu", _) => {
+                let history = name == "historymenu";
+                let Some(menu) = self.menu_named(if history { "History" } else { "Bookmarks" }) else {
+                    return say!("ERR no menu");
+                };
+                if history {
+                    self.fill_history_menu(&menu)
+                } else {
+                    self.fill_bookmarks_menu(&menu)
+                }
                 if let Ok(i) = arg.parse::<isize>() {
                     menu.performActionForItemAtIndex(i);
                 }
@@ -2288,7 +2335,7 @@ impl App {
                         _ => i.title().to_string(),
                     })
                     .collect();
-                say!("BOOKMARKSMENU {}", titles.join("|"));
+                say!("{} {}", name.to_uppercase(), titles.join("|"));
             }
             // The toolbar's home button.
             ("gohome", Some(t)) => {

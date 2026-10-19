@@ -161,9 +161,10 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 
 ## Bookmarks, history and downloads
 
-- **Bookmarks** (⌘D or the star): Bookmarks menu with folders, and Settings →
-  Bookmarks (⌥⌘B).
-- **History** (⌘Y): searchable, delete one entry or clear all.
+- **Bookmarks** (⌘D or the star): the Bookmarks menu shows the 10 newest,
+  then (with more) All Bookmarks with folders; Settings → Bookmarks (⌥⌘B).
+- **History** (⌘Y): searchable, delete one entry or clear all. The History
+  menu shows the 10 latest pages.
 - **Most visited sites** on the new tab page.
 - **Downloads** (⌥⌘L): to ~/Downloads or a chosen folder, unique and
   sanitized file names, a list with progress, open, **Quick Look** (or Space),
