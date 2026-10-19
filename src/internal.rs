@@ -400,6 +400,31 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             app.net_forget(ext, args.get(2).map_or("", |s| s));
             "true".into()
         }),
+        // Settings → General → Search keywords.
+        "keywords.list" => {
+            let item = |k: &str, u: &str| format!("{{\"keyword\":{},\"url\":{}}}", json_str(k), json_str(u));
+            let custom: Vec<String> = store.keywords().iter().map(|(k, u)| item(k, u)).collect();
+            let on = store.setting("bangs");
+            let builtin: Vec<String> = crate::BANGS
+                .iter()
+                .map(|(k, u)| {
+                    format!(
+                        "{{\"keyword\":{},\"url\":{},\"on\":{}}}",
+                        json_str(k),
+                        json_str(u),
+                        on.split(',').any(|b| b == *k)
+                    )
+                })
+                .collect();
+            Ok(format!("{{\"custom\":[{}],\"builtin\":[{}]}}", custom.join(","), builtin.join(",")))
+        }
+        "keywords.set" => {
+            store.set_keyword(args.get(1).map_or("", |s| s), args.get(2).map_or("", |s| s)).map(|()| "true".into())
+        }
+        "keywords.delete" => {
+            store.delete_keyword(args.get(1).map_or("", |s| s));
+            ok()
+        }
         "data.clear" => return clear_site_data(app.data_store(), reply),
         // Settings → Site data: every site's data, and deleting one site's.
         "sitedata.list" => {

@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Settings the settings page may change, with their defaults.
-pub const SETTINGS: [(&str, &str); 16] = [
+pub const SETTINGS: [(&str, &str); 17] = [
     // duckduckgo | brave | startpage | google
     ("search", "duckduckgo"),
     // Page for new tabs; empty means a blank page.
@@ -40,6 +40,9 @@ pub const SETTINGS: [(&str, &str); 16] = [
     ("address_suggestions", "1"),
     // Touch ID (or the Mac's password) before a saved password is filled or copied.
     ("password_auth", "1"),
+    // Built-in bangs that are on (`!w rust`), comma-separated: none until the
+    // user turns them on in Settings → General.
+    ("bangs", ""),
 ];
 
 pub struct Store {
@@ -155,7 +158,10 @@ impl Store {
                  folder TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL);
              CREATE INDEX IF NOT EXISTS bookmarks_url ON bookmarks(url);
              CREATE TABLE IF NOT EXISTS zoom (site TEXT PRIMARY KEY, level REAL NOT NULL) WITHOUT ROWID;
-             CREATE TABLE IF NOT EXISTS searches (text TEXT PRIMARY KEY, at INTEGER NOT NULL) WITHOUT ROWID;",
+             CREATE TABLE IF NOT EXISTS searches (text TEXT PRIMARY KEY, at INTEGER NOT NULL) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS keywords (keyword TEXT PRIMARY KEY, url TEXT NOT NULL) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS autofill (
+                 id INTEGER PRIMARY KEY, kind TEXT NOT NULL, fields TEXT NOT NULL, at INTEGER NOT NULL);",
         )?;
         // Added after the first release: extensions run only where clicked unless set to "always".
         let has_access: bool = db.prepare("SELECT access FROM extensions LIMIT 0").is_ok();
@@ -230,6 +236,7 @@ impl Store {
             | "address_suggestions"
             | "password_auth" => value == "0" || value == "1",
             "downloads_dir" => value.is_empty() || Path::new(value).is_dir(),
+            "bangs" => value.is_empty() || value.split(',').all(|b| crate::BANGS.iter().any(|(k, _)| *k == b)),
             _ => return Err(format!("unknown setting {key}")),
         };
         if !valid {
@@ -357,6 +364,38 @@ impl Store {
         }
         out.truncate(limit);
         out
+    }
+
+    // ---- search keywords (`w rust` searches the site set for `w`)
+
+    /// (keyword, address with `%s` for the query), by keyword.
+    pub fn keywords(&self) -> Vec<(String, String)> {
+        let Ok(mut stmt) = self.db.prepare("SELECT keyword, url FROM keywords ORDER BY keyword") else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    /// Add or change a keyword. Validated: the settings page is web content.
+    pub fn set_keyword(&self, keyword: &str, url: &str) -> Result<(), String> {
+        let keyword = keyword.trim().trim_start_matches('!').to_lowercase();
+        let short = !keyword.is_empty() && keyword.len() <= 20;
+        if !short || !keyword.chars().all(|c| c.is_alphanumeric() || "._-".contains(c)) {
+            return Err("A keyword is one short word (letters, digits, . _ -).".into());
+        }
+        let web = url.starts_with("https://") || url.starts_with("http://");
+        if !web || !url.contains("%s") || url.len() > 2000 || url.chars().any(char::is_whitespace) {
+            return Err("The address must start with https:// and have %s where the search goes.".into());
+        }
+        let _ = self.db.execute(
+            "INSERT INTO keywords (keyword, url) VALUES (?1, ?2) ON CONFLICT(keyword) DO UPDATE SET url = excluded.url",
+            [&keyword, url],
+        );
+        Ok(())
+    }
+
+    pub fn delete_keyword(&self, keyword: &str) {
+        let _ = self.db.execute("DELETE FROM keywords WHERE keyword = ?1", [keyword]);
     }
 
     // ---- downloads
@@ -883,6 +922,19 @@ mod tests {
         assert_eq!(s.suggestions("rust", 2).len(), 2);
         s.clear_history();
         assert_eq!(s.search_count(), 0, "clearing history clears searches");
+    }
+
+    #[test]
+    fn keywords_are_validated() {
+        let s = Store::open(None).unwrap();
+        s.set_keyword("!W", "https://wiki.example/?q=%s").unwrap();
+        s.set_keyword("w", "https://wiki2.example/%s").unwrap();
+        assert_eq!(s.keywords(), [("w".to_string(), "https://wiki2.example/%s".to_string())], "lowercase, replaced");
+        assert!(s.set_keyword("two words", "https://a.example/%s").is_err());
+        assert!(s.set_keyword("x", "javascript:alert('%s')").is_err());
+        assert!(s.set_keyword("x", "https://a.example/").is_err(), "needs %s");
+        s.delete_keyword("w");
+        assert!(s.keywords().is_empty());
     }
 
     #[test]

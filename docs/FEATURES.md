@@ -33,6 +33,11 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Address bar**: type an address or a search; shows the committed address
   (can't be spoofed by a slow navigation); Return on the current address only
   focuses the page.
+- **Search keywords and bangs**: your own keywords from Settings → General
+  work with or without the `!` (`w rust`); 17 built-in bangs (`!w`, `!g`,
+  `!yt`, `!gh`, `!mdn`, `!rs`…) are each **off until you turn them on**
+  there, then `!w rust` or `rust !w` searches Wikipedia. Done in the
+  browser: the search engine never sees them.
 - **Suggestions while typing** in the address bar: your past searches and
   pages from your history, from this Mac only (nothing is sent to a search
   engine as you type). Settings → Storage shows the file they're kept in and

@@ -519,6 +519,13 @@ CRX3 header signs the zip and proves the id. Checking it is ~200 lines over
 Security.framework, with no new crate. CRX2 can't prove an id, and Chrome
 refuses it too.
 
+### Why are the built-in bangs off by default?
+
+The owner's call: nothing typed in the address bar should go somewhere the
+user didn't choose. A word that happens to look like `!w` stays a search
+with the user's engine until they turn that bang on in Settings → General
+(setting `bangs`). Their own keywords are on because they added them.
+
 ### Why spelling on by default?
 
 WebKit's default in a plain `WKWebView` is off, so no word was ever

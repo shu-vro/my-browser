@@ -2054,6 +2054,23 @@ fn find_bar_survives_navigation_and_sleep() {
 // tools, local addresses, find counts, folders, PDFs, gestures.
 
 #[test]
+fn search_keywords_open_their_site() {
+    let base = serve();
+    let mut b = launch();
+    assert_eq!(b.bridge(&["keywords.set", "t", &format!("{base}/page/%s")]), "true");
+    assert!(b.send("bridge keywords.set\tbad word\thttps://x.example/%s").starts_with("BRIDGE err"));
+    let wiki = r#"{"keyword":"w","url":"https://en.wikipedia.org/wiki/Special:Search?search=%s","on":"#;
+    assert!(b.bridge(&["keywords.list"]).contains(&format!("{wiki}false}}")), "built-in bangs start off");
+    assert_eq!(b.bridge(&["settings.set", "bangs", "w,yt"]), "true");
+    assert!(b.bridge(&["keywords.list"]).contains(&format!("{wiki}true}}")));
+    assert!(b.send("bridge settings.set\tbangs\tw,nope").starts_with("BRIDGE err"));
+    assert!(b.nav("barenter t hello").ends_with("/page/hello"));
+    assert!(b.nav("barenter world !t").ends_with("/page/world"));
+    b.bridge(&["keywords.delete", "t"]);
+    assert!(b.bridge(&["keywords.list"]).starts_with(r#"{"custom":[]"#));
+}
+
+#[test]
 fn spelling_is_checked_while_typing() {
     let mut b = launch();
     b.nav("go data:text/html,<textarea>helo wrld</textarea>");

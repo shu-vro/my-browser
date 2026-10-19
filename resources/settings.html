@@ -56,6 +56,12 @@
   .hist .x { border: none; background: none; color: var(--muted); padding: 2px 8px; font-size: 16px; line-height: 1; visibility: hidden; }
   .hist li:hover .x, .hist .x:focus-visible { visibility: visible; }
   .hist .x:hover { color: var(--danger); }
+  .bar.add { margin-top: 14px; }
+  .bar.add input { flex: 1; }
+  .bangs { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 14px; margin: 6px 0 4px; }
+  .bangs label { display: flex; align-items: center; gap: 8px; padding: 5px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bangs code { font-weight: 600; }
+  .bangs .sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
@@ -106,6 +112,14 @@
       <input type="checkbox" data-setting="restore_session"></div>
     <div class="row"><div><div>Downloads folder</div><div class="hint" id="dl-default"></div></div>
       <input type="text" data-setting="downloads_dir" placeholder="Default" size="32"></div>
+    <h2>Search keywords</h2>
+    <p class="note">Type a keyword, a space and what to search for, like <code>w rust</code>. Keywords go straight to the site; the search engine never sees them.</p>
+    <ul class="list" id="keywords-list"></ul>
+    <div class="bar add"><input type="text" id="kw-key" placeholder="Keyword" size="8" style="flex:0 0 auto"><input type="text" id="kw-url" placeholder="https://example.com/search?q=%s"><button id="kw-add">Add</button></div>
+    <h2>Bangs</h2>
+    <p class="note">Turn on the ones you want. Then type them with a !, before or after your search: <code>!yt cats</code> or <code>cats !yt</code>. All are off until you turn them on.</p>
+    <div class="bangs" id="kw-builtin"></div>
+    <h2>Other</h2>
     <div class="row"><div><div>Fast JavaScript (JIT)</div><div class="hint">Off saves a lot of memory on heavy sites but makes JavaScript about 2–3× slower. Takes effect after restarting the browser.</div></div>
       <input type="checkbox" data-setting="jit"></div>
     <p class="note" id="profile"></p>
@@ -293,8 +307,33 @@ async function loadDefault() {
 call("app.version").then(v => { $("app-version").textContent = "my-browser " + v; });
 $("check-updates").onclick = () => call("app.updates").catch(fail);
 $("make-default").onclick = () => call("default.set").then(loadDefault, e => { fail(e); loadDefault(); });
-loaders.general = () => { loadSettings(); loadDefault(); };
+loaders.general = () => { loadSettings(); loadDefault(); loadKeywords(); };
 loaders.privacy = loadSettings;
+
+// ---- search keywords
+async function loadKeywords() {
+  const k = await call("keywords.list");
+  const list = $("keywords-list"); list.replaceChildren();
+  if (!k.custom.length) list.append(el("li", "empty", "No keywords of your own yet."));
+  for (const x of k.custom) {
+    const li = el("li"); const main = el("div", "main");
+    main.append(el("div", "title", x.keyword), el("div", "sub", x.url));
+    const del = el("button", null, "Delete"); del.onclick = () => call("keywords.delete", x.keyword).then(loadKeywords, fail);
+    li.append(main, del); list.append(li);
+  }
+  const bangs = $("kw-builtin"); bangs.replaceChildren();
+  for (const b of k.builtin) {
+    const box = el("input"); box.type = "checkbox"; box.checked = b.on; box.dataset.bang = b.keyword;
+    box.onchange = () => {
+      const on = [...bangs.querySelectorAll("input:checked")].map(i => i.dataset.bang).join(",");
+      call("settings.set", "bangs", on).then(() => toast("Saved"), fail);
+    };
+    const label = el("label"); label.append(box, el("code", null, "!" + b.keyword), el("span", "sub", new URL(b.url.replace("%s", "")).host.replace(/^www\./, "")));
+    bangs.append(label);
+  }
+}
+$("kw-add").onclick = () => call("keywords.set", $("kw-key").value, $("kw-url").value.trim()).then(() => { $("kw-key").value = $("kw-url").value = ""; toast("Added"); loadKeywords(); }, fail);
+
 $("clear-data").onclick = () => { if (confirm("Sign out of all sites and delete all cookies, caches and site data?")) call("data.clear").then(() => toast("Cleared"), fail); };
 
 // ---- tabs: memory and CPU per tab, refreshed every 2 s while shown

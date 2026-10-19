@@ -1720,9 +1720,11 @@ impl App {
         self.store().put("session_active", &active.unwrap_or(0).to_string());
     }
 
-    /// Address-bar input to URL, using the chosen search engine.
+    /// Address-bar input to URL: a search keyword or bang (`!w rust`), an
+    /// address, or a search with the chosen engine.
     pub fn normalize(&self, input: &str) -> String {
-        normalize(input, &self.store().setting("search"))
+        keyword_url(input, &self.store().keywords(), &self.store().setting("bangs"))
+            .unwrap_or_else(|| normalize(input, &self.store().setting("search")))
     }
 
     // ---- downloads
@@ -2424,6 +2426,52 @@ pub const SEARCH_ENGINES: [(&str, &str); 4] = [
     ("google", "https://www.google.com/search?q="),
 ];
 
+/// Built-in bangs: `!w rust` or `rust !w` searches Wikipedia. All off until
+/// the user turns them on (setting `bangs`). Turned into an address here, so
+/// the search engine never sees them. `%s` is the query.
+pub const BANGS: [(&str, &str); 17] = [
+    ("a", "https://www.amazon.com/s?k=%s"),
+    ("b", "https://search.brave.com/search?q=%s"),
+    ("crates", "https://crates.io/search?q=%s"),
+    ("ddg", "https://duckduckgo.com/?q=%s"),
+    ("g", "https://www.google.com/search?q=%s"),
+    ("gh", "https://github.com/search?q=%s"),
+    ("imdb", "https://www.imdb.com/find/?q=%s"),
+    ("maps", "https://maps.apple.com/?q=%s"),
+    ("mdn", "https://developer.mozilla.org/search?q=%s"),
+    ("npm", "https://www.npmjs.com/search?q=%s"),
+    ("r", "https://www.reddit.com/search/?q=%s"),
+    ("rs", "https://docs.rs/releases/search?query=%s"),
+    ("so", "https://stackoverflow.com/search?q=%s"),
+    ("sp", "https://www.startpage.com/do/search?q=%s"),
+    ("w", "https://en.wikipedia.org/wiki/Special:Search?search=%s"),
+    ("wa", "https://www.wolframalpha.com/input?i=%s"),
+    ("yt", "https://www.youtube.com/results?search_query=%s"),
+];
+
+/// The address for a keyword search: `!kw query` or `query !kw` with a
+/// built-in bang that's on (`bangs`, comma-separated) or one of the user's
+/// keywords, or `kw query` with one of the user's keywords (Settings →
+/// General). None if it isn't one.
+fn keyword_url(input: &str, custom: &[(String, String)], bangs: &str) -> Option<String> {
+    let s = input.trim();
+    let words: Vec<&str> = s.split_whitespace().collect();
+    let (kw, query) = match words.as_slice() {
+        [first, rest @ ..] if first.len() > 1 && first.starts_with('!') => (&first[1..], rest.to_vec()),
+        [rest @ .., last] if !rest.is_empty() && last.len() > 1 && last.starts_with('!') => (&last[1..], rest.to_vec()),
+        [first, rest @ ..] if !rest.is_empty() && custom.iter().any(|(k, _)| k == first) => (*first, rest.to_vec()),
+        _ => return None,
+    };
+    let kw = kw.to_lowercase();
+    let template = custom
+        .iter()
+        .find(|(k, _)| *k == kw)
+        .map(|(_, u)| u.as_str())
+        .or_else(|| BANGS.iter().find(|(k, _)| *k == kw && bangs.split(',').any(|b| b == kw)).map(|(_, u)| *u))?;
+    // `+` for spaces only works in queries; %20 works in paths too.
+    Some(template.replace("%s", &encode_query(&query.join(" ")).replace('+', "%20")))
+}
+
 /// Whether address-bar input is an address rather than a search.
 pub fn is_address(input: &str) -> bool {
     let s = input.trim();
@@ -2742,6 +2790,36 @@ mod tests {
         assert_eq!(normalize("rust", "google"), "https://www.google.com/search?q=rust");
         assert_eq!(normalize("rust", "startpage"), "https://www.startpage.com/do/search?q=rust");
         assert!(is_address("example.com") && is_address("http://x") && !is_address("rust book") && !is_address("rust"));
+    }
+
+    #[test]
+    fn keywords_and_bangs_search_other_sites() {
+        let custom = [("w".to_string(), "https://wiki.example/find/%s".to_string())];
+        assert_eq!(
+            keyword_url("!yt rust talks", &[], "yt,gh,w").as_deref(),
+            Some("https://www.youtube.com/results?search_query=rust%20talks")
+        );
+        assert_eq!(
+            keyword_url("rust & c !GH", &[], "yt,gh,w").as_deref(),
+            Some("https://github.com/search?q=rust%20%26%20c")
+        );
+        assert_eq!(
+            keyword_url("!w rust", &custom, "").as_deref(),
+            Some("https://wiki.example/find/rust"),
+            "the user's keyword wins"
+        );
+        assert_eq!(
+            keyword_url("w rust", &custom, "").as_deref(),
+            Some("https://wiki.example/find/rust"),
+            "no ! needed for their own"
+        );
+        assert_eq!(keyword_url("w rust", &[], "yt,gh,w"), None, "built-in bangs need the !");
+        assert_eq!(keyword_url("w", &custom, ""), None, "a keyword alone is a search");
+        assert_eq!(keyword_url("!nope rust", &[], "yt,gh,w"), None, "unknown bangs go to the search engine");
+        assert_eq!(keyword_url("https://a.example/!w", &[], "yt,gh,w"), None);
+        assert_eq!(keyword_url("hello !", &[], "yt,gh,w"), None);
+        assert_eq!(keyword_url("!yt rust", &[], ""), None, "built-in bangs are off until turned on");
+        assert_eq!(keyword_url("!yt rust", &[], "w"), None);
     }
 
     #[test]

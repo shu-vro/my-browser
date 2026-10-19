@@ -318,6 +318,15 @@ to the next site. Bench: `zoom` → `ZOOM <level>`. Test:
 
 ### Address bar
 
+What's typed becomes an address in `App::normalize`, in order: a path
+(`/…`, `~`, `~/…`: a folder page or a `file://` address, see "Local
+files"), a search keyword (`keyword_url`: `!kw query` or `query !kw` with a
+built-in bang (`BANGS`) the user turned on (setting `bangs`, comma-separated,
+empty by default) or one of the user's `keywords` rows, or `kw query` with
+one of the user's), an address (`https://`, but `http://` for local
+hosts, `privacy::is_local_host`), else a search. Keywords are checked in
+Settings → General (`keywords.list/set/delete`; one short word, an http(s)
+address with `%s`).
 The bar shows what the user asked for while it loads, otherwise the
 **committed** address (`_committedURL`, private; `_unreachableURL` on error
 pages). `WKWebView.URL` switches to a page-started navigation's target before
