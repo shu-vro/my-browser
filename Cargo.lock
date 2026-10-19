@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "my-browser"
-version = "0.5.1"
+version = "0.5.13"
 dependencies = [
  "block2",
  "objc2",
