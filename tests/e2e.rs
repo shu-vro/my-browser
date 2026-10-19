@@ -2047,3 +2047,16 @@ fn find_bar_survives_navigation_and_sleep() {
     assert!(b.send("findbar").starts_with("FINDBAR open=1"));
     assert_eq!(b.send("find other"), "FIND found=1");
 }
+
+// ---------------------------------------------------------------------------
+// Iteration 8: translate, filters, keywords, spelling, screenshots, picture in
+// picture, extension commands, autofill, profiles, sync file, developer
+// tools, local addresses, find counts, folders, PDFs, gestures.
+
+#[test]
+fn spelling_is_checked_while_typing() {
+    let mut b = launch();
+    b.nav("go data:text/html,<textarea>helo wrld</textarea>");
+    assert_eq!(b.send("spell"), "SPELL continuous=1 grammar=1 correct=0");
+    assert!(b.send("menu Edit").contains("|Spelling and Grammar|"));
+}

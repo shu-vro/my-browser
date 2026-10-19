@@ -691,6 +691,17 @@ and its subresources) and writes it where the save panel says. Offline, it
 opens like any local file (`loadFileURL`). Bench: `savepage <path>` →
 `SAVED <0|1>`. Test: `pages_save_as_web_archives_that_open_offline`.
 
+## Spelling
+
+WebKit checks spelling as you type only if the app says so: `main`
+registers the default `WebContinuousSpellCheckingEnabled = YES` (Safari's
+behaviour); Edit → Spelling and Grammar (first-responder actions:
+`showGuessPanel:`, `checkSpelling:`, `toggleContinuousSpellChecking:`,
+`toggleGrammarChecking:`, `toggleAutomaticSpellingCorrection:`) changes it,
+and WebKit keeps the choice in the app's defaults. Bench: `spell` → `SPELL
+continuous= grammar= correct=` (the menu checkmarks the web view gives).
+Test: `spelling_is_checked_while_typing`.
+
 ## Private windows
 
 ⇧⌘N opens a window whose tabs (`Tab::is_private`) use a non-persistent
@@ -903,6 +914,7 @@ key press does.
 | ⇧⌘N | New private window |
 | ⌘P | Print (the panel's PDF menu saves a PDF) |
 | ⌥⌘P | Picture in picture |
+| ⌘: / ⌘; | Show Spelling and Grammar / Check Document Now |
 | ⇧⌘R | Reader mode |
 | ⌥⌘A | AutoFill password for the focused field |
 | ⇧⌘T | Reopen closed tab |
@@ -967,6 +979,7 @@ active tab.
 | `savepage <path>` | `SAVED <0\|1>` once the page is saved there as a Web Archive |
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |
+| `spell` | `SPELL continuous=<0\|1> grammar=<0\|1> correct=<0\|1>` |
 | `crash` | panics (tests the crash reporter) |
 | `quit` or stdin EOF | exits |
 

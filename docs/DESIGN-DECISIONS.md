@@ -519,6 +519,12 @@ CRX3 header signs the zip and proves the id. Checking it is ~200 lines over
 Security.framework, with no new crate. CRX2 can't prove an id, and Chrome
 refuses it too.
 
+### Why spelling on by default?
+
+WebKit's default in a plain `WKWebView` is off, so no word was ever
+underlined; Safari turns it on. The browser registers the same default and
+leaves the choice to Edit → Spelling and Grammar, where WebKit remembers it.
+
 ## Measurement
 
 ### How does the benchmark find all of the browser's processes?

@@ -2012,6 +2012,8 @@ impl App {
             ("sitedata", Some(t)) => t.show_site_data(),
             ("zoom", Some(t)) => say!("{}", t.zoom_state()),
             ("reader", Some(t)) => t.toggle_reader(),
+            // `SPELL continuous=<0|1> grammar=<0|1> correct=<0|1>`, from the page's web view.
+            ("spell", Some(t)) => say!("{}", t.spell_state()),
             // Pick account `i` from the saved-passwords menu (`PASSWORDS …`).
             ("fillpassword", Some(t)) => {
                 t.fill_password_at(arg.parse().unwrap_or(0));
@@ -2650,6 +2652,24 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
             }
             menu.addItem(&item);
         }
+        if title == "Edit" {
+            // To the first responder (the page, or a text field), like Safari's.
+            // Not in Settings → Shortcuts: it lists top-level items only.
+            let spelling = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Spelling and Grammar"));
+            for (t, action, key) in [
+                ("Show Spelling and Grammar", sel!(showGuessPanel:), ":"),
+                ("Check Document Now", sel!(checkSpelling:), ";"),
+                ("Check Spelling While Typing", sel!(toggleContinuousSpellChecking:), ""),
+                ("Check Grammar With Spelling", sel!(toggleGrammarChecking:), ""),
+                ("Correct Spelling Automatically", sel!(toggleAutomaticSpellingCorrection:), ""),
+            ] {
+                spelling.addItem(&menu_item(mtm, t, action, key, if key.is_empty() { none } else { cmd }));
+            }
+            let holder = menu_item(mtm, "Spelling and Grammar", sel!(submenuAction:), "", none);
+            holder.setSubmenu(Some(&spelling));
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
+            menu.addItem(&holder);
+        }
         if title == "Window" {
             menu.addItem(&NSMenuItem::separatorItem(mtm));
             for n in 1..=9isize {
@@ -2686,6 +2706,12 @@ fn main() {
     } else {
         NSApplicationActivationPolicy::Regular
     });
+    // Spelling is checked as you type, as in Safari (WebKit's default is
+    // off). Edit → Spelling and Grammar changes it; WebKit keeps the choice.
+    let defaults = objc2_foundation::NSUserDefaults::standardUserDefaults();
+    let on: Retained<AnyObject> = objc2_foundation::NSNumber::new_bool(true).into();
+    let key = NSString::from_str("WebContinuousSpellCheckingEnabled");
+    unsafe { defaults.registerDefaults(&objc2_foundation::NSDictionary::from_retained_objects(&[&*key], &[on])) };
     let delegate = App::new(mtm);
     delegate.ivars().bench.set(bench);
     delegate.ivars().on_top.set(on_top);

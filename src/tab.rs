@@ -1762,6 +1762,30 @@ impl Tab {
         }
     }
 
+    /// `SPELL continuous=<0|1> grammar=<0|1> correct=<0|1>`: the checkmarks
+    /// the web view gives the Spelling and Grammar items.
+    pub fn spell_state(&self) -> String {
+        let Some(web) = self.web() else { return "SPELL none".into() };
+        let get = |action| {
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(self.mtm()),
+                    &NSString::from_str(""),
+                    Some(action),
+                    &NSString::from_str(""),
+                )
+            };
+            let _: bool = unsafe { msg_send![&*web, validateUserInterfaceItem: &*item] };
+            (item.state() == 1) as u8
+        };
+        format!(
+            "SPELL continuous={} grammar={} correct={}",
+            get(sel!(toggleContinuousSpellChecking:)),
+            get(sel!(toggleGrammarChecking:)),
+            get(sel!(toggleAutomaticSpellingCorrection:))
+        )
+    }
+
     /// Picture in picture for the page's video: WebKit's own toggle (private),
     /// else the standard API on the largest playing video.
     pub fn picture_in_picture(&self) {

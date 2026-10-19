@@ -42,6 +42,8 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Zoom** in, out and actual size, **remembered per site** (actual size
   forgets it; private windows don't save it).
 - **Find in page** (⌘F, ⌘G, ⇧⌘G).
+- **Spelling** checked as you type (Edit → Spelling and Grammar: check now,
+  grammar, correct automatically).
 - **Reader mode** (⇧⌘R): the article alone, in large type, without scripts.
 - **Print and save as PDF** (⌘P, and `window.print()`).
 - **Save Page As** (⌘S): the page with its images and styles in one Web

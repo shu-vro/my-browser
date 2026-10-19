@@ -106,6 +106,8 @@ commands:
   file name.
 - **`/script/<js>` test pages run in `<head>`:** touch the body in a
   `DOMContentLoaded` listener.
+- **Toggling WebKit's spelling menu items in a test** writes to the app's
+  real defaults domain; read the state with `spell` instead.
 
 ## Commits
 
