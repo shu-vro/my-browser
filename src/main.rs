@@ -1417,6 +1417,10 @@ impl App {
         }
         self.ivars().active.replace(Some(tab.retain()));
         tab.wake();
+        tab.return_to_playing();
+        if let Some(prev) = &prev {
+            prev.leave_playing();
+        }
         if tab.is_private() {
             return;
         }
@@ -1682,8 +1686,9 @@ impl App {
         let idle = sleep_after(minutes, saving_power());
         for tab in self.ivars().tabs.borrow().clone() {
             let since = tab.ivars().last_active.get().map_or(Duration::ZERO, |t| t.elapsed());
-            // Pinned tabs stay awake, unless macOS runs out of memory.
-            let idle = idle.filter(|_| !tab.is_pinned());
+            // Pinned tabs and tabs playing sound (music, a video in picture in
+            // picture) stay awake, unless macOS runs out of memory.
+            let idle = idle.filter(|_| !tab.is_pinned() && !tab.playing_audio());
             if !self.is_active(&tab) && (all || idle.is_some_and(|idle| since >= idle)) {
                 tab.sleep();
             }

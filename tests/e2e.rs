@@ -2133,6 +2133,39 @@ fn spelling_is_checked_while_typing() {
 }
 
 #[test]
+fn a_playing_video_goes_picture_in_picture_when_its_tab_is_left() {
+    let base = serve();
+    let mut b = launch_with(&["--on-top"]);
+    let js = "addEventListener('DOMContentLoaded', () => { document.body.innerHTML = '<video id=v width=320 height=240></video>' }); \
+              function start() { const c = document.createElement('canvas'); c.width = 320; c.height = 240; \
+              const g = c.getContext('2d'); let i = 0; setInterval(() => { g.fillStyle = `hsl(${i++ % 360} 80% 50%)`; g.fillRect(0, 0, 320, 240) }, 40); \
+              const ac = new AudioContext(); const o = ac.createOscillator(); const gain = ac.createGain(); gain.gain.value = 0.001; \
+              const d = ac.createMediaStreamDestination(); o.connect(gain).connect(d); o.start(); \
+              const s = c.captureStream(25); s.addTrack(d.stream.getAudioTracks()[0]); v.srcObject = s; v.play(); return 1 }";
+    b.nav(&format!("go {base}/script/{}", encode(js)));
+    assert_eq!(b.send("eval start()"), "EVAL 1");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !b.send("tabflags").contains("audio=1") {
+        assert!(Instant::now() < deadline, "never played");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    writeln!(b.stdin, "newtab").unwrap();
+    b.wait_all(&["TABS", "AUTOPIP 1"]);
+    b.send("switch 0");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while b.send("eval !!document.pictureInPictureElement") != "EVAL 0" {
+        assert!(Instant::now() < deadline, "back in the page when the tab is shown again");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Turned off: nothing happens.
+    assert_eq!(b.bridge(&["settings.set", "auto_pip", "0"]), "true");
+    b.send("switch 1");
+    std::thread::sleep(Duration::from_millis(500));
+    b.send("switch 0");
+    assert_eq!(b.send("eval !!document.pictureInPictureElement"), "EVAL 0");
+}
+
+#[test]
 fn developer_tools_can_be_turned_off() {
     let mut b = launch();
     b.nav("go about:blank");

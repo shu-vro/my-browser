@@ -137,7 +137,9 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 ## Media
 
 - Video fullscreen.
-- **Picture in picture** (⌥⌘P or the video's menu).
+- **Picture in picture** (⌥⌘P or the video's menu), and **automatically**
+  when you leave a tab whose video plays with sound (back in the page when
+  you return; a setting). Tabs playing sound don't fall asleep.
 - **Screen sharing** for video calls, asked per site.
 
 ## Passwords

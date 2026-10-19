@@ -137,6 +137,8 @@ pub struct TabIvars {
     /// replies belong to (a new page or Show Original drops late ones).
     translated: Cell<bool>,
     translate_run: Cell<u64>,
+    /// Its video went to picture in picture when the user left the tab.
+    auto_pip: Cell<bool>,
 }
 
 /// The saved-passwords menu: (site, frame of the login form, usernames).
@@ -2048,6 +2050,39 @@ impl Tab {
                 None,
             )
         };
+    }
+
+    /// The user left this tab while its video plays with sound: keep showing
+    /// it in picture in picture (Settings → General). Silent videos (ads,
+    /// backgrounds) are left alone.
+    pub fn leave_playing(&self) {
+        if !self.playing_audio() || !self.app().store().flag("auto_pip") {
+            return;
+        }
+        let this = self.retain();
+        self.client_js(
+            "if (document.pictureInPictureElement) return 0; \
+             const v = [...document.querySelectorAll('video')].filter(v => !v.paused && !v.ended && v.readyState > 1 \
+               && !v.disablePictureInPicture).sort((a, b) => b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight)[0]; \
+             if (!v) return 0; \
+             try { await v.requestPictureInPicture(); return 1 } catch { return 0 }",
+            None,
+            move |r| {
+                let on = r.and_then(|r| r.downcast::<objc2_foundation::NSNumber>().ok()).is_some_and(|n| n.boolValue());
+                this.ivars().auto_pip.set(on);
+                if on {
+                    this.bench_line("AUTOPIP 1");
+                }
+            },
+        );
+    }
+
+    /// Back to a tab whose video went to picture in picture when it was left:
+    /// the video comes back into the page.
+    pub fn return_to_playing(&self) {
+        if self.ivars().auto_pip.replace(false) {
+            self.client_js("if (document.pictureInPictureElement) await document.exitPictureInPicture()", None, |_| {});
+        }
     }
 
     /// Put our link items in place of WebKit's "Open Link in New Window"

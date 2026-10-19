@@ -163,7 +163,8 @@ A tab has two states:
   the web view. The order matters: KVO on a freed object crashes.
 - `Tab::wake` creates a new web view from `App::make_config()` and loads the
   saved URL. Waking happens whenever a tab becomes the active tab.
-- The active tab never sleeps.
+- The active tab never sleeps, and the idle timer leaves pinned tabs and
+  tabs playing sound alone (memory pressure still sleeps them).
 - `App::sleep_background_tabs` runs from one 30-second timer (with 10 s
   tolerance, so macOS can batch the wakeup). It puts to sleep tabs idle longer
   than the `tab_sleep_minutes` setting, or every background tab if
@@ -708,7 +709,17 @@ until the user asks. Test: `reader_mode_shows_the_article_alone_without_scripts`
   UI-delegate method above. A hidden page can't share (WebKit refuses with
   InvalidStateError), so the test runs `--on-top`.
 
-All three cost nothing until a page uses them. The private ones are `TUNE`
+**Automatic picture in picture**: when the active tab changes
+(`App::set_active`), the tab left behind, if it plays sound (`_isPlayingAudio`)
+and `auto_pip` is on, asks its largest playing video for picture in picture
+(`Tab::leave_playing`, in the browser's script world, which carries the user
+gesture `requestPictureInPicture` needs). Coming back to the tab exits it
+(`return_to_playing`). Silent videos are left alone. Tabs playing sound are
+never put to sleep by the idle timer (memory pressure still sleeps them).
+Bench: `AUTOPIP 1` when it happens. Test:
+`a_playing_video_goes_picture_in_picture_when_its_tab_is_left`.
+
+All of these cost nothing until a page uses them. The private ones are `TUNE`
 lines (`picture_in_picture`, `screen_capture`), and so are the private
 UI-delegate methods (`context_menu`, `page_print`, `display_capture`): WebKit
 only calls delegate methods its `WKUIDelegatePrivate` protocol declares, so
