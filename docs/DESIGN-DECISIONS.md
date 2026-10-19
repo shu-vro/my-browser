@@ -519,6 +519,15 @@ CRX3 header signs the zip and proves the id. Checking it is ~200 lines over
 Security.framework, with no new crate. CRX2 can't prove an id, and Chrome
 refuses it too.
 
+### Why are there developer tools now?
+
+Until iteration 8 there were none (CONTRIBUTING: "no Web Inspector"). The
+owner reversed that: they want to inspect pages. WebKit's own Web Inspector
+costs nothing until opened (it's another web view, loaded on demand), so
+turning it on is two switches: `isInspectable` on every web view and the
+private developer-extras preference (Inspect Element in the page menu). A
+setting turns both off, for people who'd rather not have them.
+
 ### Why are the built-in bangs off by default?
 
 The owner's call: nothing typed in the address bar should go somewhere the

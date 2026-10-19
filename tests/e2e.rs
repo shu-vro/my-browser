@@ -454,6 +454,7 @@ fn engine_and_privacy_settings_are_applied() {
         "committed_url",
         "context_menu",
         "cookie_banners",
+        "developer_extras",
         "display_capture",
         "ext_background_view",
         "fingerprinting_protection",
@@ -473,6 +474,7 @@ fn engine_and_privacy_settings_are_applied() {
         "third_party_cookies_blocked",
         "tracking_prevention",
         "trackers",
+        "web_inspector",
         "web_process_id",
     ];
     want.sort();
@@ -2076,6 +2078,16 @@ fn spelling_is_checked_while_typing() {
     b.nav("go data:text/html,<textarea>helo wrld</textarea>");
     assert_eq!(b.send("spell"), "SPELL continuous=1 grammar=1 correct=0");
     assert!(b.send("menu Edit").contains("|Spelling and Grammar|"));
+}
+
+#[test]
+fn developer_tools_can_be_turned_off() {
+    let mut b = launch();
+    b.nav("go about:blank");
+    assert_eq!(b.send("inspector"), "INSPECTOR 1");
+    assert!(b.send("menu View").contains("|Show Web Inspector"));
+    assert_eq!(b.bridge(&["settings.set", "devtools", "0"]), "true");
+    assert_eq!(b.send("inspector"), "INSPECTOR 0");
 }
 
 #[test]

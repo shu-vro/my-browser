@@ -708,6 +708,16 @@ and its subresources) and writes it where the save panel says. Offline, it
 opens like any local file (`loadFileURL`). Bench: `savepage <path>` →
 `SAVED <0|1>`. Test: `pages_save_as_web_archives_that_open_offline`.
 
+## Developer tools
+
+The `devtools` setting (on) sets every web view's `isInspectable` (Safari's
+Develop menu can attach) and the shared preferences' private
+`_setDeveloperExtrasEnabled:` (`TUNE developer_extras`: Inspect Element in
+the page's menu). View → Show Web Inspector (⌥⌘I) opens the page's
+inspector (private `_inspector`, `show`; `TUNE web_inspector`). Off, none of
+these. Bench: `inspector` → `INSPECTOR <0|1>`. Test:
+`developer_tools_can_be_turned_off`.
+
 ## Spelling
 
 WebKit checks spelling as you type only if the app says so: `main`
@@ -931,6 +941,7 @@ key press does.
 | ⇧⌘N | New private window |
 | ⌘P | Print (the panel's PDF menu saves a PDF) |
 | ⌥⌘P | Picture in picture |
+| ⌥⌘I | Show Web Inspector |
 | ⌘: / ⌘; | Show Spelling and Grammar / Check Document Now |
 | ⇧⌘R | Reader mode |
 | ⌥⌘A | AutoFill password for the focused field |
@@ -997,6 +1008,7 @@ active tab.
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |
 | `spell` | `SPELL continuous=<0\|1> grammar=<0\|1> correct=<0\|1>` |
+| `inspector` | `INSPECTOR <0\|1>`: there's a Web Inspector to show |
 | `crash` | panics (tests the crash reporter) |
 | `quit` or stdin EOF | exits |
 

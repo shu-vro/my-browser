@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Settings the settings page may change, with their defaults.
-pub const SETTINGS: [(&str, &str); 17] = [
+pub const SETTINGS: [(&str, &str); 18] = [
     // duckduckgo | brave | startpage | google
     ("search", "duckduckgo"),
     // Page for new tabs; empty means a blank page.
@@ -40,6 +40,8 @@ pub const SETTINGS: [(&str, &str); 17] = [
     ("address_suggestions", "1"),
     // Touch ID (or the Mac's password) before a saved password is filled or copied.
     ("password_auth", "1"),
+    // Web Inspector: Inspect Element in the page menu, View → Show Web Inspector.
+    ("devtools", "1"),
     // Built-in bangs that are on (`!w rust`), comma-separated: none until the
     // user turns them on in Settings → General.
     ("bangs", ""),
@@ -234,7 +236,8 @@ impl Store {
             | "home_search"
             | "home_top_sites"
             | "address_suggestions"
-            | "password_auth" => value == "0" || value == "1",
+            | "password_auth"
+            | "devtools" => value == "0" || value == "1",
             "downloads_dir" => value.is_empty() || Path::new(value).is_dir(),
             "bangs" => value.is_empty() || value.split(',').all(|b| crate::BANGS.iter().any(|(k, _)| *k == b)),
             _ => return Err(format!("unknown setting {key}")),

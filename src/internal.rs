@@ -112,6 +112,7 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
                     "block_trackers" | "block_local_network" | "hide_cookie_banners" => app.apply_trackers(),
                     "safe_browsing" => app.apply_safe_browsing(),
                     "theme" => app.apply_theme(),
+                    "devtools" => app.apply_devtools(),
                     _ => {}
                 }
                 "true".to_string()

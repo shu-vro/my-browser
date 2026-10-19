@@ -52,6 +52,8 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Find in page** (⌘F, ⌘G, ⇧⌘G).
 - **Spelling** checked as you type (Edit → Spelling and Grammar: check now,
   grammar, correct automatically).
+- **Developer tools**: Inspect Element and View → Show Web Inspector (⌥⌘I);
+  a setting turns them off.
 - **Reader mode** (⇧⌘R): the article alone, in large type, without scripts.
 - **Print and save as PDF** (⌘P, and `window.print()`).
 - **Save Page As** (⌘S): the page with its images and styles in one Web

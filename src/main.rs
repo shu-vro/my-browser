@@ -655,6 +655,12 @@ define_class!(
             self.with_active(|t| t.toggle_reader());
         }
 
+        /// View → Show Web Inspector (⌥⌘I), unless developer tools are off.
+        #[unsafe(method(showInspector:))]
+        fn show_inspector_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.show_inspector());
+        }
+
         /// Picture in picture for the page's video (⌥⌘P).
         #[unsafe(method(pictureInPicture:))]
         fn picture_in_picture_action(&self, _s: Option<&AnyObject>) {
@@ -897,6 +903,10 @@ impl App {
             true,
             WKWebExtensionContext::class().responds_to(sel!(_backgroundWebView)),
         ));
+        // Web Inspector (Settings → General → Developer tools).
+        let devtools = responds(&prefs, sel!(_setDeveloperExtrasEnabled:));
+        report.push(line("developer_extras", true, devtools));
+        report.push(line("web_inspector", true, WKWebView::class().responds_to(sel!(_inspector))));
         let (pool, tuning) = engine_tuning(&prefs, self.store().flag("jit"), mtm);
         report.extend(tuning.into_iter().map(|(n, v, ok)| line(n, v, ok)));
 
@@ -946,6 +956,7 @@ impl App {
         unsafe { extensions.setDelegate(Some(ProtocolObject::from_ref(self))) };
         let _ = self.ivars().data_store.set(data_store);
         let _ = self.ivars().prefs.set(prefs);
+        self.apply_devtools();
         let _ = self.ivars().pool.set(pool);
         let _ = self.ivars().content.set(content);
         let _ = self.ivars().extensions.set(extensions);
@@ -1207,6 +1218,21 @@ impl App {
         };
         let appearance = name.and_then(objc2_app_kit::NSAppearance::appearanceNamed);
         NSApplication::sharedApplication(self.mtm()).setAppearance(appearance.as_deref());
+    }
+
+    /// Developer tools on or off: the page menu's Inspect Element (private
+    /// `_setDeveloperExtrasEnabled:`) and every web view's `isInspectable`.
+    pub fn apply_devtools(&self) {
+        let on = self.store().flag("devtools");
+        let prefs = self.ivars().prefs.get().unwrap();
+        if responds(prefs, sel!(_setDeveloperExtrasEnabled:)) {
+            let _: () = unsafe { msg_send![&**prefs, _setDeveloperExtrasEnabled: Bool::new(on)] };
+        }
+        for t in self.ivars().tabs.borrow().iter() {
+            if let Some(web) = t.web() {
+                unsafe { web.setInspectable(on) };
+            }
+        }
     }
 
     pub fn apply_safe_browsing(&self) {
@@ -2016,6 +2042,8 @@ impl App {
             ("reader", Some(t)) => t.toggle_reader(),
             // `SPELL continuous=<0|1> grammar=<0|1> correct=<0|1>`, from the page's web view.
             ("spell", Some(t)) => say!("{}", t.spell_state()),
+            // View → Show Web Inspector: `INSPECTOR <0|1>` (whether there's one to show).
+            ("inspector", Some(t)) => t.show_inspector(),
             // Pick account `i` from the saved-passwords menu (`PASSWORDS …`).
             ("fillpassword", Some(t)) => {
                 t.fill_password_at(arg.parse().unwrap_or(0));
@@ -2656,6 +2684,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Actual Size", sel!(actualSize:), "0", cmd, true),
                 ("Picture in Picture", sel!(pictureInPicture:), "p", cmd_alt, true),
                 ("Reader", sel!(toggleReader:), "R", cmd, true),
+                ("Show Web Inspector", sel!(showInspector:), "i", cmd_alt, true),
             ],
         ),
         (

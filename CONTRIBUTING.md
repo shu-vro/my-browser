@@ -12,16 +12,19 @@ how much memory their browser uses, not for web developers.
   file uploads work, extensions work. "Light" never means "broken".
 - **Private by construction.** No telemetry, no tracking, no data leaves the
   machine unless the user asks for it.
-- **No developer tools.** No Web Inspector, no console, no view-source.
-  Extensions are the way to extend the browser.
+- **Developer tools only as WebKit's own.** The Web Inspector is on (a
+  setting turns it off; it costs nothing until opened), but the browser
+  grows no developer features of its own. Extensions are the way to extend
+  the browser.
 
 ### Non-goals
 
 - Windows or Linux, for now. The design is macOS-native on purpose.
 - Our own rendering engine or a Chromium fork (see
   docs/ARCHITECTURE.md, "Why not our own engine").
-- Sync, accounts, built-in AI, or any cloud feature.
-- Developer features.
+- Sync through a server, accounts, built-in AI, or any cloud feature
+  (moving your data is a file you export and import).
+- Developer features beyond WebKit's own inspector.
 
 Why each major decision was made, with its evidence:
 [docs/DESIGN-DECISIONS.md](docs/DESIGN-DECISIONS.md). Read the entry before

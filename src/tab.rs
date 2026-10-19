@@ -1193,6 +1193,8 @@ impl Tab {
             web.setUIDelegate(Some(ProtocolObject::from_ref(self)));
             // Two-finger swipe left/right on the trackpad goes back/forward.
             web.setAllowsBackForwardNavigationGestures(true);
+            // Web Inspector (and Safari's Develop menu) may attach, unless turned off.
+            web.setInspectable(self.app().store().flag("devtools"));
         }
         content.addSubview(&web);
         for key in observed(&web) {
@@ -1787,6 +1789,22 @@ impl Tab {
             get(sel!(toggleGrammarChecking:)),
             get(sel!(toggleAutomaticSpellingCorrection:))
         )
+    }
+
+    /// Web Inspector for this page (private `_inspector`), if developer
+    /// tools are on. `INSPECTOR <0|1>` in bench mode, without opening it.
+    pub fn show_inspector(&self) {
+        let on = self.app().store().flag("devtools");
+        let inspector: Option<Retained<AnyObject>> = self
+            .web()
+            .filter(|w| on && responds(w, sel!(_inspector)))
+            .and_then(|w| unsafe { msg_send![&*w, _inspector] });
+        if self.app().is_bench() {
+            return say!("INSPECTOR {}", inspector.is_some() as u8);
+        }
+        if let Some(i) = inspector.filter(|i| responds(i, sel!(show))) {
+            let _: () = unsafe { msg_send![&*i, show] };
+        }
     }
 
     /// Picture in picture for the page's video: WebKit's own toggle (private),

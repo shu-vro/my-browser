@@ -10,7 +10,7 @@ Before reversing a decision, read its entry in
 
 The lightest production browser on macOS: a Rust + AppKit shell on the system
 WKWebView. Memory first, then wakeups, then speed. No telemetry, no tracking,
-no devtools; extensions yes. Full vision and rules:
+WebKit's own devtools (a setting); extensions yes. Full vision and rules:
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Hard rules
