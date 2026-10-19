@@ -83,6 +83,8 @@ pub struct AppIvars {
     ext_contexts: RefCell<HashMap<i64, Retained<WKWebExtensionContext>>>,
     /// Every enabled extension's manifest and icons, read at launch.
     ext_meta: RefCell<HashMap<i64, Retained<WKWebExtension>>>,
+    /// Their keyboard commands (the Extensions menu).
+    ext_commands: RefCell<HashMap<i64, Vec<extensions::Command>>>,
     /// Hidden windows holding background pages that play audio (see
     /// `host_extension_audio`).
     ext_audio_windows: RefCell<HashMap<i64, Retained<NSWindow>>>,
@@ -670,6 +672,17 @@ define_class!(
         #[unsafe(method(showInspector:))]
         fn show_inspector_action(&self, _s: Option<&AnyObject>) {
             self.with_active(|t| t.show_inspector());
+        }
+
+        /// An extension's keyboard command (Extensions menu; tag = id * 100 + index).
+        #[unsafe(method(extensionCommand:))]
+        fn extension_command_action(&self, sender: &NSMenuItem) {
+            self.run_extension_command(sender.tag() as i64);
+        }
+
+        #[unsafe(method(showExtensions:))]
+        fn show_extensions_action(&self, _s: Option<&AnyObject>) {
+            self.open_internal("settings#extensions");
         }
 
         /// Hide Element on Page… (View menu, site menu).
@@ -2784,6 +2797,8 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Show All Bookmarks", sel!(showBookmarks:), "b", cmd_alt, true),
             ],
         ),
+        // Then every extension's keyboard commands (`rebuild_extension_menu`).
+        ("Extensions", vec![("Manage Extensions…", sel!(showExtensions:), "", none, true)]),
         (
             "Window",
             vec![

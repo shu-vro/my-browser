@@ -180,6 +180,9 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   update checks.
 - `chrome.offscreen` stand-in so extensions like Edge Read Aloud can play
   audio.
+- **Keyboard commands** (manifest `commands`) in the Extensions menu, with
+  the keys the extension suggests unless taken; change them in Settings →
+  Shortcuts.
 
 ## Settings and app
 

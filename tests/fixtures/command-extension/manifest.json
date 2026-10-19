@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Command Test",
+  "version": "1.0",
+  "description": "Test fixture: a keyboard command that marks the page's title.",
+  "permissions": ["scripting"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Command Test" },
+  "commands": {
+    "mark": {
+      "suggested_key": { "default": "Ctrl+Shift+Y", "mac": "Command+Shift+Y" },
+      "description": "Mark the page"
+    }
+  }
+}

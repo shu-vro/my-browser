@@ -120,9 +120,12 @@ pub fn display(key: &str, m: NSEventModifierFlags) -> String {
 /// on the menu. At launch, once the profile is open.
 pub fn apply_saved(app: &App) {
     for (_, id, item) in items(app) {
+        // Built-in keys are recorded once: run again (for the Extensions
+        // menu), an item's current keys may already be the user's.
         app.default_keys()
             .borrow_mut()
-            .insert(id.clone(), (item.keyEquivalent().to_string(), item.keyEquivalentModifierMask()));
+            .entry(id.clone())
+            .or_insert_with(|| (item.keyEquivalent().to_string(), item.keyEquivalentModifierMask()));
         if let Some(spec) = app.store().get(&format!("shortcut:{id}")) {
             set_item(&item, &spec);
         }
@@ -140,6 +143,11 @@ fn set_item(item: &NSMenuItem, spec: &str) {
     };
     item.setKeyEquivalent(&NSString::from_str(&key));
     item.setKeyEquivalentModifierMask(mods);
+}
+
+/// Whether a menu item already has these keys.
+pub fn in_use(app: &App, key: &str, mods: NSEventModifierFlags) -> bool {
+    items(app).iter().any(|(_, _, i)| i.keyEquivalent().to_string() == key && i.keyEquivalentModifierMask() == mods)
 }
 
 /// Give `id` the keys `spec` ("" = no shortcut). Refused if another item

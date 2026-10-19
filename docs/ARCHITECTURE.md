@@ -923,6 +923,18 @@ prints `PREVIEW <path>` instead, since the panel would take focus.
   and property changes (URL/title/loading) to the controller. Extension tab
   loads (`tabs.create`/`update`) can't open `mybrowser:`, `file:` or
   `javascript:` addresses.
+- **Keyboard commands**: `extensions::read_commands` reads the manifest's
+  `commands` (with `suggested_key`: `mac`, else `default`; Chrome's Ctrl and
+  Command are ⌘ on a Mac, MacCtrl ⌃, Alt ⌥; keys a menu can't take are
+  left without). Each becomes an item of the Extensions menu
+  (`rebuild_extension_menu`, on register and unload; tag = id × 100 +
+  index, so ids are `extensionCommand:#<tag>` in Settings → Shortcuts),
+  with the suggested key unless another item has it. Choosing one starts
+  the extension and turns it on for the tab's site like a click
+  (`turn_on_for_site`), then `performCommand:` (`commands.onCommand`);
+  `_execute_action` is a click. The user's keys for them are applied after
+  every rebuild (`shortcuts::apply_saved`, which records built-in keys only
+  once). Test: `extension_keyboard_commands_are_menu_items`.
 - **`chrome.offscreen`** (missing in WebKit): extensions asking for it get
   a stand-in (`resources/offscreen.js`, an iframe in the background page) and
   their background page is put in a hidden window when it creates the
@@ -932,7 +944,6 @@ prints `PREVIEW <path>` instead, since the panel would take focus.
   in the profile's copy is rewritten for this (`adapt_offscreen`, at install
   and launch). See DESIGN-DECISIONS.
 - **Not supported yet:**
-  - keyboard commands from the manifest (`commands`),
   - `tabs.onDetached`/`onAttached` when a tab is dragged to another window,
   - packed `.zip`/`.appex` install,
   - extensions in throwaway (private) profiles.
@@ -1008,6 +1019,7 @@ key press does.
 | ⌥⌘T | Translate Page / Show Original |
 | ⌥⌘I | Show Web Inspector |
 | ⌘: / ⌘; | Show Spelling and Grammar / Check Document Now |
+| An extension's keys | Its command (Extensions menu) |
 | ⇧⌘R | Reader mode |
 | ⌥⌘A | AutoFill password for the focused field |
 | ⇧⌘T | Reopen closed tab |

@@ -62,6 +62,7 @@ impl App {
             adapt_offscreen(Path::new(path));
         }
         let this = self.retain();
+        let path_owned = path.to_string();
         read_extension(
             self.mtm(),
             path,
@@ -72,6 +73,7 @@ impl App {
                 };
                 let name = extension_name(&ext);
                 this.ivars().ext_meta.borrow_mut().insert(id, ext);
+                this.ivars().ext_commands.borrow_mut().insert(id, read_commands(Path::new(&path_owned)));
                 if this.extension_access(id) == "always"
                     && let Err(e) = this.start_extension(id)
                 {
@@ -79,6 +81,7 @@ impl App {
                     return done(Err(e));
                 }
                 this.refresh_extension_buttons();
+                this.rebuild_extension_menu();
                 done(Ok(name))
             }),
         );
@@ -143,7 +146,81 @@ impl App {
     pub fn unload_extension(&self, id: i64) {
         self.stop_extension(id);
         self.ivars().ext_meta.borrow_mut().remove(&id);
+        self.ivars().ext_commands.borrow_mut().remove(&id);
         self.refresh_extension_buttons();
+        self.rebuild_extension_menu();
+    }
+
+    /// The Extensions menu: Manage Extensions…, then every keyboard command
+    /// of the enabled extensions (manifest `commands`), with the key the
+    /// extension suggests unless another menu item has it. They're ordinary
+    /// menu items, so Settings → Shortcuts lists and changes them too.
+    pub fn rebuild_extension_menu(&self) {
+        let mtm = self.mtm();
+        let Some(main) = objc2_app_kit::NSApplication::sharedApplication(mtm).mainMenu() else { return };
+        let Some(menu) =
+            main.itemArray().iter().filter_map(|i| i.submenu()).find(|m| m.title().to_string() == "Extensions")
+        else {
+            return;
+        };
+        while menu.numberOfItems() > 1 {
+            menu.removeItemAtIndex(1);
+        }
+        let commands = self.ivars().ext_commands.borrow().clone();
+        let meta = self.ivars().ext_meta.borrow().clone();
+        let mut first = true;
+        for ext in self.store().extensions().into_iter().filter(|e| e.enabled) {
+            let (Some(list), Some(m)) = (commands.get(&ext.id), meta.get(&ext.id)) else { continue };
+            for (i, c) in list.iter().enumerate().take(100) {
+                if std::mem::take(&mut first) {
+                    menu.addItem(&objc2_app_kit::NSMenuItem::separatorItem(mtm));
+                }
+                let what = if c.name.starts_with("_execute_") { "Open".to_string() } else { c.description.clone() };
+                let item = objc2_app_kit::NSMenuItem::new(mtm);
+                item.setTitle(&NSString::from_str(&format!("{}: {what}", extension_name(m))));
+                unsafe {
+                    item.setAction(Some(sel!(extensionCommand:)));
+                    item.setTarget(Some(self));
+                }
+                item.setTag((ext.id * 100 + i as i64) as isize);
+                let key = c.key.as_deref().and_then(|k| crate::shortcuts::parse(k).ok());
+                if let Some((key, mods)) = key.filter(|(k, m)| !crate::shortcuts::in_use(self, k, *m)) {
+                    item.setKeyEquivalent(&NSString::from_str(&key));
+                    item.setKeyEquivalentModifierMask(mods);
+                }
+                menu.addItem(&item);
+            }
+        }
+        // The user's own keys for these, kept like any other shortcut's.
+        crate::shortcuts::apply_saved(self);
+    }
+
+    /// An Extensions menu command (tag = id * 100 + its place in the
+    /// manifest), on the active tab. Like a click, it starts the extension
+    /// and turns it on for the tab's site; `_execute_action` is the click.
+    pub fn run_extension_command(&self, tag: i64) {
+        let (id, i) = (tag / 100, (tag % 100) as usize);
+        let Some(name) = self.ivars().ext_commands.borrow().get(&id).and_then(|c| c.get(i)).map(|c| c.name.clone())
+        else {
+            return;
+        };
+        let Some(tab) = self.active().filter(|t| !t.is_private()) else { return };
+        if name.starts_with("_execute_") {
+            if let Err(e) = self.extension_clicked(id, &tab) {
+                tab.confirm(&e, &["OK"], |_| {});
+            }
+            return;
+        }
+        let ctx = match self.start_extension(id) {
+            Ok(ctx) => ctx,
+            Err(e) => return tab.confirm(&e, &["OK"], |_| {}),
+        };
+        self.turn_on_for_site(id, &ctx, &tab);
+        let command = unsafe { ctx.commands() }.iter().find(|c| unsafe { c.identifier() }.to_string() == name);
+        if let Some(command) = command {
+            unsafe { ctx.performCommand(&command) };
+        }
+        self.refresh_extension_buttons_for(&tab);
     }
 
     /// Read an extension's folder again (after its files changed), and
@@ -292,25 +369,7 @@ impl App {
     /// they run, and the popup opens when it's loaded.
     pub fn extension_clicked(&self, id: i64, tab: &Tab) -> Result<(), String> {
         let ctx = self.start_extension(id)?;
-        let url = tab.url();
-        let mut reload = false;
-        let web_page = url.starts_with("http://") || url.starts_with("https://");
-        if let (true, "click", Some(site)) = (web_page, self.extension_access(id).as_str(), site_of(&url)) {
-            let already = tab.ivars().ext_on.borrow().iter().any(|(e, s)| *e == id && *s == site);
-            if !already {
-                if let Some(pattern) = site_pattern(&site, self.mtm()) {
-                    unsafe {
-                        ctx.setPermissionStatus_forMatchPattern(
-                            WKWebExtensionContextPermissionStatus::GrantedExplicitly,
-                            &pattern,
-                        )
-                    };
-                }
-                tab.ivars().ext_on.borrow_mut().push((id, site));
-                let page = NSURL::URLWithString(&NSString::from_str(&url));
-                reload = tab.web().is_some() && page.is_some_and(|u| unsafe { ctx.hasInjectedContentForURL(&u) });
-            }
-        }
+        let reload = self.turn_on_for_site(id, &ctx, tab);
         if reload {
             tab.ivars().pending_ext_action.set(Some(id));
             tab.reload();
@@ -319,6 +378,31 @@ impl App {
         }
         self.refresh_extension_buttons_for(tab);
         Ok(())
+    }
+
+    /// A click-to-run extension was clicked (or its command used) on `tab`:
+    /// let it see and change the tab's site until the tab leaves it. True if
+    /// the page should reload so the extension's content scripts run.
+    fn turn_on_for_site(&self, id: i64, ctx: &WKWebExtensionContext, tab: &Tab) -> bool {
+        let url = tab.url();
+        let web_page = url.starts_with("http://") || url.starts_with("https://");
+        let (true, "click", Some(site)) = (web_page, self.extension_access(id).as_str(), site_of(&url)) else {
+            return false;
+        };
+        if tab.ivars().ext_on.borrow().iter().any(|(e, s)| *e == id && *s == site) {
+            return false;
+        }
+        if let Some(pattern) = site_pattern(&site, self.mtm()) {
+            unsafe {
+                ctx.setPermissionStatus_forMatchPattern(
+                    WKWebExtensionContextPermissionStatus::GrantedExplicitly,
+                    &pattern,
+                )
+            };
+        }
+        tab.ivars().ext_on.borrow_mut().push((id, site));
+        let page = NSURL::URLWithString(&NSString::from_str(&url));
+        tab.web().is_some() && page.is_some_and(|u| unsafe { ctx.hasInjectedContentForURL(&u) })
     }
 
     /// Run the extension's action for `tab`: WebKit opens its popup (through
@@ -456,6 +540,78 @@ impl App {
         let ptr = tab as *const _ as *const u8;
         self.ivars().tabs.borrow().iter().find(|t| std::ptr::eq(Retained::as_ptr(t) as *const u8, ptr)).cloned()
     }
+}
+
+/// A keyboard command from an extension's manifest.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Command {
+    pub name: String,
+    pub description: String,
+    /// The suggested keys as Settings → Shortcuts writes them (`cmd+shift+y`).
+    pub key: Option<String>,
+}
+
+/// The manifest's `commands`, in its order (`_execute_action` and friends
+/// open the extension's popup, like a click).
+pub fn read_commands(dir: &Path) -> Vec<Command> {
+    let Ok(bytes) = std::fs::read(dir.join("manifest.json")) else { return Vec::new() };
+    let data = NSData::with_bytes(&bytes);
+    let Ok(manifest) = NSJSONSerialization::JSONObjectWithData_options_error(&data, NSJSONReadingOptions::empty())
+    else {
+        return Vec::new();
+    };
+    let dict = |o: &objc2::runtime::AnyObject| o.downcast_ref::<objc2_foundation::NSDictionary>().map(|d| d.retain());
+    let text = |d: &objc2_foundation::NSDictionary, k: &str| {
+        d.objectForKey(&NSString::from_str(k)).and_then(|v| v.downcast::<NSString>().ok()).map(|s| s.to_string())
+    };
+    let Some(commands) = dict(&manifest).and_then(|m| m.objectForKey(&NSString::from_str("commands"))) else {
+        return Vec::new();
+    };
+    let Some(commands) = dict(&commands) else { return Vec::new() };
+    let mut out: Vec<Command> = commands
+        .allKeys()
+        .iter()
+        .filter_map(|name| {
+            let name = name.downcast::<NSString>().ok()?.to_string();
+            let c = dict(&*commands.objectForKey(&NSString::from_str(&name))?)?;
+            let suggested = c.objectForKey(&NSString::from_str("suggested_key")).and_then(|k| dict(&k));
+            let key =
+                suggested.and_then(|k| text(&k, "mac").or_else(|| text(&k, "default"))).and_then(|k| command_key(&k));
+            // Localized descriptions (`__MSG_…__`) show as the command's name.
+            let description =
+                text(&c, "description").filter(|d| !d.starts_with("__MSG_")).unwrap_or_else(|| name.clone());
+            Some(Command { name, description, key })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// A manifest's `suggested_key` (`Ctrl+Shift+Y`) in Settings → Shortcuts'
+/// words. On a Mac Chrome reads Ctrl and Command as ⌘, MacCtrl as ⌃, Alt as ⌥.
+/// None for keys the menu can't take (Home, F-keys, media keys…).
+pub fn command_key(spec: &str) -> Option<String> {
+    let parts: Vec<&str> = spec.split('+').map(str::trim).collect();
+    let (key, mods) = parts.split_last()?;
+    let mut out = Vec::new();
+    for m in mods {
+        out.push(match *m {
+            "Ctrl" | "Command" => "cmd",
+            "MacCtrl" => "ctrl",
+            "Alt" => "alt",
+            "Shift" => "shift",
+            _ => return None,
+        });
+    }
+    let key = match *key {
+        k if k.len() == 1 && k.chars().all(|c| c.is_ascii_alphanumeric()) => k.to_ascii_lowercase(),
+        "Comma" => ",".into(),
+        "Period" => ".".into(),
+        "Up" | "Down" | "Left" | "Right" => key.to_ascii_lowercase(),
+        _ => return None,
+    };
+    out.push(&key);
+    Some(out.join("+"))
 }
 
 /// `*://site/*`: http and https on the site's host.
@@ -695,7 +851,31 @@ pub fn describe_access(ext: &WKWebExtension) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{package_zip, webstore_id, with_script};
+    use super::{command_key, package_zip, read_commands, webstore_id, with_script};
+
+    #[test]
+    fn manifest_commands_get_mac_keys() {
+        assert_eq!(command_key("Ctrl+Shift+Y").as_deref(), Some("cmd+shift+y"));
+        assert_eq!(command_key("MacCtrl+Alt+Comma").as_deref(), Some("ctrl+alt+,"));
+        assert_eq!(command_key("Command+Up").as_deref(), Some("cmd+up"));
+        assert_eq!(command_key("Ctrl+Home"), None);
+        assert_eq!(command_key("Hyper+K"), None);
+        let dir = std::env::temp_dir().join(format!("mybrowser-commands-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            r#"{"commands":{"mark":{"suggested_key":{"default":"Ctrl+Shift+Y","mac":"Command+Shift+U"},"description":"Mark"},
+               "_execute_action":{"suggested_key":{"default":"Alt+Shift+K"}},"other":{"description":"__MSG_x__"}}}"#,
+        )
+        .unwrap();
+        let c = read_commands(&dir);
+        assert_eq!(
+            c.iter().map(|c| (c.name.as_str(), c.key.as_deref())).collect::<Vec<_>>(),
+            [("_execute_action", Some("alt+shift+k")), ("mark", Some("cmd+shift+u")), ("other", None)]
+        );
+        assert_eq!(c[2].description, "other", "localized descriptions show the name");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn packages_yield_their_zip() {

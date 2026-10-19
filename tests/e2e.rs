@@ -2166,6 +2166,37 @@ fn a_playing_video_goes_picture_in_picture_when_its_tab_is_left() {
 }
 
 #[test]
+fn extension_keyboard_commands_are_menu_items() {
+    let base = serve();
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/command-extension");
+    let profile = TempProfile::new("commands");
+    let mut b = launch_with(&["--profile", profile.path()]);
+    assert!(b.bridge(&["ext.install", fixture]).contains("\"name\":\"Command Test\""));
+    assert_eq!(b.send("menu Extensions"), "MENU Manage Extensions…|-|Command Test: Mark the page");
+    assert!(
+        b.bridge(&["keys.list"]).contains(r#""menu":"Extensions","title":"Command Test: Mark the page","keys":"⇧⌘Y""#)
+    );
+    b.nav(&format!("go {base}/page/plain"));
+    b.key("cmd+shift+y");
+    assert!(
+        b.state_until(|s| s.ends_with("title=CMD mark")).ends_with("title=CMD mark"),
+        "the command ran on the page"
+    );
+    // Its keys can be changed like any shortcut, and stay changed after a restart.
+    let id = format!("extensionCommand:#{}", 100);
+    assert_eq!(b.bridge(&["keys.set", &id, "cmd+alt+y"]), "true");
+    b.quit();
+    let mut b = launch_with(&["--profile", profile.path()]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !b.bridge(&["keys.list"]).contains(r#""title":"Command Test: Mark the page","keys":"⌥⌘Y","custom":true"#)
+    {
+        assert!(Instant::now() < deadline, "changed keys come back");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    b.quit();
+}
+
+#[test]
 fn developer_tools_can_be_turned_off() {
     let mut b = launch();
     b.nav("go about:blank");
