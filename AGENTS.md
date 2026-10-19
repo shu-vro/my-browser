@@ -38,7 +38,7 @@ WebKit's own devtools (a setting); extensions yes. Full vision and rules:
 
 ```sh
 cargo build --release                  # always test release builds
-cargo test --release                   # 133 tests, ~15 s, opens windows (needs GUI session)
+cargo test --release                   # 161 tests, ~20 s, opens windows (needs GUI session; needs Xcode's swiftc for build.rs)
 git config core.hooksPath .githooks    # once per clone: fmt, clippy, tests before every commit
 ./target/release/bench --runs 1        # ~2 min quick benchmark (floating window)
 ./target/release/bench --only startup  # ~20 s: idle CPU, wakeups, footprint only
@@ -106,6 +106,8 @@ commands:
   file name.
 - **`/script/<js>` test pages run in `<head>`:** touch the body in a
   `DOMContentLoaded` listener.
+- **`LOADED` is only reported for loads a bench command started** (`go`,
+  `back`, `barenter`…). A click made with `eval` needs `state_until`.
 - **Script worlds see their own `CSS.highlights` maplike:** the page world
   may report a size after the browser's world cleared it. Check
   `[...CSS.highlights.keys()]`.
