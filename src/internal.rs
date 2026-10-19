@@ -401,6 +401,23 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             app.net_forget(ext, args.get(2).map_or("", |s| s));
             "true".into()
         }),
+        // Settings → Autofill: `autofill.save <id or 0> <kind> <field> <value>…`.
+        "autofill.list" => Ok(crate::autofill::list_json(app)),
+        "autofill.save" => {
+            let fields: Vec<(String, String)> = args
+                .get(3..)
+                .unwrap_or(&[])
+                .chunks(2)
+                .map(|p| (p[0].clone(), p.get(1).cloned().unwrap_or_default()))
+                .collect();
+            id_arg(&args, 1)
+                .and_then(|id| crate::autofill::save(app, id, args.get(2).map_or("", |s| s), &fields))
+                .map(|id| format!("{{\"id\":{id}}}"))
+        }
+        "autofill.delete" => id_arg(&args, 1).map(|id| {
+            crate::autofill::delete(app, id);
+            "true".into()
+        }),
         // Settings → General → Search keywords.
         "keywords.list" => {
             let item = |k: &str, u: &str| format!("{{\"keyword\":{},\"url\":{}}}", json_str(k), json_str(u));

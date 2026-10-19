@@ -7,6 +7,7 @@ macro_rules! say {
     }};
 }
 
+mod autofill;
 mod crash;
 mod crx;
 mod extensions;
@@ -228,8 +229,6 @@ define_class!(
             let frame = unsafe { message.frameInfo() };
             let origin = unsafe { frame.securityOrigin() };
             let page = format!("{}://{}/", unsafe { origin.protocol() }, unsafe { origin.host() });
-            // The frame's own site: a login form in a frame gets that site's accounts.
-            let Some(site) = passwords::site_for(&page) else { return };
             let Some(tab) = unsafe { message.webView() }.and_then(|w| self.tab_of_web(&w)) else { return };
             let body = unsafe { message.body() };
             let Some(body) = body.downcast_ref::<objc2_foundation::NSDictionary>() else { return };
@@ -238,6 +237,13 @@ define_class!(
             let number = |k: &str| {
                 get(k).and_then(|v| v.downcast::<objc2_foundation::NSNumber>().ok()).map_or(0.0, |n| n.doubleValue())
             };
+            // Addresses fill on any page; cards only where passwords do.
+            if text("op").as_deref() == Some("autofill") {
+                let kind = text("kind").filter(|k| k == "address" || passwords::site_for(&page).is_some());
+                return tab.offer_autofill(&kind.unwrap_or_default(), &frame, number("x"), number("y"));
+            }
+            // The frame's own site: a login form in a frame gets that site's accounts.
+            let Some(site) = passwords::site_for(&page) else { return };
             match text("op").as_deref() {
                 Some("focus") => tab.offer_passwords(&site, &frame, number("x"), number("y")),
                 Some("submit") => {
@@ -2134,6 +2140,11 @@ impl App {
                 say!("PICKER");
             }
             // Pick account `i` from the saved-passwords menu (`PASSWORDS …`).
+            // Pick entry `i` from the autofill menu (`AUTOFILL <label>|…`).
+            ("fillautofill", Some(t)) => {
+                t.fill_autofill_at(arg.parse().unwrap_or(0));
+                say!("FILLAUTOFILL");
+            }
             ("fillpassword", Some(t)) => {
                 t.fill_password_at(arg.parse().unwrap_or(0));
                 say!("FILLPASSWORD");

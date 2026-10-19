@@ -152,6 +152,13 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - Manage them in Settings → Passwords; import a CSV from the Passwords app,
   Safari, Chrome, Edge, Brave or Firefox.
 
+## Autofill
+
+- **Addresses and cards** (Settings → Autofill): click into an address or
+  card field and pick one; the whole form is filled. Card numbers are kept
+  in the keychain and filled only on HTTPS pages, after Touch ID (like
+  passwords); security codes are never saved.
+
 ## Bookmarks, history and downloads
 
 - **Bookmarks** (⌘D or the star): Bookmarks menu with folders, and Settings →

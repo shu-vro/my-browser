@@ -77,7 +77,9 @@ impl Vault {
     /// Every saved (site, username), by site.
     pub fn all(&self) -> Vec<Login> {
         let mut out = match self {
-            Vault::Memory(m) => m.borrow().iter().map(|(s, u, _)| (s.clone(), u.clone())).collect(),
+            Vault::Memory(m) => {
+                m.borrow().iter().filter(|(s, ..)| s != CARDS).map(|(s, u, _)| (s.clone(), u.clone())).collect()
+            }
             Vault::Keychain => keychain::all(),
         };
         out.sort();
@@ -108,6 +110,68 @@ impl Vault {
             Vault::Memory(m) => m.borrow_mut().retain(|(s, u, _)| !(s == site && u == user)),
             Vault::Keychain => keychain::delete(site, user),
         }
+    }
+}
+
+/// Where card numbers are kept: a generic password per card, named by the
+/// card's random `ref` (so profiles never share one). In memory for
+/// throwaway profiles, under this "site".
+const CARDS: &str = "\0card";
+const CARD_SERVICE: &str = "my-browser card";
+
+impl Vault {
+    pub fn card_number(&self, card: &str) -> Option<String> {
+        match self {
+            Vault::Memory(_) => self.password(CARDS, card),
+            Vault::Keychain => keychain::generic(CARD_SERVICE, card).and_then(|b| String::from_utf8(b).ok()),
+        }
+    }
+
+    pub fn save_card_number(&self, card: &str, number: &str) -> Result<(), String> {
+        match self {
+            Vault::Memory(_) => self.save(CARDS, card, number),
+            Vault::Keychain => keychain::save_generic(CARD_SERVICE, card, number),
+        }
+    }
+
+    pub fn delete_card_number(&self, card: &str) {
+        match self {
+            Vault::Memory(_) => self.delete(CARDS, card),
+            Vault::Keychain => keychain::delete_generic(CARD_SERVICE, card),
+        }
+    }
+}
+
+/// A card number as typed: 12 to 19 digits (spaces and dashes dropped) that
+/// pass the Luhn check every card number has. None if it isn't one.
+pub fn card_digits(number: &str) -> Option<String> {
+    let digits: String = number.chars().filter(|c| !matches!(c, ' ' | '-')).collect();
+    if !(12..=19).contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let sum: u32 = digits
+        .bytes()
+        .rev()
+        .enumerate()
+        .map(|(i, b)| {
+            let d = (b - b'0') as u32;
+            if i % 2 == 1 { if d * 2 > 9 { d * 2 - 9 } else { d * 2 } } else { d }
+        })
+        .sum();
+    sum.is_multiple_of(10).then_some(digits)
+}
+
+/// "Visa", "Mastercard"… from the number's first digits, for labels.
+pub fn card_brand(digits: &str) -> &'static str {
+    let two: u32 = digits.get(..2).and_then(|d| d.parse().ok()).unwrap_or(0);
+    let four: u32 = digits.get(..4).and_then(|d| d.parse().ok()).unwrap_or(0);
+    match () {
+        _ if digits.starts_with('4') => "Visa",
+        _ if (51..=55).contains(&two) || (2221..=2720).contains(&four) => "Mastercard",
+        _ if two == 34 || two == 37 => "American Express",
+        _ if digits.starts_with("6011") || two == 65 => "Discover",
+        _ if (3528..=3589).contains(&four) => "JCB",
+        _ => "Card",
     }
 }
 
@@ -227,6 +291,46 @@ mod keychain {
         if status == 0 { Ok(()) } else { Err(format!("The keychain refused to save it (error {status}).")) }
     }
 
+    fn generic_query(service: &str, account: &str) -> Retained<NSMutableDictionary<AnyObject, AnyObject>> {
+        let (service, account) = (NSString::from_str(service), NSString::from_str(account));
+        let creator = NSNumber::new_u32(CREATOR);
+        unsafe {
+            dict(&[
+                (kSecClass, kSecClassGenericPassword),
+                (kSecAttrService, &service),
+                (kSecAttrAccount, &account),
+                (kSecAttrCreator, &creator),
+            ])
+        }
+    }
+
+    /// One of our own generic passwords (a card number).
+    pub fn generic(service: &str, account: &str) -> Option<Vec<u8>> {
+        let q = generic_query(service, account);
+        let _: () = unsafe { objc2::msg_send![&*q, setObject: &*NSNumber::new_bool(true), forKey: kSecReturnData] };
+        let _: () = unsafe { objc2::msg_send![&*q, setObject: kSecMatchLimitOne, forKey: kSecMatchLimit] };
+        Some(copy_matching(&q)?.downcast::<NSData>().ok()?.to_vec())
+    }
+
+    pub fn save_generic(service: &str, account: &str, secret: &str) -> Result<(), String> {
+        let data = NSData::with_bytes(secret.as_bytes());
+        let add = generic_query(service, account);
+        let _: () = unsafe { objc2::msg_send![&*add, setObject: &*data, forKey: kSecValueData] };
+        let mut status = unsafe { SecItemAdd(&*add as *const _ as *const AnyObject, std::ptr::null_mut()) };
+        if status == ERR_DUPLICATE {
+            let change = unsafe { dict(&[(kSecValueData, &data)]) };
+            let q = generic_query(service, account);
+            status =
+                unsafe { SecItemUpdate(&*q as *const _ as *const AnyObject, &*change as *const _ as *const AnyObject) };
+        }
+        if status == 0 { Ok(()) } else { Err(format!("The keychain refused to save it (error {status}).")) }
+    }
+
+    pub fn delete_generic(service: &str, account: &str) {
+        let q = generic_query(service, account);
+        unsafe { SecItemDelete(&*q as *const _ as *const AnyObject) };
+    }
+
     pub fn generic_password(service: &str) -> Option<Vec<u8>> {
         let service = NSString::from_str(service);
         let yes = NSNumber::new_bool(true);
@@ -322,6 +426,24 @@ mod tests {
         v.delete("a.example", "bob");
         assert_eq!(v.accounts("a.example"), ["alice"]);
         assert_eq!(v.password("b.example", "alice"), None, "per site");
+    }
+
+    #[test]
+    fn card_numbers_are_checked_and_kept_apart_from_passwords() {
+        assert_eq!(card_digits("4242 4242 4242 4242").as_deref(), Some("4242424242424242"));
+        assert_eq!(card_digits("5555-5555-5555-4444").as_deref(), Some("5555555555554444"));
+        assert_eq!(card_digits("4242 4242 4242 4241"), None, "fails the Luhn check");
+        assert_eq!(card_digits("1234"), None);
+        assert_eq!(card_digits("4242a42424242424"), None);
+        assert_eq!(card_brand("4242424242424242"), "Visa");
+        assert_eq!(card_brand("2221000000000009"), "Mastercard");
+        assert_eq!(card_brand("378282246310005"), "American Express");
+        let v = Vault::Memory(RefCell::new(Vec::new()));
+        v.save_card_number("ref1", "4242424242424242").unwrap();
+        assert_eq!(v.card_number("ref1").as_deref(), Some("4242424242424242"));
+        assert!(v.all().is_empty(), "card numbers aren't listed as passwords");
+        v.delete_card_number("ref1");
+        assert_eq!(v.card_number("ref1"), None);
     }
 
     #[test]

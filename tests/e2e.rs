@@ -2197,6 +2197,82 @@ fn extension_keyboard_commands_are_menu_items() {
 }
 
 #[test]
+fn addresses_and_cards_fill_forms_when_picked() {
+    let base = serve();
+    let mut b = launch();
+    assert_eq!(
+        b.bridge(&[
+            "autofill.save",
+            "0",
+            "address",
+            "name",
+            "Ada Lovelace",
+            "email",
+            "ada@example.com",
+            "postal",
+            "NW1",
+            "country",
+            "United Kingdom"
+        ]),
+        r#"{"id":1}"#
+    );
+    assert!(
+        b.send("bridge autofill.save\t0\tcard\tnumber\t4242 4242 4242 4241")
+            .ends_with("That isn't a valid card number.")
+    );
+    assert_eq!(
+        b.bridge(&[
+            "autofill.save",
+            "0",
+            "card",
+            "name",
+            "Ada L",
+            "number",
+            "4242 4242 4242 4242",
+            "month",
+            "3",
+            "year",
+            "2031"
+        ]),
+        r#"{"id":2}"#
+    );
+    let list = b.bridge(&["autofill.list"]);
+    assert!(
+        list.contains(r#""label":"Visa •••• 4242 (Ada L)""#) && !list.contains("4242424242424242"),
+        "the number stays in the vault: {list}"
+    );
+    let form = "addEventListener('DOMContentLoaded', () => { document.body.innerHTML = \
+                '<form><input name=fullname id=n placeholder=\"Full name\"><input name=email id=e><input name=zip id=z>\
+                <select name=country id=c><option value=\"\">-</option><option value=GB>United Kingdom</option></select>\
+                <input name=username id=u></form><input type=search id=q>\
+                <form><input autocomplete=cc-name id=cn><input autocomplete=cc-number id=cc><input autocomplete=cc-exp id=ce>\
+                <input autocomplete=cc-csc id=cv></form>' })";
+    b.nav(&format!("go {base}/script/{}", encode(form)));
+    // A lone search box isn't an address field.
+    assert_eq!(b.send("eval q.focus(), 1"), "EVAL 1");
+    writeln!(b.stdin, "eval n.focus(), 1").unwrap();
+    assert_eq!(b.wait_all(&["AUTOFILL", "EVAL"])[0], "AUTOFILL Ada Lovelace, ada@example.com");
+    assert_eq!(b.send("fillautofill 0"), "FILLAUTOFILL");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while b.send("eval [n.value, e.value, z.value, c.value, u.value].join('|')")
+        != "EVAL Ada Lovelace|ada@example.com|NW1|GB|"
+    {
+        assert!(Instant::now() < deadline, "address not filled");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    writeln!(b.stdin, "eval cc.focus(), 1").unwrap();
+    assert_eq!(b.wait_all(&["AUTOFILL", "EVAL"])[0], "AUTOFILL Visa •••• 4242 (Ada L)");
+    assert_eq!(b.send("fillautofill 0"), "FILLAUTOFILL");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while b.send("eval [cn.value, cc.value, ce.value, cv.value].join('|')") != "EVAL Ada L|4242424242424242|03/31|" {
+        assert!(Instant::now() < deadline, "card not filled (and never the security code)");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(b.bridge(&["autofill.delete", "2"]), "true");
+    assert!(!b.bridge(&["autofill.list"]).contains("card"));
+}
+
+#[test]
 fn developer_tools_can_be_turned_off() {
     let mut b = launch();
     b.nav("go about:blank");

@@ -89,6 +89,30 @@ pub struct Bookmark {
     pub folder: String,
 }
 
+/// A saved address or card for forms (Settings → Autofill).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Autofill {
+    pub id: i64,
+    /// address | card
+    pub kind: String,
+    /// (field, value), fields from `AUTOFILL_FIELDS`. A card's number isn't
+    /// here: it's in the keychain under its `ref`.
+    pub fields: Vec<(String, String)>,
+}
+
+impl Autofill {
+    pub fn get(&self, field: &str) -> &str {
+        self.fields.iter().find(|(k, _)| k == field).map_or("", |(_, v)| v)
+    }
+}
+
+/// What each kind keeps. `ref` names a card's number in the keychain; `last4`
+/// shows which card it is.
+pub const AUTOFILL_FIELDS: [(&str, &[&str]); 2] = [
+    ("address", &["name", "organization", "street", "city", "region", "postal", "country", "email", "tel"]),
+    ("card", &["name", "month", "year", "brand", "last4", "ref"]),
+];
+
 /// A tab of the saved session: (window number, url, title, pinned).
 pub type SessionTab = (i64, String, String, bool);
 
@@ -405,6 +429,47 @@ impl Store {
 
     pub fn delete_keyword(&self, keyword: &str) {
         let _ = self.db.execute("DELETE FROM keywords WHERE keyword = ?1", [keyword]);
+    }
+
+    // ---- autofill (addresses and cards)
+
+    pub fn autofill(&self, kind: Option<&str>) -> Vec<Autofill> {
+        let Ok(mut stmt) = self.db.prepare("SELECT id, kind, fields FROM autofill ORDER BY at DESC, id DESC") else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)));
+        rows.map(|rows| rows.flatten().collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, k, _)| kind.is_none_or(|want| want == k))
+            .map(|(id, kind, fields)| Autofill { id, kind, fields: parse_fields(&fields) })
+            .collect()
+    }
+
+    /// Add (id 0) or replace an entry; returns its id. Only the kind's own
+    /// fields are kept, each at most 500 characters.
+    pub fn save_autofill(&self, id: i64, kind: &str, fields: &[(String, String)]) -> Result<i64, String> {
+        let allowed = AUTOFILL_FIELDS.iter().find(|(k, _)| *k == kind).ok_or("unknown kind")?.1;
+        if let Some((k, _)) = fields.iter().find(|(k, v)| !allowed.contains(&k.as_str()) || v.chars().count() > 500) {
+            return Err(format!("invalid field {k}"));
+        }
+        let text: String =
+            fields.iter().map(|(k, v)| format!("{k}\t{}\n", v.replace(['\t', '\n', '\r'], " "))).collect();
+        if id == 0 {
+            let _ = self
+                .db
+                .execute("INSERT INTO autofill (kind, fields, at) VALUES (?1, ?2, ?3)", params![kind, text, now()]);
+            return Ok(self.db.last_insert_rowid());
+        }
+        let changed = self.db.execute(
+            "UPDATE autofill SET fields = ?3, at = ?4 WHERE id = ?1 AND kind = ?2",
+            params![id, kind, text, now()],
+        );
+        if changed.unwrap_or(0) == 0 { Err("no such entry".into()) } else { Ok(id) }
+    }
+
+    pub fn delete_autofill(&self, id: i64) {
+        let _ = self.db.execute("DELETE FROM autofill WHERE id = ?1", [id]);
     }
 
     // ---- downloads
@@ -738,6 +803,11 @@ impl Store {
     }
 }
 
+/// `field\tvalue` lines.
+fn parse_fields(text: &str) -> Vec<(String, String)> {
+    text.lines().filter_map(|l| l.split_once('\t')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
 /// Escape a string for a JSON string literal (the settings page bridge speaks JSON).
 pub fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -944,6 +1014,24 @@ mod tests {
         assert!(s.set_keyword("x", "https://a.example/").is_err(), "needs %s");
         s.delete_keyword("w");
         assert!(s.keywords().is_empty());
+    }
+
+    #[test]
+    fn autofill_entries_keep_only_their_fields() {
+        let s = Store::open(None).unwrap();
+        let f = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        let a =
+            s.save_autofill(0, "address", &f(&[("name", "Ada Lovelace"), ("street", "1 Main St\nFlat 2")])).unwrap();
+        let c = s.save_autofill(0, "card", &f(&[("name", "Ada"), ("last4", "4242")])).unwrap();
+        assert_eq!(s.autofill(Some("address"))[0].get("street"), "1 Main St Flat 2", "one line");
+        assert_eq!(s.autofill(None).len(), 2);
+        assert!(s.save_autofill(0, "address", &f(&[("number", "4111")])).is_err(), "no card numbers in the database");
+        assert!(s.save_autofill(0, "pet", &[]).is_err());
+        s.save_autofill(a, "address", &f(&[("name", "Ada King")])).unwrap();
+        assert_eq!(s.autofill(Some("address"))[0].get("name"), "Ada King");
+        assert!(s.save_autofill(c, "address", &[]).is_err(), "kinds don't change");
+        s.delete_autofill(a);
+        assert_eq!(s.autofill(None).len(), 1);
     }
 
     #[test]

@@ -101,6 +101,8 @@ pub struct TabIvars {
     error_page: Cell<bool>,
     /// The saved-passwords menu last offered.
     fill: RefCell<Option<FillMenu>>,
+    /// The autofill menu last offered: (frame of the form, entry ids).
+    autofill: RefCell<Option<(Retained<WKFrameInfo>, Vec<i64>)>>,
     /// Reader mode: the next commit is the reader page; the page shown is one.
     reader_loading: Cell<bool>,
     reader: Cell<bool>,
@@ -732,6 +734,17 @@ define_class!(
         #[unsafe(method(fillPassword:))]
         fn fill_password_action(&self, sender: &NSMenuItem) {
             self.fill_password_at(sender.tag() as usize);
+        }
+
+        /// An entry picked in the autofill menu (tag = its index).
+        #[unsafe(method(fillAutofill:))]
+        fn fill_autofill_action(&self, sender: &NSMenuItem) {
+            self.fill_autofill_at(sender.tag() as usize);
+        }
+
+        #[unsafe(method(openAutofillSettings:))]
+        fn open_autofill_settings_action(&self, _s: Option<&AnyObject>) {
+            self.app().open_settings_page("settings#autofill");
         }
 
         #[unsafe(method(openPasswordSettings:))]
@@ -1660,6 +1673,11 @@ impl Tab {
         }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         add("Manage Passwords…", sel!(openPasswordSettings:), 0);
+        self.pop_up_under_field(&menu, &web, frame, x, y);
+    }
+
+    /// Show a menu under a form field at (x, y) in its frame.
+    fn pop_up_under_field(&self, menu: &NSMenu, web: &WKWebView, frame: &WKFrameInfo, x: f64, y: f64) {
         // The field's bottom-left corner, from page (CSS) pixels to view
         // points. A frame's field is relative to the frame, whose place in
         // the page is unknown (it may be another site): the pointer then.
@@ -1670,7 +1688,93 @@ impl Tab {
         } else {
             web.convertPoint_fromView(self.window().mouseLocationOutsideOfEventStream(), None)
         };
-        menu.popUpMenuPositioningItem_atLocation_inView(None, point, Some(&web));
+        menu.popUpMenuPositioningItem_atLocation_inView(None, point, Some(web));
+    }
+
+    /// An address or card field got focus: show the saved addresses (or
+    /// cards) in a menu under it. Nothing is filled until one is picked.
+    pub fn offer_autofill(&self, kind: &str, frame: &WKFrameInfo, x: f64, y: f64) {
+        if kind.is_empty() {
+            return;
+        }
+        let entries = self.app().store().autofill(Some(kind));
+        if entries.is_empty() {
+            return;
+        }
+        self.ivars().autofill.replace(Some((frame.retain(), entries.iter().map(|e| e.id).collect())));
+        let labels: Vec<String> = entries.iter().map(crate::autofill::label).collect();
+        if self.app().is_bench() {
+            return say!("AUTOFILL {}", labels.join("|"));
+        }
+        let Some(web) = self.web() else { return };
+        let mtm = self.mtm();
+        let menu = NSMenu::new(mtm);
+        let add = |title: &str, action: objc2::runtime::Sel, tag: usize| {
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    &NSString::from_str(title),
+                    Some(action),
+                    &NSString::from_str(""),
+                )
+            };
+            unsafe { item.setTarget(Some(self)) };
+            item.setTag(tag as isize);
+            menu.addItem(&item);
+        };
+        for (i, l) in labels.iter().enumerate() {
+            add(l, sel!(fillAutofill:), i);
+        }
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        add(if kind == "card" { "Manage Cards…" } else { "Manage Addresses…" }, sel!(openAutofillSettings:), 0);
+        self.pop_up_under_field(&menu, &web, frame, x, y);
+    }
+
+    /// Fill entry `i` of the last autofill menu into its form (a card after
+    /// Touch ID, like a password).
+    pub fn fill_autofill_at(&self, i: usize) {
+        let Some((frame, ids)) = self.ivars().autofill.borrow().clone() else { return };
+        let Some(entry) = ids.get(i).and_then(|id| self.app().store().autofill(None).into_iter().find(|e| e.id == *id))
+        else {
+            return;
+        };
+        let card = entry.kind == "card";
+        let this = self.retain();
+        let fill = move || {
+            let values = crate::autofill::values(this.app(), &entry);
+            let keys: Vec<Retained<NSString>> = values.iter().map(|(k, _)| NSString::from_str(k)).collect();
+            let vals: Vec<Retained<AnyObject>> = values.iter().map(|(_, v)| NSString::from_str(v).into()).collect();
+            let keys: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
+            let v = objc2_foundation::NSDictionary::from_retained_objects(&keys, &vals);
+            let args = objc2_foundation::NSDictionary::from_retained_objects(
+                &[&*NSString::from_str("v")],
+                &[Retained::<AnyObject>::from(v)],
+            );
+            if let Some(web) = this.web() {
+                unsafe {
+                    web.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+                        &NSString::from_str("return __mybAutofill(v)"),
+                        Some(&args),
+                        Some(&frame),
+                        &passwords_world(this.mtm()),
+                        None,
+                    )
+                };
+            }
+        };
+        if card {
+            crate::passwords::confirm_owner(
+                self.app(),
+                "fill your card details",
+                Box::new(move |ok| {
+                    if ok {
+                        fill()
+                    }
+                }),
+            );
+        } else {
+            fill();
+        }
     }
 
     /// Fill account `i` of the last menu into the login form, if the page is
