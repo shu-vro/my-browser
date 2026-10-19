@@ -115,6 +115,9 @@ commands:
   (`target/release/my-browser-translate`); `scripts/bundle.sh` copies and
   signs it. Tests use `MYB_TRANSLATE_FAKE=1` (upper-cases) so they don't
   need language models.
+- **A test that ends the browser must not abort it**: an abort leaves a
+  macOS crash report and a "quit unexpectedly" dialog on the owner's screen
+  every run. Bench `crash` exits after the panic hook (`crash::REQUESTED`).
 - **Toggling WebKit's spelling menu items in a test** writes to the app's
   real defaults domain; read the state with `spell` instead.
 

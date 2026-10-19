@@ -134,7 +134,8 @@ Release builds are stripped; the release workflow publishes each version's
 `atos -o my-browser.dSYM/Contents/Resources/DWARF/* -arch arm64 -l 0x100000000 0x1001a2b3c`
 (load address 0x100000000 plus the offset). Test:
 `a_crash_is_logged_and_offered_for_reporting_once` (bench `crash` panics on
-purpose).
+purpose; the hook then exits with 101 instead of aborting, `crash::REQUESTED`,
+so test runs leave no macOS crash report or "quit unexpectedly" dialog).
 
 ### Default browser and links from other apps
 
@@ -1265,7 +1266,7 @@ active tab.
 | `fillautofill <i>` | `FILLAUTOFILL`: picks entry `i` from the last `AUTOFILL <label>\|…` menu |
 | `profile` | `PROFILE <name> <address bar placeholder>` |
 | `pdf`, `pdfcmd <i>`, `pdfselect <page>` | `PDF pages= page= sidebar= twoup= rotation= highlights=` (or `PDF none`); a viewer button; select a page's start |
-| `crash` | panics (tests the crash reporter) |
+| `crash` | panics, then exits 101 without a macOS crash report (tests the crash reporter) |
 | `quit` or stdin EOF | exits |
 
 In `bridge` arguments, `\n` stands for a line break.

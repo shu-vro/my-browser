@@ -2587,8 +2587,11 @@ impl App {
                 }),
             ),
             ("quit", _) => self.quit(),
-            // Tests the crash reporter.
-            ("crash", _) => panic!("crash requested by the bench harness"),
+            // Tests the crash reporter (exits without macOS's crash report).
+            ("crash", _) => {
+                crash::REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+                panic!("crash requested by the bench harness")
+            }
             _ => say!("ERR unknown command: {cmd}"),
         }
     }

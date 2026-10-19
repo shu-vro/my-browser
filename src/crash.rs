@@ -33,6 +33,11 @@ pub fn macos_version() -> String {
     objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersionString().to_string()
 }
 
+/// Set by the bench harness's `crash`: after the log is written the process
+/// exits instead of aborting, so tests don't leave a macOS crash report and
+/// its "quit unexpectedly" dialog behind. Real crashes still abort.
+pub static REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Write a panic's message, place and backtrace to `dir` before the process
 /// aborts. No profile folder (throwaway profiles) means stderr only.
 pub fn install(dir: Option<PathBuf>) {
@@ -47,6 +52,9 @@ pub fn install(dir: Option<PathBuf>) {
             let _ = std::fs::write(dir.join(format!("panic-{at}.log")), text);
         }
         default(info);
+        if REQUESTED.load(std::sync::atomic::Ordering::Relaxed) {
+            std::process::exit(101);
+        }
     }));
 }
 
