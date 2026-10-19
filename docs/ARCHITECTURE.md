@@ -800,6 +800,16 @@ copied=1 …` (a private pasteboard in bench mode), `SCREENSHOT picking` /
 `cancelled` for the picker; `screenshotdrag x1,y1,x2,y2` drags on it. Test:
 `screenshots_take_the_whole_page_the_visible_part_or_an_area`.
 
+### Dark mode backdrop
+
+In dark mode a new web view doesn't draw its background (private
+`_setDrawsBackground:`) and asks for rendering progress
+(`_setObservedRenderingProgressEvents:` with first visually non-empty
+layout); until then the window's dark background shows instead of a white
+flash. When `_webView:renderingProgressDidChange:` arrives, the view draws
+its background again, so pages without one get the usual white canvas.
+`TUNE theme_backdrop`.
+
 ### Saving pages
 
 Save Page As (⌘S) asks WebKit for the page as a Web Archive

@@ -1006,6 +1006,13 @@ impl App {
         let devtools = responds(&prefs, sel!(_setDeveloperExtrasEnabled:));
         report.push(line("developer_extras", true, devtools));
         report.push(line("web_inspector", true, WKWebView::class().responds_to(sel!(_inspector))));
+        // New tabs show the theme's background, not white, until the page paints.
+        report.push(line(
+            "theme_backdrop",
+            true,
+            WKWebView::class().responds_to(sel!(_setDrawsBackground:))
+                && WKWebView::class().responds_to(sel!(_setObservedRenderingProgressEvents:)),
+        ));
         let (pool, tuning) = engine_tuning(&prefs, self.store().flag("jit"), mtm);
         report.extend(tuning.into_iter().map(|(n, v, ok)| line(n, v, ok)));
 

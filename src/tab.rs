@@ -256,6 +256,16 @@ define_class!(
             self.app().start_download(download);
         }
 
+        /// The page laid out something visible: it draws its own background
+        /// from now on (see `TUNE theme_backdrop`).
+        #[unsafe(method(_webView:renderingProgressDidChange:))]
+        fn rendering_progress(&self, web: &WKWebView, _events: usize) {
+            unsafe {
+                let _: () = msg_send![web, _setObservedRenderingProgressEvents: 0usize];
+                let _: () = msg_send![web, _setDrawsBackground: Bool::YES];
+            }
+        }
+
         /// A new page replaced the old one: its title must not land on the old visit.
         #[unsafe(method(webView:didCommitNavigation:))]
         fn did_commit_navigation(&self, web: &WKWebView, _nav: Option<&WKNavigation>) {
@@ -1303,6 +1313,21 @@ impl Tab {
             web.setAllowsMagnification(self.app().store().flag("pinch_zoom"));
             // Web Inspector (and Safari's Develop menu) may attach, unless turned off.
             web.setInspectable(self.app().store().flag("devtools"));
+        }
+        // In dark mode a new page shows the window's background, not a white
+        // flash, until it first lays out something visible (private: checked,
+        // `TUNE theme_backdrop`; `_webView:renderingProgressDidChange:`).
+        let dark = objc2_app_kit::NSAppearanceCustomization::effectiveAppearance(self.window())
+            .name()
+            .to_string()
+            .contains("Dark");
+        let responds = |s| -> bool { unsafe { msg_send![&*web, respondsToSelector: s] } };
+        if dark && responds(sel!(_setDrawsBackground:)) && responds(sel!(_setObservedRenderingProgressEvents:)) {
+            unsafe {
+                let _: () = msg_send![&*web, _setDrawsBackground: Bool::NO];
+                // _WKRenderingProgressEventFirstVisuallyNonEmptyLayout
+                let _: () = msg_send![&*web, _setObservedRenderingProgressEvents: 1usize << 1];
+            }
         }
         content.addSubview(&web);
         for key in observed(&web) {

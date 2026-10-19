@@ -87,6 +87,8 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   the screen.
 - **Right-click on a page** (not on a link): Translate Page and Take
   Screenshot.
+- **No white flash in dark mode**: a new tab shows the window's dark
+  background until the page draws something.
 - **Print and save as PDF** (⌘P, and `window.print()`).
 - **Save Page As** (⌘S): the page with its images and styles in one Web
   Archive file, readable offline here, in Safari or with Quick Look.

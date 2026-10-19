@@ -478,6 +478,7 @@ fn engine_and_privacy_settings_are_applied() {
         "screen_capture",
         "suspend",
         "tab_mute",
+        "theme_backdrop",
         "third_party_cookies_blocked",
         "tracking_prevention",
         "trackers",
