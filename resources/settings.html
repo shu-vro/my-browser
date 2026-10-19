@@ -56,6 +56,7 @@
   .hist .x { border: none; background: none; color: var(--muted); padding: 2px 8px; font-size: 16px; line-height: 1; visibility: hidden; }
   .hist li:hover .x, .hist .x:focus-visible { visibility: visible; }
   .hist .x:hover { color: var(--danger); }
+  textarea { font: 12px/1.5 ui-monospace, Menlo, monospace; width: 100%; min-height: 180px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
   .bar.add { margin-top: 14px; }
   .bar.add input { flex: 1; }
   .bangs { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 14px; margin: 6px 0 4px; }
@@ -152,6 +153,10 @@
       <input type="checkbox" data-setting="safe_browsing"></div>
     <div class="row"><div><div>Clear cookies and site data</div><div class="hint">Signs you out of every site and deletes caches and site storage.</div></div>
       <button class="danger" id="clear-data">Clear…</button></div>
+    <h2>My filters</h2>
+    <p class="note">Your own blocking rules, in uBlock Origin's and Adblock Plus's syntax: <code>##.ad</code> hides matching elements everywhere, <code>example.com##.banner</code> on one site (and its subdomains), <code>~example.com##.x</code> everywhere but there, <code>||ads.example^</code> blocks a server (add <code>$third-party</code> for other sites only). <code>!</code> starts a comment. View → Hide Element on Page… adds a line for you. Sites with protections turned down are left alone.</p>
+    <textarea id="filters" spellcheck="false" placeholder="! One rule per line"></textarea>
+    <p><button class="primary" id="filters-save">Save filters</button> <span class="note" id="filters-note"></span></p>
   </section>
 
   <section id="permissions">
@@ -312,7 +317,7 @@ call("app.version").then(v => { $("app-version").textContent = "my-browser " + v
 $("check-updates").onclick = () => call("app.updates").catch(fail);
 $("make-default").onclick = () => call("default.set").then(loadDefault, e => { fail(e); loadDefault(); });
 loaders.general = () => { loadSettings(); loadDefault(); loadKeywords(); };
-loaders.privacy = loadSettings;
+loaders.privacy = () => { loadSettings(); loadFilters(); };
 
 // ---- search keywords
 async function loadKeywords() {
@@ -338,6 +343,15 @@ async function loadKeywords() {
 }
 $("kw-add").onclick = () => call("keywords.set", $("kw-key").value, $("kw-url").value.trim()).then(() => { $("kw-key").value = $("kw-url").value = ""; toast("Added"); loadKeywords(); }, fail);
 
+// ---- my filters
+async function loadFilters() {
+  const f = await call("filters.get");
+  $("filters").value = f.text;
+  $("filters-note").textContent = f.unknown.length ? "Not understood (ignored): " + f.unknown.join("  ·  ") : "";
+}
+$("filters-save").onclick = () => call("filters.set", $("filters").value).then(r => {
+  toast("Saved"); $("filters-note").textContent = r.unknown.length ? "Not understood (ignored): " + r.unknown.join("  ·  ") : "";
+}, fail);
 $("clear-data").onclick = () => { if (confirm("Sign out of all sites and delete all cookies, caches and site data?")) call("data.clear").then(() => toast("Cleared"), fail); };
 
 // ---- tabs: memory and CPU per tab, refreshed every 2 s while shown

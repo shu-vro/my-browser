@@ -655,6 +655,12 @@ define_class!(
             self.app().open_settings_page("settings#general");
         }
 
+        /// Site menu: "Hide Element on Page…".
+        #[unsafe(method(pickElement:))]
+        fn pick_element_action(&self, _s: Option<&AnyObject>) {
+            self.pick_element();
+        }
+
         /// Site menu: "Site Data…".
         #[unsafe(method(showSiteData:))]
         fn show_site_data_action(&self, _s: Option<&AnyObject>) {
@@ -1915,6 +1921,50 @@ impl Tab {
         };
     }
 
+    /// Hide Element…: the user clicks an element on the page, then confirms
+    /// (and may edit) its selector; from then on it's hidden on this site by
+    /// a filter (Settings → Privacy → My filters), a content-blocker rule.
+    pub fn pick_element(&self) {
+        let url = self.url();
+        let Some(site) = crate::store::site_of(&url).filter(|_| url.starts_with("http")) else { return };
+        let this = self.retain();
+        self.client_js(PICKER_JS, None, move |r| {
+            let Some(picked) = r.and_then(|r| r.downcast::<NSString>().ok()).map(|s| s.to_string()) else { return };
+            let message = format!(
+                "Hide this element on {site}?\n\nIt stays hidden on this site from now on. Change or remove it in \
+                 Settings → Privacy → My filters."
+            );
+            let (tab, site) = (this.clone(), site.clone());
+            this.sheet(&NSString::from_str(&message), &["Hide", "Cancel"], Some(picked), None, move |ok, text, _| {
+                let selector = text.unwrap_or_default().trim().to_string();
+                if !ok || selector.is_empty() || selector.contains(['\n', '\r']) {
+                    return;
+                }
+                let t = tab.clone();
+                let hide = selector.clone();
+                tab.app().add_filter(&format!("{site}##{selector}"), move |r| match r {
+                    Ok(_) => {
+                        // Now, on this page too (the rule covers the next loads).
+                        let args = objc2_foundation::NSDictionary::from_retained_objects(
+                            &[&*NSString::from_str("s")],
+                            &[Retained::<AnyObject>::from(NSString::from_str(&hide))],
+                        );
+                        t.client_js(
+                            "document.querySelectorAll(s).forEach(e => e.style.setProperty('display', 'none', 'important'))",
+                            Some(&args),
+                            |_| {},
+                        );
+                        t.bench_line("HIDDEN 1");
+                    }
+                    Err(e) => {
+                        t.bench_line("HIDDEN 0");
+                        t.confirm(&e, &["OK"], |_| {});
+                    }
+                });
+            });
+        });
+    }
+
     /// Tell the user why the page wasn't translated (the bench gets the code).
     fn translate_failed(&self, code: &str, message: &str) {
         if self.app().is_bench() {
@@ -2771,6 +2821,7 @@ impl Tab {
             item.setSubmenu(Some(&sub));
         }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
+        add("Hide Element on Page…", Some(sel!(pickElement:)), 0, false);
         add("Site Data…", Some(sel!(showSiteData:)), 0, false);
         add("All site settings…", Some(sel!(openSiteSettings:)), 0, false);
         let Some(button) = self.ivars().site_button.get() else { return };
@@ -2815,6 +2866,7 @@ pub fn escape_html(s: &str) -> String {
 }
 
 static READER_JS: &str = include_str!("../resources/reader.js");
+static PICKER_JS: &str = include_str!("../resources/picker.js");
 
 /// The script world of resources/passwords.js: pages can't reach into it.
 pub fn passwords_world(mtm: MainThreadMarker) -> Retained<WKContentWorld> {

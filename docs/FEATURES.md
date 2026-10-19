@@ -106,6 +106,11 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Local network shield**: websites can't reach this Mac's servers or
   devices on the network unless allowed per site.
 - **Shields per site**: turn protections down for one site from its site menu.
+- **Hide Element on Page…** (View menu, site menu): point at an element,
+  click, and it stays hidden on that site.
+- **My filters** (Settings → Privacy): your own rules in uBlock Origin's
+  syntax: `##.ad`, `example.com##.banner`, `||ads.example^`
+  (`$third-party`). Lines it can't do (scriptlets, exceptions) are listed.
 - **JavaScript off per site** (site menu → Allow JavaScript): news and
   documentation sites get lighter and quieter; reader mode still works.
 - No ad-click attribution; safe-browsing lookups off unless turned on.

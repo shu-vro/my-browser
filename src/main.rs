@@ -91,8 +91,8 @@ pub struct AppIvars {
     /// Extension-facing window objects, one per native tab group (keyed by its pointer).
     ext_windows: RefCell<HashMap<usize, Retained<ExtWindow>>>,
     /// The shared content blockers, in `SHIELD_SETTINGS` order: trackers,
-    /// the local-network shield, cookie banners.
-    shields: RefCell<[Option<Retained<WKContentRuleList>>; 3]>,
+    /// the local-network shield, cookie banners, the user's own filters.
+    shields: RefCell<[Option<Retained<WKContentRuleList>>; 4]>,
     /// `Version/<n> Safari/605.1.15`, so the browser blends in with Safari.
     user_agent: OnceCell<Option<String>>,
     tabs: RefCell<Vec<Retained<Tab>>>,
@@ -672,6 +672,12 @@ define_class!(
             self.with_active(|t| t.show_inspector());
         }
 
+        /// Hide Element on Page… (View menu, site menu).
+        #[unsafe(method(pickElement:))]
+        fn pick_element_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.pick_element());
+        }
+
         /// Picture in picture for the page's video (⌥⌘P).
         #[unsafe(method(pictureInPicture:))]
         fn picture_in_picture_action(&self, _s: Option<&AnyObject>) {
@@ -975,11 +981,12 @@ impl App {
 
         self.start_extensions();
 
-        self.load_shields(move |this, [trackers, local, banners]| {
+        self.load_shields(move |this, [trackers, local, banners, filters]| {
             let mut report = this.ivars().report.borrow_mut();
             report.push(line("trackers", true, trackers));
             report.push(line("local_network_shield", true, local));
             report.push(line("cookie_banners", true, banners));
+            report.push(line("my_filters", true, filters));
             drop(report);
             this.ready();
         });
@@ -1136,27 +1143,31 @@ impl App {
         config
     }
 
-    /// Compile (or look up) the tracker blocker, the local-network shield and
-    /// the cookie-banner hider with the current per-site exceptions, and put
-    /// them on every tab. `done(app, [trackers_ok, local_ok, banners_ok])`.
-    pub fn load_shields(&self, done: impl FnOnce(&App, [bool; 3]) + 'static) {
+    /// Compile (or look up) the tracker blocker, the local-network shield,
+    /// the cookie-banner hider and the user's own filters with the current
+    /// per-site exceptions, and put them on every tab.
+    /// `done(app, [trackers_ok, local_ok, banners_ok, filters_ok])`.
+    pub fn load_shields(&self, done: impl FnOnce(&App, [bool; 4]) + 'static) {
         let mtm = self.mtm();
         let store = self.store();
         let exempt = store.sites_with("shields", "off");
         let allowed = store.sites_with("local_network", "allow");
+        let filters = store.get("filters").unwrap_or_default();
         let this = self.retain();
         privacy::load_tracker_rules(mtm, exempt.clone(), move |trackers| {
             privacy::load_local_rules(mtm, allowed, move |local| {
-                privacy::load_banner_rules(mtm, exempt, move |banners| {
-                    let ok = [trackers.is_some(), local.is_some(), banners.is_some()];
-                    this.set_rule_lists([trackers, local, banners]);
-                    done(&this, ok);
+                privacy::load_banner_rules(mtm, exempt.clone(), move |banners| {
+                    privacy::load_filter_rules(mtm, filters, exempt, move |mine| {
+                        let ok = [trackers.is_some(), local.is_some(), banners.is_some(), mine.is_some()];
+                        this.set_rule_lists([trackers, local, banners, mine]);
+                        done(&this, ok);
+                    });
                 });
             });
         });
     }
 
-    fn set_rule_lists(&self, lists: [Option<Retained<WKContentRuleList>>; 3]) {
+    fn set_rule_lists(&self, lists: [Option<Retained<WKContentRuleList>>; 4]) {
         let content = self.ivars().content.get().unwrap();
         let mut slots = self.ivars().shields.borrow_mut();
         for (slot, new) in slots.iter_mut().zip(lists) {
@@ -1176,7 +1187,7 @@ impl App {
         let content = self.ivars().content.get().unwrap();
         let lists = self.ivars().shields.borrow().clone();
         for (list, setting) in lists.into_iter().zip(SHIELD_SETTINGS) {
-            let on = self.store().flag(setting);
+            let on = setting.is_empty() || self.store().flag(setting);
             if let Some(list) = list {
                 unsafe {
                     content.removeContentRuleList(&list);
@@ -1186,6 +1197,36 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Replace the user's own filters (Settings → Privacy → My filters) and
+    /// put them to work. `done` gets the lines that aren't understood, or why
+    /// WebKit refused them (they're then not kept).
+    pub fn set_filters(&self, text: &str, done: impl FnOnce(Result<Vec<String>, String>) + 'static) {
+        if text.len() > 1 << 20 {
+            return done(Err("That's too many filters (1 MB at most).".into()));
+        }
+        let before = self.store().get("filters").unwrap_or_default();
+        self.store().put("filters", text);
+        let unknown = privacy::filter_rules(text, &[]).1;
+        self.load_shields(move |this, ok| {
+            if ok[3] {
+                return done(Ok(unknown));
+            }
+            // The list in use stays as it was (fail closed); so do the saved filters.
+            this.store().put("filters", &before);
+            done(Err("WebKit couldn't use these filters (a selector may be invalid), so they weren't saved.".into()))
+        });
+    }
+
+    /// Add one filter line (Hide Element…), unless it's there already.
+    pub fn add_filter(&self, line: &str, done: impl FnOnce(Result<Vec<String>, String>) + 'static) {
+        let text = self.store().get("filters").unwrap_or_default();
+        if text.lines().any(|l| l.trim() == line) {
+            return done(Ok(Vec::new()));
+        }
+        let sep = if text.is_empty() || text.ends_with('\n') { "" } else { "\n" };
+        self.set_filters(&format!("{text}{sep}{line}\n"), done);
     }
 
     /// Whether this address gets the full protections: false where the user
@@ -2064,10 +2105,16 @@ impl App {
             // Translate Page / Show Original: `TRANSLATED <from> <texts>`,
             // `TRANSLATE off` or `TRANSLATE err <code>`.
             ("translate", Some(t)) => t.toggle_translate(),
+            // Hide Element…: the next click on the page picks; `HIDDEN <0|1>`
+            // once the sheet is answered with OK.
             // `SPELL continuous=<0|1> grammar=<0|1> correct=<0|1>`, from the page's web view.
             ("spell", Some(t)) => say!("{}", t.spell_state()),
             // View → Show Web Inspector: `INSPECTOR <0|1>` (whether there's one to show).
             ("inspector", Some(t)) => t.show_inspector(),
+            ("picker", Some(t)) => {
+                t.pick_element();
+                say!("PICKER");
+            }
             // Pick account `i` from the saved-passwords menu (`PASSWORDS …`).
             ("fillpassword", Some(t)) => {
                 t.fill_password_at(arg.parse().unwrap_or(0));
@@ -2219,9 +2266,10 @@ impl App {
                 }
                 say!("{}", t.find_state());
             }
+            // (`\n` in an argument is a line break: commands are one line each.)
             ("bridge", _) => internal::handle(
                 self,
-                arg.split('\t').map(str::to_string).collect(),
+                arg.split('\t').map(|a| a.replace("\\n", "\n")).collect(),
                 Box::new(|r| match r {
                     Ok(json) => say!("BRIDGE ok {json}"),
                     Err(e) => say!("BRIDGE err {e}"),
@@ -2335,8 +2383,8 @@ fn url_args() -> Vec<String> {
     out
 }
 
-/// The setting that turns each shared content blocker on.
-const SHIELD_SETTINGS: [&str; 3] = ["block_trackers", "block_local_network", "hide_cookie_banners"];
+/// The setting that turns each shared content blocker on ("": always on).
+const SHIELD_SETTINGS: [&str; 4] = ["block_trackers", "block_local_network", "hide_cookie_banners", ""];
 
 static PASSWORDS_JS: &str = include_str!("../resources/passwords.js");
 
@@ -2711,6 +2759,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Picture in Picture", sel!(pictureInPicture:), "p", cmd_alt, true),
                 ("Reader", sel!(toggleReader:), "R", cmd, true),
                 ("Translate Page", sel!(translatePage:), "t", cmd_alt, true),
+                ("Hide Element on Page…", sel!(pickElement:), "", none, true),
                 ("Show Web Inspector", sel!(showInspector:), "i", cmd_alt, true),
             ],
         ),

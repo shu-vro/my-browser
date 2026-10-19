@@ -462,6 +462,7 @@ fn engine_and_privacy_settings_are_applied() {
         "https_first",
         "jit",
         "local_network_shield",
+        "my_filters",
         "page_print",
         "pagecache",
         "playing_audio",
@@ -2073,6 +2074,37 @@ fn pages_translate_and_show_the_original_again() {
     // Already in the target language.
     assert_eq!(b.bridge(&["settings.set", "translate_to", "fr"]), "true");
     assert_eq!(b.send("translate"), "TRANSLATE err same");
+}
+
+#[test]
+fn elements_hide_with_the_picker_and_your_own_filters() {
+    let base = serve();
+    let mut b = launch();
+    let js = "addEventListener('DOMContentLoaded', () => { document.body.innerHTML = \
+              '<div class=\"ad box\">AD</div><p id=keep>text</p><p class=promo>x</p>' })";
+    let page = format!("go {base}/script/{}", encode(js));
+    b.nav(&page);
+    let shown =
+        |b: &mut Browser, sel: &str| b.send(&format!("eval getComputedStyle(document.querySelector('{sel}')).display"));
+    // Hide Element: pick it, confirm, and it's gone, now and after a reload.
+    assert_eq!(b.send("picker"), "PICKER");
+    writeln!(b.stdin, "eval document.querySelector('.ad').click(), 1").unwrap();
+    assert_eq!(b.wait_for("DIALOG"), "DIALOG Hide this element on 127.0.0.1?");
+    writeln!(b.stdin, "dialog ok").unwrap();
+    assert_eq!(b.wait_for("HIDDEN"), "HIDDEN 1");
+    assert_eq!(b.bridge(&["filters.get"]), r#"{"text":"127.0.0.1##div.ad.box\n","unknown":[]}"#);
+    b.nav(&page);
+    assert_eq!(shown(&mut b, ".ad"), "EVAL none");
+    assert_eq!(shown(&mut b, "#keep"), "EVAL block");
+    // Your own list, with a line it doesn't understand.
+    assert_eq!(b.bridge(&["filters.set", "##.promo\\n/banner/*"]), r#"{"unknown":["/banner/*"]}"#);
+    b.nav(&page);
+    assert_eq!(shown(&mut b, ".promo"), "EVAL none");
+    assert_eq!(shown(&mut b, ".ad"), "EVAL block", "the picked rule was replaced");
+    // Shields down shows everything.
+    assert_eq!(b.bridge(&["perm.set", "127.0.0.1", "shields", "off"]), "true");
+    b.nav(&page);
+    assert_eq!(shown(&mut b, ".promo"), "EVAL block");
 }
 
 #[test]

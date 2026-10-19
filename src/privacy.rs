@@ -343,6 +343,96 @@ pub fn load_banner_rules(
     load_rules(mtm, id, move || Some(json), done);
 }
 
+/// The user's own filters (Settings → Privacy → My filters, and Hide
+/// Element…), in the part of uBlock Origin's and Adblock Plus's syntax a
+/// content blocker can do without a script on the page:
+/// - `##.ad`, `example.com##.ad`, `~shop.example.com##.ad`: hide elements
+///   (everywhere, on those sites and their subdomains, or everywhere but them);
+/// - `||ads.example^`, with `$third-party` optionally: block requests to that
+///   host and its subdomains;
+/// - `! comments` and blank lines.
+///
+/// Returns the rules (never an empty list: WebKit refuses one) with Shields-down
+/// sites exempted, and the lines that aren't understood.
+pub fn filter_rules(text: &str, exempt: &[String]) -> (String, Vec<String>) {
+    // Matches nothing; keeps the list valid when it has no rules.
+    let mut rules = vec![r#"{"trigger":{"url-filter":"^my-browser-none:"},"action":{"type":"block"}}"#.to_string()];
+    let mut unknown = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('!')) {
+        match filter_rule(line) {
+            Some(rule) => rules.push(rule),
+            None => unknown.push(line.to_string()),
+        }
+    }
+    if !exempt.is_empty() {
+        rules.push(exemptions(exempt));
+    }
+    (format!("[{}]", rules.join(",")), unknown)
+}
+
+fn filter_rule(line: &str) -> Option<String> {
+    if let Some((domains, selector)) = line.split_once("##") {
+        // `#@#` exceptions and `#?#`/`#$#` extended syntax need scripts.
+        if selector.is_empty() || domains.contains('#') || selector.starts_with(['+', '^']) {
+            return None;
+        }
+        let (mut only, mut except) = (Vec::new(), Vec::new());
+        for d in domains.split(',').map(|d| d.trim().to_ascii_lowercase()).filter(|d| !d.is_empty()) {
+            let (list, name) = match d.strip_prefix('~') {
+                Some(name) => (&mut except, name.to_string()),
+                None => (&mut only, d),
+            };
+            if !valid_host(&name) {
+                return None;
+            }
+            list.push(json_str(&format!("*{name}")));
+        }
+        // WebKit takes sites to include or to leave out, not both.
+        let scope = match (only.is_empty(), except.is_empty()) {
+            (false, _) => format!(r#","if-domain":[{}]"#, only.join(",")),
+            (true, false) => format!(r#","unless-domain":[{}]"#, except.join(",")),
+            (true, true) => String::new(),
+        };
+        return Some(format!(
+            r#"{{"trigger":{{"url-filter":".*"{scope}}},"action":{{"type":"css-display-none","selector":{}}}}}"#,
+            json_str(selector)
+        ));
+    }
+    let (pattern, options) = line.split_once('$').unwrap_or((line, ""));
+    let host = pattern.strip_prefix("||")?.strip_suffix('^')?.to_ascii_lowercase();
+    let third_party = match options {
+        "" => false,
+        "third-party" | "3p" => true,
+        _ => return None,
+    };
+    if !valid_host(&host) {
+        return None;
+    }
+    let load = if third_party { r#","load-type":["third-party"]"# } else { "" };
+    Some(format!(
+        r#"{{"trigger":{{"url-filter":{}{load}}},"action":{{"type":"block"}}}}"#,
+        json_str(&site_regex(&host))
+    ))
+}
+
+/// A host name as filters write it: letters, digits, dots and dashes.
+fn valid_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
+}
+
+pub fn load_filter_rules(
+    mtm: MainThreadMarker,
+    text: String,
+    exempt: Vec<String>,
+    done: impl FnOnce(Option<Retained<WKContentRuleList>>) + 'static,
+) {
+    let (json, _) = filter_rules(&text, &exempt);
+    let id = format!("filters-{:016x}", fnv(json.as_bytes(), 0xcbf29ce484222325));
+    load_rules(mtm, id, move || Some(json), done);
+}
+
 /// Tracking parameters removed from addresses before a page loads. Brave's
 /// default list (brave-core query_filter); campaign tags like `utm_*` stay,
 /// as in Brave and Firefox, since sites use them for more than tracking.
@@ -540,6 +630,30 @@ mod tests {
         {
             assert!(!is_local_host(public), "{public}");
         }
+    }
+
+    #[test]
+    fn user_filters_become_rules() {
+        let text = "! my filters\n##.ad-box\nnews.example,Blog.Example##div[id^=\"promo\"]\n~shop.example##.x\n\
+                    ||ads.example^\n||track.example^$third-party\n\
+                    a.example#@#.ad\n/banner/*\n||x.example^$script\nexample.com##+js(nostif)\nb.example##\n\n";
+        let (json, unknown) = filter_rules(text, &[]);
+        assert!(json.starts_with('[') && json.ends_with(']'));
+        assert_eq!(json.matches("css-display-none").count(), 3);
+        assert!(json.contains(r#""if-domain":["*news.example","*blog.example"]"#), "{json}");
+        assert!(json.contains(r#""selector":"div[id^=\"promo\"]""#));
+        assert!(json.contains(r#""unless-domain":["*shop.example"]"#));
+        assert!(json.contains(r#""url-filter":"^[a-z]+://([^/]*\\.)?ads\\.example[:/]"},"action":{"type":"block"}"#));
+        assert!(json.contains(r#""load-type":["third-party"]"#));
+        assert_eq!(
+            unknown,
+            ["a.example#@#.ad", "/banner/*", "||x.example^$script", "example.com##+js(nostif)", "b.example##"]
+        );
+        let (empty, _) = filter_rules("", &[]);
+        assert_eq!(empty.matches("trigger").count(), 1, "never empty: WebKit refuses an empty list");
+        assert!(
+            filter_rules("##.ad", &["a.example".into()]).0.ends_with(r#""action":{"type":"ignore-previous-rules"}}]"#)
+        );
     }
 
     #[test]

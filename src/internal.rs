@@ -426,6 +426,20 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
             store.delete_keyword(args.get(1).map_or("", |s| s));
             ok()
         }
+        // Settings → Privacy → My filters.
+        "filters.get" => {
+            let text = store.get("filters").unwrap_or_default();
+            let unknown: Vec<String> = crate::privacy::filter_rules(&text, &[]).1.iter().map(|l| json_str(l)).collect();
+            Ok(format!("{{\"text\":{},\"unknown\":[{}]}}", json_str(&text), unknown.join(",")))
+        }
+        "filters.set" => {
+            return app.set_filters(args.get(1).map_or("", |s| s), move |r| {
+                reply(r.map(|unknown| {
+                    let unknown: Vec<String> = unknown.iter().map(|l| json_str(l)).collect();
+                    format!("{{\"unknown\":[{}]}}", unknown.join(","))
+                }))
+            });
+        }
         "data.clear" => return clear_site_data(app.data_store(), reply),
         // Settings → Site data: every site's data, and deleting one site's.
         "sitedata.list" => {

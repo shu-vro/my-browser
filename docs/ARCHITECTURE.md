@@ -100,9 +100,10 @@ through `on_main`; values they carry untouched are wrapped in `MainOnly`.
       content controller (with the bridge handler) and extension controller.
    4. Reads enabled extensions' manifests (for their buttons) and starts only
       the ones set to run on every site.
-3. It asks WebKit for the compiled tracker blocker and local-network shield
-   (compiling them on first launch or after a per-site change). **No tab opens
-   until both are attached**, so no page ever loads unprotected.
+3. It asks WebKit for the compiled tracker blocker, local-network shield,
+   cookie-banner hider and the user's own filters (compiling them on first
+   launch or after a change). **No tab opens until they're attached**, so no
+   page ever loads unprotected.
 4. `App::ready` restores the session asleep (or opens the URLs given on the
    command line, or a new tab with the native home page) and selects the
    previously active tab. In bench mode it then prints `TUNE …` lines and
@@ -428,6 +429,7 @@ local list is tiny) and reloads the tab.
 |---|---|
 | Tracker blocking | `WKContentRuleList` compiled from `resources/trackers.bin`. The rules block known tracker domains when loaded as third parties, except on sites owned by the same company (Disconnect's entity list), so Messenger can still load Facebook's CDN. EasyList's ad-server domains follow as plain third-party blocks, and its pop-up servers as `popup` blocks; domains Disconnect covers are skipped so its owner exemptions hold. Shields-down sites are appended as `ignore-previous-rules` rules (`if-top-url`). Cached by WebKit under a hash of the file and the exemptions; stale compiled lists are deleted. |
 | Cookie banners | A third shared `WKContentRuleList` (`privacy::banner_rules`): `css-display-none` rules for the banners of common consent platforms (`BANNERS`, specific ids and classes only). Nothing is clicked or answered, so no consent is given. Setting `hide_cookie_banners` (on); Shields-down sites are exempt the same way. A banner that also locks scrolling stays hidden but leaves the page locked: content blockers can only hide. |
+| My filters | A fourth shared list (`privacy::filter_rules`), from the `filters` settings row: `##sel`, `a.com,b.com##sel` (`if-domain`, subdomains too), `~a.com##sel` (`unless-domain`) as `css-display-none`; `||host^` (`$third-party`) as a block of the host and its subdomains. Other syntax is listed as not understood. Never empty (one rule that matches nothing). Shields-down sites exempt. A list WebKit refuses isn't saved (`App::set_filters` puts the old text back). |
 | Local network shield | A second rule list: requests to loopback, private IPv4, link-local (incl. 169.254.169.254), IPv6 loopback/ULA/link-local and `.local` names are blocked unless the top page is itself local. Per-site exemptions as above. A separate list, because `ignore-previous-rules` only reaches rules in its own list. DNS names that resolve to private addresses aren't covered. |
 | HTTPS first | `WKWebpagePreferences.preferredHTTPSNavigationPolicy = automaticFallbackToHTTP` (public, macOS 15.2) |
 | Global Privacy Control | `setGlobalPrivacyControlEnabled:` (public, macOS 27): `Sec-GPC: 1` and `navigator.globalPrivacyControl` |
@@ -637,6 +639,19 @@ nothing twice. Reading another app's data can need the user's permission
 (Full Disk Access for Safari's folder); the error says so. Test:
 `bookmarks_and_history_import_from_other_browsers` (a made-up `$HOME` with a
 Brave profile and Safari's files).
+
+## Hide Element (the picker)
+
+View → Hide Element on Page… (and the site menu) runs `resources/picker.js`
+in the browser's own script world with `callAsyncJavaScript`: it outlines
+the element under the pointer and resolves with a selector for the clicked
+one (an id, else tag and up to three classes, `:nth-of-type` when needed,
+up the tree until the selector matches it alone; generated names with long
+numbers are skipped). Clicks and mouse presses don't reach the page while
+picking; Esc cancels. A sheet shows the selector (editable); OK adds
+`<host>##<selector>` to the filters (`App::add_filter`) and hides the
+matches now. Bench: `picker` → `PICKER`, then `HIDDEN <0|1>`. Test:
+`elements_hide_with_the_picker_and_your_own_filters`.
 
 ## Translate Page
 
@@ -1037,10 +1052,13 @@ active tab.
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |
 | `translate` | `TRANSLATED <from> <n>`, `TRANSLATE off` or `TRANSLATE err <code>`: Translate Page / Show Original |
+| `picker` | `PICKER`; then a click in the page picks, a sheet asks (`DIALOG`), and `HIDDEN <0\|1>` |
 | `spell` | `SPELL continuous=<0\|1> grammar=<0\|1> correct=<0\|1>` |
 | `inspector` | `INSPECTOR <0\|1>`: there's a Web Inspector to show |
 | `crash` | panics (tests the crash reporter) |
 | `quit` or stdin EOF | exits |
+
+In `bridge` arguments, `\n` stands for a line break.
 
 Unprompted events: `CRASHED` (the page process died), `DOWNLOAD
 <done|failed|cancelled> <path>`, `DIALOG <message>` (a sheet appeared) and
