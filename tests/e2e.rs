@@ -2347,3 +2347,38 @@ fn find_counts_matches_and_marks_the_current_one() {
     }
     assert_eq!(b.send("eval document.querySelectorAll('style').length"), "EVAL 0", "and their style");
 }
+
+#[test]
+fn folders_show_as_pages_and_files_open_in_the_tab() {
+    let dir = TempProfile::new("folder");
+    std::fs::create_dir_all(dir.0.join("sub dir")).unwrap();
+    std::fs::write(dir.0.join("notes.txt"), "some notes").unwrap();
+    std::fs::write(dir.0.join("doc.unknownkind"), "?").unwrap();
+    std::fs::write(dir.0.join("\" onmouseover=\"x"), "").unwrap();
+    let base = serve();
+    let mut b = launch();
+    let shown = b.nav(&format!("barenter {}", dir.path()));
+    assert!(shown.starts_with("mybrowser://files/") && shown.ends_with('/'), "{shown}");
+    assert_eq!(b.send("eval document.querySelectorAll('tbody tr').length"), "EVAL 4");
+    let click = |name: &str| {
+        format!("eval [...document.querySelectorAll('tbody a')].find(a => a.textContent == '{name}').click(), 1")
+    };
+    assert_eq!(b.send(&click("sub dir")), "EVAL 1");
+    assert!(b.state_until(|s| s.ends_with("title=sub dir")).contains("/sub%20dir/ "));
+    b.nav("back");
+    assert_eq!(b.send(&click("notes.txt")), "EVAL 1");
+    assert!(b.state_until(|s| s.ends_with("/notes.txt")).contains("url=file:///"), "loaded: the title is its address");
+    assert_eq!(b.send("eval document.body.innerText.trim()"), "EVAL some notes");
+    b.nav("back");
+    writeln!(b.stdin, "{}", click("doc.unknownkind")).unwrap();
+    assert!(b.wait_for("OPENLOCAL").starts_with("OPENLOCAL app "), "what WebKit can't show opens in its app");
+    // (Its cancelled load ends in the page a moment later.)
+    std::thread::sleep(Duration::from_millis(500));
+    // Websites can't read folder pages.
+    b.nav(&format!("go {base}/page/site"));
+    let read = format!(
+        "eval fetch('{shown}').then(r => r.text()).then(t => document.title = 'read ' + t.length, () => document.title = 'refused'), 1"
+    );
+    assert_eq!(b.send(&read), "EVAL 1");
+    assert!(b.state_until(|s| s.ends_with("title=refused")).ends_with("title=refused"));
+}

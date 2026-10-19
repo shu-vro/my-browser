@@ -221,6 +221,13 @@ define_class!(
             if !download {
                 return decide.call((WKNavigationResponsePolicy::Allow,));
             }
+            // A file on this Mac WebKit can't show isn't downloaded (copied):
+            // it opens in its app.
+            let local = unsafe { response.response().URL() }.filter(|u| u.isFileURL()).and_then(|u| u.path());
+            if let (Some(path), true) = (local, unsafe { response.isForMainFrame() }) {
+                decide.call((WKNavigationResponsePolicy::Cancel,));
+                return self.open_in_app(std::path::Path::new(&path.to_string()));
+            }
             let decide = decide.copy();
             self.allow_download(move |ok| {
                 decide.call((if ok { WKNavigationResponsePolicy::Download } else { WKNavigationResponsePolicy::Cancel },))
@@ -1624,6 +1631,12 @@ impl Tab {
 
     pub fn load(&self, url: &str) {
         let Some(nsurl) = NSURL::URLWithString(&NSString::from_str(url)) else { return };
+        // A folder shows as the browser's folder page.
+        if nsurl.isFileURL()
+            && let Some(path) = nsurl.path().map(|p| std::path::PathBuf::from(p.to_string())).filter(|p| p.is_dir())
+        {
+            return self.load(&crate::files::folder_url(&path));
+        }
         self.hide_suggestions();
         self.ivars().allow_internal.replace(url.starts_with(&format!("{INTERNAL}:")).then(|| url.to_string()));
         let web = self.ensure_web();
@@ -1641,6 +1654,30 @@ impl Tab {
         } else {
             unsafe { web.loadRequest(&NSURLRequest::requestWithURL(&nsurl)) };
         }
+    }
+
+    /// A file or folder on this Mac, from a folder page: a folder's page, or
+    /// the file in this tab (WebKit shows it, or `decide_response` opens it
+    /// in its app).
+    pub fn open_local(&self, path: &std::path::Path) {
+        if path.is_dir() {
+            self.load(&crate::files::folder_url(path));
+        } else {
+            self.load(&crate::files::file_url(path));
+        }
+    }
+
+    /// A file WebKit can't show: its default app opens it. Apps, scripts and
+    /// installers are only shown in Finder: opening them would run them.
+    fn open_in_app(&self, path: &std::path::Path) {
+        let p = path.to_string_lossy().into_owned();
+        if self.app().is_bench() {
+            return say!("OPENLOCAL {} {p}", if crate::files::runs_code(path) { "reveal" } else { "app" });
+        }
+        if crate::files::runs_code(path) {
+            return reveal(&p);
+        }
+        objc2_app_kit::NSWorkspace::sharedWorkspace().openURL(&NSURL::fileURLWithPath(&NSString::from_str(&p)));
     }
 
     /// A login field got focus: show the accounts saved for this site in a
@@ -2436,15 +2473,29 @@ impl Tab {
         let kind = unsafe { action.navigationType() };
         let link = kind == WKNavigationType::LinkActivated;
         let main = is_main_frame(action);
+        // The page now showing, not the source frame: WebKit reports an
+        // empty origin and about:blank for frames of custom schemes, which
+        // blocked the settings sidebar's own #links.
+        let from_internal = self
+            .web()
+            .and_then(|w| unsafe { w.URL() })
+            .and_then(|u| u.scheme())
+            .is_some_and(|s| s.to_string() == INTERNAL);
+        // A folder page's links: files open here (or in their app), and
+        // "Show in Finder".
+        if from_internal && main && link {
+            for (prefix, show) in [("open", false), ("reveal", true)] {
+                let Some(path) = url.strip_prefix(&format!("{INTERNAL}://{prefix}")) else { continue };
+                let path = NSURL::URLWithString(&NSString::from_str(&format!("file://{path}"))).and_then(|u| u.path());
+                match path.map(|p| p.to_string()) {
+                    Some(p) if show => reveal(&p),
+                    Some(p) => self.open_local(std::path::Path::new(&p)),
+                    None => {}
+                }
+                return WKNavigationActionPolicy::Cancel;
+            }
+        }
         if url.starts_with(&format!("{INTERNAL}:")) {
-            // The page now showing, not the source frame: WebKit reports an
-            // empty origin and about:blank for frames of custom schemes, which
-            // blocked the settings sidebar's own #links.
-            let from_internal = self
-                .web()
-                .and_then(|w| unsafe { w.URL() })
-                .and_then(|u| u.scheme())
-                .is_some_and(|s| s.to_string() == INTERNAL);
             // Internal pages never load in a frame: a site could overlay one
             // and trick clicks into it (clickjacking "Clear data" or "Uninstall").
             let ours = self.ivars().allow_internal.borrow().as_deref() == Some(url.as_str());
@@ -3041,6 +3092,13 @@ impl Tab {
             }
         }
     }
+}
+
+/// Select a file or folder in a Finder window.
+fn reveal(path: &str) {
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    objc2_app_kit::NSWorkspace::sharedWorkspace()
+        .activateFileViewerSelectingURLs(&NSArray::from_retained_slice(&[url]));
 }
 
 /// Text safe to put in HTML.

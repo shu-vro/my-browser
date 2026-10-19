@@ -74,6 +74,7 @@ name and start time (see benchmark/README.md).
 | `src/crash.rs` | The panic hook, finding crash reports, and the pre-filled GitHub issue |
 | `src/translate.rs` | Translate Page: the helper process and its requests |
 | `helpers/translate.swift` | `my-browser-translate`, the helper: Apple's Translation and NaturalLanguage frameworks (built by `build.rs`) |
+| `src/files.rs` | Paths in the address bar, folder pages (`mybrowser://files/…`), opening local files |
 | `src/autofill.rs` | Addresses and cards: settings bridge, labels, the values a form gets |
 | `src/profiles.rs` | Profiles: listing, adding, opening (another copy of the app), deleting |
 | `resources/translate.js`, `find.js`, `picker.js` | Translate Page's text collector, find's highlights and count, Hide Element's picker (all in the browser's own script world, run on demand) |
@@ -862,6 +863,29 @@ represented object); ⌘ while choosing one opens a new tab. Settings →
 Bookmarks lists, searches, renames, moves and deletes them through the
 `bookmarks.*` bridge ops, which validate titles and folders. Test:
 `bookmarks_toggle_with_cmd_d_and_fill_the_menu`.
+
+## Local files and folder pages
+
+A path typed in the address bar (`files::typed_path`), or a `file://`
+address of a folder, opens `mybrowser://files/<path>/`: `internal::serve`
+reads the folder when the page is asked for (`files::folder_page`: at most
+5,000 entries, dot-files with `?hidden=1`) and builds the page: breadcrumbs,
+Up, a filter field, Show hidden files, Show in Finder, and a table (name
+with the Finder's icon for its kind, as a cached PNG `data:` address; date;
+size; kind) the page's own script sorts and filters. Names are escaped
+everywhere, attributes included. It's only served as a page of its own: a
+request whose main document isn't a `mybrowser:` page (a website's fetch,
+image or frame) gets an error. Its links go through the browser
+(`Tab::action_policy`, for main-frame link clicks from an internal page):
+`mybrowser://open/<path>` opens a file (`Tab::open_local`: WebKit loads it
+with `loadFileURL`, allowed to read its folder) and `mybrowser://reveal/…`
+shows the folder in Finder; WebKit itself refuses links from there to
+`file:`. A local file WebKit can't show isn't downloaded:
+`decide_response` cancels it and NSWorkspace opens it in its app, except
+apps, scripts, installers and other executables (`files::runs_code`),
+which are only shown in Finder. Images, text, audio and video show in
+WebKit's own image and media pages. Bench: `OPENLOCAL app|reveal <path>`.
+Test: `folders_show_as_pages_and_files_open_in_the_tab`.
 
 ## Find in page
 

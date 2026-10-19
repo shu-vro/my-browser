@@ -12,6 +12,7 @@ mod crash;
 mod crx;
 mod extensions;
 mod extwindow;
+mod files;
 mod home;
 mod import;
 mod internal;
@@ -1910,6 +1911,10 @@ impl App {
     /// Address-bar input to URL: a search keyword or bang (`!w rust`), an
     /// address, or a search with the chosen engine.
     pub fn normalize(&self, input: &str) -> String {
+        // A path on this Mac: its folder page, or the file.
+        if let Some(path) = files::typed_path(input) {
+            return if path.is_dir() { files::folder_url(&path) } else { files::file_url(&path) };
+        }
         keyword_url(input, &self.store().keywords(), &self.store().setting("bangs"))
             .unwrap_or_else(|| normalize(input, &self.store().setting("search")))
     }

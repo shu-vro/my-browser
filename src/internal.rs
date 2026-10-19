@@ -29,8 +29,17 @@ pub fn serve(task: &ProtocolObject<dyn WKURLSchemeTask>) {
     let request = unsafe { task.request() };
     let Some(url) = request.URL() else { return };
     let host = url.host().map(|h| h.to_string()).unwrap_or_default();
+    // Folder pages only as a page of their own, never inside a website's.
+    let top_is_ours = request.mainDocumentURL().and_then(|u| u.scheme()).is_some_and(|s| s.to_string() == INTERNAL);
+    let folder;
     let body = match host.as_str() {
         "settings" => SETTINGS_HTML.as_bytes(),
+        "files" if top_is_ours => {
+            let path = url.path().map(|p| p.to_string()).unwrap_or_else(|| "/".into());
+            let hidden = url.query().is_some_and(|q| q.to_string().split('&').any(|kv| kv == "hidden=1"));
+            folder = crate::files::folder_page(Path::new(if path.is_empty() { "/" } else { &path }), hidden);
+            folder.as_bytes()
+        }
         _ => {
             let err = NSError::new(-1100, &NSString::from_str("NSURLErrorDomain")); // file not found
             unsafe { task.didFailWithError(&err) };

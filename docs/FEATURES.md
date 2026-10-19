@@ -41,6 +41,15 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   `!yt`, `!gh`, `!mdn`, `!rs`…) are each **off until you turn them on**
   there, then `!w rust` or `rust !w` searches Wikipedia. Done in the
   browser: the search engine never sees them.
+- **Paths**: type or paste a path (`/Users/me/Downloads`, `~/Desktop`): a
+  folder opens as a **file-manager page** (breadcrumbs, up, sort by name,
+  date, size or kind, filter, hidden files, Show in Finder); a file opens in
+  the tab if WebKit can show it (pages, text, images, audio, video, PDFs),
+  else in its default app (apps, scripts and installers are only shown in
+  Finder).
+- **Images, audio and video** open in the tab: PNG, JPEG, GIF, WebP, HEIC,
+  SVG, MP4, MOV, M4V, WebM, MP3, M4A, AAC, WAV, FLAC… (what WebKit plays;
+  MKV and AVI open in their app).
 - **Suggestions while typing** in the address bar: your past searches and
   pages from your history, from this Mac only (nothing is sent to a search
   engine as you type). Settings → Storage shows the file they're kept in and

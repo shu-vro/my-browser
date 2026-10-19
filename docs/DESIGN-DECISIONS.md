@@ -539,6 +539,16 @@ so an unused feature costs nothing. Translation runs on the Mac (no network,
 no gate): macOS downloads language models only when the user asks in System
 Settings, so the browser never connects for it.
 
+### Why are folders `mybrowser://files/…` pages, not `file://` ones?
+
+WebKit shows nothing for a folder, and a page we generate for a `file://`
+address breaks on back/forward (WebKit reloads the folder address, not our
+page). A page of the browser's own scheme reloads itself from disk on every
+visit. It's served only as a page of its own (never to a website's fetch or
+frame), its links go through the browser (WebKit refuses links from there to
+`file:`), and files WebKit can't show open in their app, except anything
+that would run code, which is only shown in Finder.
+
 ### Why are the built-in bangs off by default?
 
 The owner's call: nothing typed in the address bar should go somewhere the
