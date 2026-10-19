@@ -2150,3 +2150,27 @@ fn local_addresses_load_over_http_as_typed() {
     assert_eq!(b.nav(&format!("barenter localhost:{port}/page/local")), format!("http://localhost:{port}/page/local"));
     assert!(b.state_until(|s| s.ends_with("title=local")).ends_with("title=local"), "not upgraded to HTTPS first");
 }
+
+#[test]
+fn find_counts_matches_and_marks_the_current_one() {
+    let mut b = launch();
+    b.nav("go data:text/html,<p>alpha beta alpha <b>al</b>pha</p><p hidden>alpha</p>");
+    assert_eq!(b.send("find alpha"), "FIND found=1");
+    assert_eq!(b.send("findbar"), "FINDBAR open=1 text=alpha status=1 of 3", "hidden text isn't counted");
+    assert_eq!(b.send("eval String([...CSS.highlights.keys()])"), "EVAL myb-find,myb-find-current");
+    assert_eq!(
+        b.send("eval CSS.highlights.get('myb-find').size + ' ' + CSS.highlights.get('myb-find-current').size"),
+        "EVAL 2 1"
+    );
+    assert_eq!(b.send("findnext"), "FIND found=1");
+    assert_eq!(b.send("findbar"), "FINDBAR open=1 text=alpha status=2 of 3");
+    b.send("findnext");
+    assert_eq!(b.send("findbar"), "FINDBAR open=1 text=alpha status=3 of 3", "a match across tags counts");
+    b.send("findesc");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while b.send("eval String([...CSS.highlights.keys()])") != "EVAL " {
+        assert!(Instant::now() < deadline, "closing the bar clears the marks");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(b.send("eval document.querySelectorAll('style').length"), "EVAL 0", "and their style");
+}

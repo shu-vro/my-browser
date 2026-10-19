@@ -49,11 +49,12 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Error page** for failed loads (no certificate bypass).
 - **Zoom** in, out and actual size, **remembered per site** (actual size
   forgets it; private windows don't save it).
-- **Find in page** (⌘F, ⌘G, ⇧⌘G).
 - **Spelling** checked as you type (Edit → Spelling and Grammar: check now,
   grammar, correct automatically).
 - **Developer tools**: Inspect Element and View → Show Web Inspector (⌥⌘I);
   a setting turns them off.
+- **Find in page** (⌘F, ⌘G, ⇧⌘G): "3 of 17" in the find bar, every match
+  highlighted and the current one in another colour.
 - **Reader mode** (⇧⌘R): the article alone, in large type, without scripts.
 - **Translate Page** (⌥⌘T, View menu): the page's text translated on this
   Mac by Apple's Translation framework (macOS 26 or later, with the

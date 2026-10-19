@@ -106,6 +106,9 @@ commands:
   file name.
 - **`/script/<js>` test pages run in `<head>`:** touch the body in a
   `DOMContentLoaded` listener.
+- **Script worlds see their own `CSS.highlights` maplike:** the page world
+  may report a size after the browser's world cleared it. Check
+  `[...CSS.highlights.keys()]`.
 - **The translate helper is built by `build.rs`** next to the binary
   (`target/release/my-browser-translate`); `scripts/bundle.sh` copies and
   signs it. Tests use `MYB_TRANSLATE_FAKE=1` (upper-cases) so they don't

@@ -816,6 +816,16 @@ browser's own script world (`defaultClientWorld`, invisible to the page), so
 it starts at the top. The field's delegate maps Enter, Shift+Enter and Esc;
 ⌘G/⇧⌘G are menu items that open the bar if needed.
 
+After each WebKit find, `resources/find.js` (browser's script world)
+collects the page's visible text as one string, with a line break between
+blocks as WebKit's find has, so a match across tags (`<b>al</b>pha`)
+counts; finds every match (case-insensitive, at most 1,000); works out
+which one is WebKit's selection; and marks them with the CSS Custom
+Highlight API (`CSS.highlights`, `::highlight(myb-find)` yellow, the current
+one orange, from a `<style>` it adds). The find bar shows "3 of 17".
+Closing the bar or clearing the term removes the marks and the style. In a
+PDF, PDFKit finds instead. Test: `find_counts_matches_and_marks_the_current_one`.
+
 ## Downloads
 
 `App` is the `WKDownloadDelegate`.

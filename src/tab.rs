@@ -1264,6 +1264,7 @@ impl Tab {
         if let Some(row) = iv.find_row.get() {
             row.removeFromSuperview();
         }
+        self.find_js("__mybFind.clear()", None, |_| {});
         if let Some(web) = self.web() {
             web.setFrame(self.web_frame());
             self.window().makeFirstResponder(Some(&web));
@@ -1352,6 +1353,7 @@ impl Tab {
         if text.is_empty() {
             iv.find_status.get().unwrap().setStringValue(&NSString::from_str(""));
             iv.find_last.replace(String::new());
+            self.find_js("__mybFind.clear()", None, |_| {});
             return;
         }
         let new_term = iv.find_last.replace(text.clone()) != text;
@@ -1363,14 +1365,29 @@ impl Tab {
                 config.setWraps(true);
                 config.setCaseSensitive(false);
             }
-            let tab = this.clone();
+            let (tab, term) = (this.clone(), text.clone());
             let done = RcBlock::new(move |result: std::ptr::NonNull<WKFindResult>| {
                 let found = unsafe { result.as_ref().matchFound() };
-                let label = if found { "" } else { "No matches" };
-                tab.ivars().find_status.get().unwrap().setStringValue(&NSString::from_str(label));
-                if tab.ivars().find_report.replace(false) {
-                    say!("FIND found={}", found as u8);
+                if !found {
+                    tab.find_js("__mybFind.clear()", None, |_| {});
+                    return tab.find_done(false, "No matches");
                 }
+                // Every match highlighted, the current one apart, and "3 of 17".
+                let args = objc2_foundation::NSDictionary::from_retained_objects(
+                    &[&*NSString::from_str("t")],
+                    &[Retained::<AnyObject>::from(NSString::from_str(&term))],
+                );
+                let t = tab.clone();
+                tab.find_js("return __mybFind.mark(t)", Some(&args), move |r| {
+                    let counts =
+                        r.and_then(|r| r.downcast::<NSString>().ok()).and_then(|j| find_counts(&j.to_string()));
+                    let status = match counts {
+                        Some((n, i)) if i > 0 => format!("{i} of {n}"),
+                        Some((n, _)) if n > 1 => format!("{n} matches"),
+                        _ => String::new(),
+                    };
+                    t.find_done(true, &status);
+                });
             });
             if let Some(web) = this.web() {
                 unsafe {
@@ -1399,6 +1416,26 @@ impl Tab {
         } else {
             search();
         }
+    }
+
+    /// A find finished: show its status, and tell the bench.
+    fn find_done(&self, found: bool, status: &str) {
+        if let Some(label) = self.ivars().find_status.get() {
+            label.setStringValue(&NSString::from_str(status));
+        }
+        if self.ivars().find_report.replace(false) {
+            say!("FIND found={}", found as u8);
+        }
+    }
+
+    /// resources/find.js's functions, then `body`.
+    fn find_js(
+        &self,
+        body: &str,
+        args: Option<&objc2_foundation::NSDictionary<NSString, AnyObject>>,
+        done: impl FnOnce(Option<Retained<AnyObject>>) + 'static,
+    ) {
+        self.client_js(&format!("{FIND_JS}\n{body}"), args, done);
     }
 
     fn ensure_web(&self) -> Retained<WKWebView> {
@@ -2867,6 +2904,24 @@ pub fn escape_html(s: &str) -> String {
 
 static READER_JS: &str = include_str!("../resources/reader.js");
 static PICKER_JS: &str = include_str!("../resources/picker.js");
+static FIND_JS: &str = include_str!("../resources/find.js");
+
+/// resources/find.js's `{count, current}`.
+fn find_counts(json: &str) -> Option<(i64, i64)> {
+    use objc2_foundation::{NSData, NSDictionary, NSJSONReadingOptions, NSJSONSerialization, NSNumber};
+    let value = NSJSONSerialization::JSONObjectWithData_options_error(
+        &NSData::with_bytes(json.as_bytes()),
+        NSJSONReadingOptions::empty(),
+    )
+    .ok()?;
+    let d = value.downcast_ref::<NSDictionary>()?;
+    let n = |k: &str| {
+        d.objectForKey(&NSString::from_str(k))
+            .and_then(|v| v.downcast::<NSNumber>().ok())
+            .map(|n| n.integerValue() as i64)
+    };
+    Some((n("count")?, n("current")?))
+}
 
 /// The script world of resources/passwords.js: pages can't reach into it.
 pub fn passwords_world(mtm: MainThreadMarker) -> Retained<WKContentWorld> {
