@@ -69,6 +69,11 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   Mac by Apple's Translation framework (macOS 26 or later, with the
   languages downloaded in System Settings); View → Show Original puts it
   back. Into your Mac's language, or the one set in Settings → General.
+- **PDF viewer**: PDFs open with a toolbar like Edge's: page thumbnails,
+  page number, zoom (fit width, fit page), rotate, two pages side by side,
+  highlight text, read aloud (each word selected as it's read, the page
+  follows along), find (every match highlighted), print, and save with your
+  highlights.
 - **Print and save as PDF** (⌘P, and `window.print()`).
 - **Save Page As** (⌘S): the page with its images and styles in one Web
   Archive file, readable offline here, in Safari or with Quick Look.

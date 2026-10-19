@@ -18,6 +18,7 @@ mod import;
 mod internal;
 mod netgate;
 mod passwords;
+mod pdf;
 mod privacy;
 mod profiles;
 mod shortcuts;
@@ -953,6 +954,12 @@ impl App {
         report.push(line("playing_audio", true, WKWebView::class().responds_to(sel!(_isPlayingAudio))));
         // Settings → Tabs and the heavy-tab badge read each page's process.
         report.push(line("web_process_id", true, WKWebView::class().responds_to(sel!(_webProcessIdentifier))));
+        // The PDF viewer gets the PDF WebKit loaded.
+        report.push(line(
+            "pdf_data",
+            true,
+            WKWebView::class().responds_to(sel!(_getMainResourceDataWithCompletionHandler:)),
+        ));
         // The address bar shows the committed address (anti-spoofing).
         report.push(line("committed_url", true, WKWebView::class().responds_to(sel!(_committedURL))));
         // Extensions' background pages can play audio (see `host_extension_audio`).
@@ -2213,6 +2220,17 @@ impl App {
             // once the sheet is answered with OK.
             // `SPELL continuous=<0|1> grammar=<0|1> correct=<0|1>`, from the page's web view.
             ("spell", Some(t)) => say!("{}", t.spell_state()),
+            // The PDF viewer: `PDF pages= page= sidebar= twoup= rotation= highlights=`,
+            // a toolbar button (`pdfcmd <i>`, pdf::BUTTONS), selecting a page's start.
+            ("pdf", Some(t)) => say!("{}", t.pdf_state()),
+            ("pdfcmd", Some(t)) => {
+                t.pdf_command(arg.parse().unwrap_or(usize::MAX));
+                say!("{}", t.pdf_state());
+            }
+            ("pdfselect", Some(t)) => {
+                t.pdf_select(arg.parse().unwrap_or(0));
+                say!("PDFSELECT");
+            }
             // View → Show Web Inspector: `INSPECTOR <0|1>` (whether there's one to show).
             ("inspector", Some(t)) => t.show_inspector(),
             ("picker", Some(t)) => {

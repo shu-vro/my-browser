@@ -141,6 +141,9 @@ pub struct TabIvars {
     translate_run: Cell<u64>,
     /// Its video went to picture in picture when the user left the tab.
     auto_pip: Cell<bool>,
+    /// The PDF viewer over the page (pdf.rs), and a PDF on its way.
+    pdf: RefCell<Option<crate::pdf::Viewer>>,
+    pdf_expected: Cell<bool>,
 }
 
 /// The saved-passwords menu: (site, frame of the login form, usernames).
@@ -217,6 +220,10 @@ define_class!(
             response: &WKNavigationResponse,
             decide: &DynBlock<dyn Fn(WKNavigationResponsePolicy)>,
         ) {
+            if unsafe { response.isForMainFrame() } {
+                let mime = unsafe { response.response().MIMEType() }.map(|m| m.to_string()).unwrap_or_default();
+                self.ivars().pdf_expected.set(mime == "application/pdf");
+            }
             let download = unsafe { !response.canShowMIMEType() || is_attachment(response) };
             if !download {
                 return decide.call((WKNavigationResponsePolicy::Allow,));
@@ -254,6 +261,7 @@ define_class!(
             self.ivars().visit.set(None);
             self.ivars().reader.set(self.ivars().reader_loading.replace(false));
             self.ivars().translated.set(false);
+            self.close_pdf();
             self.ivars().translate_run.set(self.ivars().translate_run.get() + 1);
             self.ivars().requested.replace(None);
             self.ivars().allow_internal.replace(None);
@@ -274,6 +282,9 @@ define_class!(
             if !error_page && !reader && !self.is_private() && (url.starts_with("http://") || url.starts_with("https://")) {
                 let id = self.app().store().add_visit(&url, &self.ivars().title.borrow());
                 self.ivars().visit.set(Some(id));
+            }
+            if self.ivars().pdf_expected.replace(false) {
+                self.show_pdf();
             }
             self.report_nav("LOADED", &url);
             if let Some(id) = self.ivars().pending_ext_action.take() {
@@ -823,6 +834,48 @@ define_class!(
             done.call(());
         }
 
+        /// The PDF viewer's toolbar (tag = its place in `pdf::BUTTONS`).
+        #[unsafe(method(pdfCommand:))]
+        fn pdf_command_action(&self, sender: &NSButton) {
+            self.pdf_command(sender.tag() as usize);
+        }
+
+        /// The PDF viewer's page number field: go to that page.
+        #[unsafe(method(pdfGoToPage:))]
+        fn pdf_go_to_page_action(&self, sender: &NSTextField) {
+            if let Some(pdf) = self.ivars().pdf.borrow().as_ref() {
+                pdf.go_to_page(sender.stringValue().to_string().trim().parse().unwrap_or(1));
+            }
+        }
+
+        /// The PDF's page or zoom changed (PDFKit notification).
+        #[unsafe(method(pdfChanged:))]
+        fn pdf_changed(&self, _n: &NSNotification) {
+            // (Busy when the change comes from our own command, which updates after.)
+            if let Ok(pdf) = self.ivars().pdf.try_borrow()
+                && let Some(pdf) = pdf.as_ref()
+            {
+                pdf.update();
+            }
+        }
+
+        /// Reading a PDF aloud: the word about to be read is selected.
+        #[unsafe(method(speechSynthesizer:willSpeakWord:ofString:))]
+        fn will_speak_word(&self, _s: &AnyObject, range: objc2_foundation::NSRange, _text: &NSString) {
+            if let Some(pdf) = self.ivars().pdf.borrow_mut().as_mut() {
+                pdf.speaking(range);
+            }
+        }
+
+        #[unsafe(method(speechSynthesizer:didFinishSpeaking:))]
+        fn did_finish_speaking(&self, _s: &AnyObject, _finished: Bool) {
+            if let Ok(mut pdf) = self.ivars().pdf.try_borrow_mut()
+                && let Some(pdf) = pdf.as_mut()
+            {
+                pdf.done_speaking();
+            }
+        }
+
         #[unsafe(method(goHome:))]
         fn go_home_action(&self, _s: Option<&AnyObject>) {
             self.go_home();
@@ -903,7 +956,7 @@ impl Tab {
         this
     }
 
-    fn app(&self) -> &App {
+    pub fn app(&self) -> &App {
         self.ivars().app.get().unwrap()
     }
 
@@ -1274,6 +1327,9 @@ impl Tab {
             if let Some(web) = self.web() {
                 web.setFrame(self.web_frame());
             }
+            if let Some(pdf) = self.ivars().pdf.borrow().as_ref() {
+                pdf.root.setFrame(self.web_frame());
+            }
         }
         let field = iv.find_field.get().unwrap();
         self.window().makeFirstResponder(Some(field));
@@ -1290,6 +1346,10 @@ impl Tab {
             row.removeFromSuperview();
         }
         self.find_js("__mybFind.clear()", None, |_| {});
+        if let Some(pdf) = self.ivars().pdf.borrow_mut().as_mut() {
+            pdf.clear_find();
+            pdf.root.setFrame(self.web_frame());
+        }
         if let Some(web) = self.web() {
             web.setFrame(self.web_frame());
             self.window().makeFirstResponder(Some(&web));
@@ -1380,6 +1440,13 @@ impl Tab {
             iv.find_last.replace(String::new());
             self.find_js("__mybFind.clear()", None, |_| {});
             return;
+        }
+        // In a PDF, PDFKit finds (and highlights every match).
+        let in_pdf = iv.pdf.borrow_mut().as_mut().map(|pdf| pdf.find(&text, backwards));
+        if let Some((i, n)) = in_pdf {
+            iv.find_last.replace(text);
+            let status = if n == 0 { "No matches".to_string() } else { format!("{i} of {n}") };
+            return self.find_done(n > 0, &status);
         }
         let new_term = iv.find_last.replace(text.clone()) != text;
         let this = self.retain();
@@ -1474,6 +1541,7 @@ impl Tab {
     /// Drop the web view and its page process. Observers go first: KVO on a
     /// deallocated object crashes.
     fn destroy_web(&self) {
+        self.close_pdf();
         let Some(web) = self.ivars().web.take() else { return };
         for key in observed(&web) {
             unsafe { web.removeObserver_forKeyPath(self, &NSString::from_str(key)) };
@@ -2196,6 +2264,69 @@ impl Tab {
         };
     }
 
+    /// WebKit finished loading a PDF: show it in the PDF viewer, over the page.
+    fn show_pdf(&self) {
+        let Some(web) = self.web().filter(|w| responds(w, sel!(_getMainResourceDataWithCompletionHandler:))) else {
+            return;
+        };
+        let this = self.retain();
+        let done = RcBlock::new(move |data: *mut objc2_foundation::NSData, _e: *mut NSError| {
+            let Some(data) = (unsafe { data.as_ref() }) else { return };
+            let url = this.url();
+            let name = NSURL::URLWithString(&NSString::from_str(&url))
+                .and_then(|u| u.lastPathComponent())
+                .map(|n| n.to_string())
+                .filter(|n| n.to_ascii_lowercase().ends_with(".pdf"))
+                .unwrap_or_else(|| "document.pdf".into());
+            let Some(viewer) = crate::pdf::Viewer::new(&this, data, this.web_frame(), name, this.mtm()) else { return };
+            this.close_pdf();
+            this.window().contentView().unwrap().addSubview(&viewer.root);
+            this.ivars().pdf.replace(Some(viewer));
+            this.bench_line("PDFVIEW");
+        });
+        let _: () = unsafe { msg_send![&*web, _getMainResourceDataWithCompletionHandler: &*done] };
+    }
+
+    fn close_pdf(&self) {
+        let old = self.ivars().pdf.take();
+        if let Some(mut viewer) = old {
+            viewer.close(self);
+        }
+    }
+
+    /// `PDF pages=… page=… …`, or `PDF none`.
+    pub fn pdf_state(&self) -> String {
+        self.ivars().pdf.borrow().as_ref().map_or("PDF none".into(), |p| p.state())
+    }
+
+    /// A PDF toolbar button (bench: `pdfcmd <i>`).
+    pub fn pdf_command(&self, i: usize) {
+        use crate::pdf::Command;
+        let Some((_, _, command)) = crate::pdf::BUTTONS.get(i) else { return };
+        match command {
+            Command::Find => self.show_find(),
+            Command::Print => self.print(None),
+            Command::Save => self.save_page(None),
+            Command::ReadAloud => {
+                if let Some(pdf) = self.ivars().pdf.borrow_mut().as_mut() {
+                    pdf.read_aloud(self);
+                }
+            }
+            c => {
+                if let Some(pdf) = self.ivars().pdf.borrow_mut().as_mut() {
+                    pdf.run(*c);
+                }
+            }
+        }
+    }
+
+    /// Select the start of page `n` in the PDF (tests, before Highlight).
+    pub fn pdf_select(&self, n: usize) {
+        if let Some(pdf) = self.ivars().pdf.borrow().as_ref() {
+            pdf.select_page(n);
+        }
+    }
+
     /// The user left this tab while its video plays with sound: keep showing
     /// it in picture in picture (Settings → General). Silent videos (ads,
     /// backgrounds) are left alone.
@@ -2273,6 +2404,9 @@ impl Tab {
         if self.window().attachedSheet().is_some() {
             return;
         }
+        if let (Some(pdf), None) = (self.ivars().pdf.borrow().as_ref(), to) {
+            return pdf.print(self.window());
+        }
         let info: Retained<objc2_app_kit::NSPrintInfo> =
             unsafe { msg_send![&*objc2_app_kit::NSPrintInfo::sharedPrintInfo(), copy] };
         if let Some(path) = to {
@@ -2309,6 +2443,25 @@ impl Tab {
         let write = move |data: &objc2_foundation::NSData, path: &str| -> bool {
             data.writeToFile_atomically(&NSString::from_str(path), true)
         };
+        // A PDF saves as itself, with its highlights.
+        let pdf = self.ivars().pdf.borrow().as_ref().and_then(|p| Some((p.data()?, p.name.clone())));
+        if let Some((data, name)) = pdf {
+            if let Some(path) = to {
+                return say!("SAVED {}", write(&data, path) as u8);
+            }
+            let panel = objc2_app_kit::NSSavePanel::savePanel(self.mtm());
+            panel.setNameFieldStringValue(&NSString::from_str(&name));
+            let (p, this) = (panel.clone(), self.retain());
+            let handler = RcBlock::new(move |response: isize| {
+                let path = (response == NSModalResponseOK).then(|| p.URL()).flatten().and_then(|u| u.path());
+                if let Some(path) = path
+                    && !write(&data, &path.to_string())
+                {
+                    this.confirm("Couldn't save the PDF.", &["OK"], |_| {});
+                }
+            });
+            return panel.beginSheetModalForWindow_completionHandler(self.window(), &handler);
+        }
         if let Some(path) = to.map(str::to_string) {
             let done = RcBlock::new(move |data: *mut objc2_foundation::NSData, _e: *mut NSError| {
                 let ok = unsafe { data.as_ref() }.is_some_and(|d| write(d, &path));

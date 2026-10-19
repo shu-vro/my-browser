@@ -74,6 +74,7 @@ name and start time (see benchmark/README.md).
 | `src/crash.rs` | The panic hook, finding crash reports, and the pre-filled GitHub issue |
 | `src/translate.rs` | Translate Page: the helper process and its requests |
 | `helpers/translate.swift` | `my-browser-translate`, the helper: Apple's Translation and NaturalLanguage frameworks (built by `build.rs`) |
+| `src/pdf.rs` | The PDF viewer (PDFKit) over a tab showing a PDF |
 | `src/files.rs` | Paths in the address bar, folder pages (`mybrowser://files/…`), opening local files |
 | `src/autofill.rs` | Addresses and cards: settings bridge, labels, the values a form gets |
 | `src/profiles.rs` | Profiles: listing, adding, opening (another copy of the app), deleting |
@@ -864,6 +865,38 @@ Bookmarks lists, searches, renames, moves and deletes them through the
 `bookmarks.*` bridge ops, which validate titles and folders. Test:
 `bookmarks_toggle_with_cmd_d_and_fill_the_menu`.
 
+## PDFs
+
+A main-frame response of `application/pdf` marks the tab (`pdf_expected`).
+When WebKit has finished loading it, the tab asks for the file it loaded
+(private `_getMainResourceDataWithCompletionHandler:`, `TUNE pdf_data`) and
+covers the page with `pdf::Viewer`: PDFKit's `PDFView` and
+`PDFThumbnailView` (the framework is loaded on the first PDF) under a
+toolbar: thumbnails, previous/next, page number field and count, zoom out/in
+with the percent, fit width (`autoScales`), fit page
+(`scaleFactorForSizeToFit`), rotate (every page +90°), two pages side by
+side (`kPDFDisplayTwoUpContinuous`, as a book), highlight the selection
+(yellow `Highlight` annotations, line by line), read aloud
+(`NSSpeechSynthesizer`, the selection's text ranges or from this page on;
+`spoken` maps the spoken text back to pages, so the tab, as the voice's
+delegate, selects each word as it's read: `speechSynthesizer:willSpeakWord:`
+→ `Viewer::speaking`, `scrollSelectionToVisible:`), find, print
+(`printOperationForPrintInfo:…`, fit to page) and save (the document's
+`dataRepresentation`, with the highlights). WebKit keeps the page, so the
+address, history and back/forward work as for any page; the viewer is closed
+on the next commit, sleep or close. ⌘F searches the PDF
+(`findString:withOptions:`, every match highlighted with
+`setHighlightedSelections:`, ⌘G steps), ⌘+/⌘-/⌘0 zoom it, ⌘P prints and ⌘S
+saves it. Page and zoom changes update the toolbar through PDFKit's
+notifications (`pdfChanged:`). The viewer clips to its bounds: PDFView
+draws past its edges otherwise (AppKit stopped clipping by default in macOS
+14) and showed through the thumbnails. The PDF is in memory twice while shown
+(WebKit's page process and ours). Bench: `pdf` → `PDF pages= page= sidebar=
+twoup= rotation= highlights=`, `pdfcmd <i>` (a toolbar button,
+`pdf::BUTTONS`), `pdfselect <page>`, and `PDFVIEW` when one opens. Test:
+`pdfs_open_in_the_pdf_viewer`; ` reading=<word>` is added while reading
+aloud (silent in bench mode).
+
 ## Local files and folder pages
 
 A path typed in the address bar (`files::typed_path`), or a `file://`
@@ -1161,12 +1194,15 @@ active tab.
 | `inspector` | `INSPECTOR <0\|1>`: there's a Web Inspector to show |
 | `fillautofill <i>` | `FILLAUTOFILL`: picks entry `i` from the last `AUTOFILL <label>\|…` menu |
 | `profile` | `PROFILE <name> <address bar placeholder>` |
+| `pdf`, `pdfcmd <i>`, `pdfselect <page>` | `PDF pages= page= sidebar= twoup= rotation= highlights=` (or `PDF none`); a viewer button; select a page's start |
 | `crash` | panics (tests the crash reporter) |
 | `quit` or stdin EOF | exits |
 
 In `bridge` arguments, `\n` stands for a line break.
 
-Unprompted events: `CRASHED` (the page process died), `DOWNLOAD
+Unprompted events: `PDFVIEW` (the PDF viewer opened), `AUTOPIP 1` (a video
+went to picture in picture), `OPENLOCAL app|reveal <path>` (a local file
+WebKit can't show), `CRASHED` (the page process died), `DOWNLOAD
 <done|failed|cancelled> <path>`, `DIALOG <message>` (a sheet appeared) and
 `POPUP <extension id> shown=<0|1>`. Output goes through `say!`, which ignores
 a closed pipe: a harness that stopped reading must not crash the browser.

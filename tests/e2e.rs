@@ -109,9 +109,14 @@ impl Browser {
     /// 20 s: with a browser per core running in parallel, an extension's
     /// first start can take over 10 s.
     fn state_until(&mut self, ok: impl Fn(&str) -> bool) -> String {
+        self.until("state", ok)
+    }
+
+    /// Send `command` until its reply passes `ok` (or 20 s pass).
+    fn until(&mut self, command: &str, ok: impl Fn(&str) -> bool) -> String {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            let s = self.send("state");
+            let s = self.send(command);
             if ok(&s) || Instant::now() > deadline {
                 return s;
             }
@@ -465,6 +470,7 @@ fn engine_and_privacy_settings_are_applied() {
         "my_filters",
         "page_print",
         "pagecache",
+        "pdf_data",
         "playing_audio",
         "picture_in_picture",
         "prewarm",
@@ -2381,4 +2387,38 @@ fn folders_show_as_pages_and_files_open_in_the_tab() {
     );
     assert_eq!(b.send(&read), "EVAL 1");
     assert!(b.state_until(|s| s.ends_with("title=refused")).ends_with("title=refused"));
+}
+
+#[test]
+fn pdfs_open_in_the_pdf_viewer() {
+    let dir = TempProfile::new("pdf");
+    let pdf = dir.0.join("doc.pdf");
+    let mut b = launch_with(&["--on-top"]);
+    b.nav(
+        "go data:text/html,<p style=break-after:page>alpha one</p><p style=break-after:page>beta alpha</p><p>gamma</p>",
+    );
+    assert_eq!(b.send(&format!("printpdf {}", pdf.display())), "PRINTED 1");
+    writeln!(b.stdin, "go file://{}", pdf.display()).unwrap();
+    b.wait_all(&["LOADED", "PDFVIEW"]);
+    assert_eq!(b.send("pdf"), "PDF pages=3 page=1 sidebar=0 twoup=0 rotation=0 highlights=0");
+    assert_eq!(b.send("pdfcmd 2"), "PDF pages=3 page=2 sidebar=0 twoup=0 rotation=0 highlights=0", "next page");
+    assert_eq!(b.send("pdfcmd 0"), "PDF pages=3 page=2 sidebar=1 twoup=0 rotation=0 highlights=0", "thumbnails");
+    assert_eq!(b.send("pdfcmd 7"), "PDF pages=3 page=2 sidebar=1 twoup=0 rotation=90 highlights=0", "rotate");
+    assert_eq!(b.send("pdfcmd 8"), "PDF pages=3 page=2 sidebar=1 twoup=1 rotation=90 highlights=0", "two pages");
+    assert_eq!(b.send("find alpha"), "FIND found=1");
+    assert_eq!(b.send("findbar"), "FINDBAR open=1 text=alpha status=1 of 2");
+    b.send("pdfselect 0");
+    assert!(b.send("pdfcmd 9").ends_with("highlights=1"), "highlight the selection");
+    let saved = dir.0.join("saved.pdf");
+    assert_eq!(b.send(&format!("savepage {}", saved.display())), "SAVED 1");
+    assert!(std::fs::read(&saved).unwrap().windows(9).any(|w| w == b"Highlight"), "saved with the highlight");
+    // Reading aloud selects each word as it's read (silent in bench mode).
+    b.send("pdfcmd 10");
+    // (From this page, page 2: "beta alpha".)
+    let reading = b.until("pdf", |s| s.ends_with("reading=alpha"));
+    assert!(reading.ends_with("reading=alpha"), "{reading}");
+    b.send("pdfcmd 10");
+    assert!(b.until("pdf", |s| !s.contains("reading=")).ends_with("highlights=1"), "stopped");
+    b.nav("go about:blank");
+    assert_eq!(b.send("pdf"), "PDF none", "leaving the PDF closes the viewer");
 }

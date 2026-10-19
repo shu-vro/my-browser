@@ -539,6 +539,17 @@ so an unused feature costs nothing. Translation runs on the Mac (no network,
 no gate): macOS downloads language models only when the user asks in System
 Settings, so the browser never connects for it.
 
+### Why is the PDF viewer PDFKit over WebKit's page, and not WebKit's own?
+
+WebKit's built-in PDF view has zoom and download, nothing else; Edge's
+thumbnails, two-page view, rotation, highlighting, read aloud and find with
+every match marked are all in PDFKit's `PDFView`. Cancelling WebKit's load
+and showing only PDFKit would lose the address, history and back/forward,
+which WebKit keeps for the page; so WebKit loads the PDF and the viewer
+covers it, with the same bytes (private `_getMainResourceDataWithCompletionHandler:`).
+The price: the PDF is in memory twice while shown. PDFKit itself is loaded
+on the first PDF only.
+
 ### Why are folders `mybrowser://files/…` pages, not `file://` ones?
 
 WebKit shows nothing for a folder, and a page we generate for a `file://`
