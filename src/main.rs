@@ -2411,7 +2411,9 @@ fn normalize(input: &str, search: &str) -> String {
     if s.contains("://") || s.starts_with("about:") || s.starts_with("data:") {
         s.to_string()
     } else if is_address(s) {
-        format!("https://{s}")
+        // This Mac and the local network rarely have HTTPS: plain HTTP there.
+        let host = store::site_of(&format!("http://{s}")).unwrap_or_default();
+        if privacy::is_local_host(&host) { format!("http://{s}") } else { format!("https://{s}") }
     } else {
         let base = SEARCH_ENGINES.iter().find(|(name, _)| *name == search).map_or(SEARCH_ENGINES[0].1, |(_, b)| b);
         format!("{base}{}", encode_query(s))
@@ -2783,7 +2785,10 @@ mod tests {
     fn normalizes_address_bar_input() {
         assert_eq!(normalize("example.com", "duckduckgo"), "https://example.com");
         assert_eq!(normalize(" http://a.b/c ", "duckduckgo"), "http://a.b/c");
-        assert_eq!(normalize("localhost:8080", "duckduckgo"), "https://localhost:8080");
+        assert_eq!(normalize("localhost:8080", "duckduckgo"), "http://localhost:8080", "local: no https");
+        assert_eq!(normalize("192.168.1.1/admin", "duckduckgo"), "http://192.168.1.1/admin");
+        assert_eq!(normalize("printer.local", "duckduckgo"), "http://printer.local");
+        assert_eq!(normalize("localhost.example.com", "duckduckgo"), "https://localhost.example.com");
         assert_eq!(normalize("about:blank", "duckduckgo"), "about:blank");
         assert_eq!(normalize("rust lang & c", "duckduckgo"), "https://duckduckgo.com/?q=rust+lang+%26+c");
         assert_eq!(normalize("rust", "brave"), "https://search.brave.com/search?q=rust");

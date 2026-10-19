@@ -188,6 +188,9 @@ define_class!(
                 }
                 // JavaScript off for this site: the page and its frames run no scripts.
                 unsafe { prefs.setAllowsContentJavaScript(self.app().javascript_allowed(&url)) };
+                if crate::store::site_of(&url).is_some_and(|h| crate::privacy::is_local_host(&h)) {
+                    crate::privacy::keep_scheme(prefs);
+                }
             }
             if policy == WKNavigationActionPolicy::Download {
                 let (decide, prefs) = (decide.copy(), prefs.retain());
@@ -2121,9 +2124,16 @@ impl Tab {
             Some(w) => self.shown_url(w),
             None => self.url(),
         };
-        // Lock for HTTPS, a warning for plain HTTP, neutral for everything else.
+        // Lock for HTTPS, a computer for this Mac and the local network, a
+        // warning for other plain HTTP, neutral for everything else.
+        let local = crate::store::site_of(&url).is_some_and(|h| crate::privacy::is_local_host(&h));
         let (symbol, label) = if url.starts_with("https://") {
             ("lock.fill", "Secure connection. Site settings")
+        } else if url.starts_with("http://") && local {
+            (
+                "desktopcomputer",
+                "Local address: this Mac or your network, loaded as typed (not upgraded to HTTPS). Site settings",
+            )
         } else if url.starts_with("http://") {
             ("exclamationmark.triangle", "Not secure: this page is sent unencrypted. Site settings")
         } else {
@@ -2568,8 +2578,13 @@ impl Tab {
             item
         };
         add(&site, None, 0, false);
+        let local = crate::privacy::is_local_host(&site);
         add(
-            if url.starts_with("https://") { "Connection is secure" } else { "Connection is not secure" },
+            match (url.starts_with("https://"), local) {
+                (true, _) => "Connection is secure",
+                (false, true) => "Local address (this Mac or your network)",
+                (false, false) => "Connection is not secure",
+            },
             None,
             0,
             false,

@@ -33,6 +33,9 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Address bar**: type an address or a search; shows the committed address
   (can't be spoofed by a slow navigation); Return on the current address only
   focuses the page.
+- **Local addresses** (`localhost:3000`, `192.168.1.1`, `printer.local`)
+  open over plain HTTP as typed, never upgraded to HTTPS first; the site
+  button shows a computer and says the page is local.
 - **Search keywords and bangs**: your own keywords from Settings → General
   work with or without the `!` (`w rust`); 17 built-in bangs (`!w`, `!g`,
   `!yt`, `!gh`, `!mdn`, `!rs`…) are each **off until you turn them on**

@@ -123,6 +123,22 @@ const LOCAL: [&str; 14] = [
     r"^[a-z]+://[^/:]+\.local[:/]",
 ];
 
+/// A host on this Mac or the local network (as `store::site_of` writes it):
+/// the same ranges as `LOCAL`. Such pages are loaded over plain HTTP as typed,
+/// not upgraded to HTTPS first, and the site button says they're local.
+pub fn is_local_host(host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    if let Some(v6) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        return v6 == "::1" || v6 == "::" || v6.starts_with("fc") || v6.starts_with("fd") || v6.starts_with("fe80:");
+    }
+    let octets: Vec<u8> = host.split('.').filter_map(|p| p.parse().ok()).collect();
+    if octets.len() == 4 && host.split('.').count() == 4 {
+        return matches!(octets[..], [127, ..] | [10, ..] | [192, 168, ..] | [169, 254, ..] | [0, 0, 0, 0])
+            || matches!(octets[..], [172, b, ..] if (16..=31).contains(&b));
+    }
+    host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local")
+}
+
 /// Websites may not reach the local network (routers, printers, dev servers,
 /// apps listening on localhost): such requests are blocked unless the page
 /// itself is local, or the user allowed the site. Brave and Chrome guard
@@ -444,6 +460,15 @@ pub fn harden_webpage_preferences(prefs: &WKWebpagePreferences, shields: bool) -
     vec![("https_first", ok_https), ("global_privacy_control", ok_gpc), ("fingerprinting_protection", ok_fp)]
 }
 
+/// A navigation to this Mac or the local network goes where it was typed:
+/// no HTTPS-first upgrade, which would only fail or stall there.
+pub fn keep_scheme(prefs: &WKWebpagePreferences) {
+    if responds(prefs, sel!(setPreferredHTTPSNavigationPolicy:)) {
+        // WKWebpagePreferencesUpgradeToHTTPSPolicyKeepAsRequested
+        let _: () = unsafe { msg_send![prefs, setPreferredHTTPSNavigationPolicy: 0isize] };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,6 +515,31 @@ mod tests {
         assert_eq!(json.matches("css-display-none").count(), BANNERS.len());
         assert!(json.contains(r#""selector":"[id^=\"sp_message_container_\"]""#), "quotes escaped");
         assert!(banner_rules(&["a.example".into()]).ends_with(r#""action":{"type":"ignore-previous-rules"}}]"#));
+    }
+
+    #[test]
+    fn local_hosts_are_recognised() {
+        for local in [
+            "localhost",
+            "app.localhost",
+            "127.0.0.1",
+            "10.1.2.3",
+            "192.168.0.1",
+            "172.20.0.5",
+            "169.254.169.254",
+            "printer.local",
+            "[::1]",
+            "[fd00::1]",
+            "[fe80::1]",
+            "LOCALHOST",
+        ] {
+            assert!(is_local_host(local), "{local}");
+        }
+        for public in
+            ["example.com", "localhost.example.com", "8.8.8.8", "172.32.0.1", "1.2.3", "[2001:db8::1]", "local"]
+        {
+            assert!(!is_local_host(public), "{public}");
+        }
     }
 
     #[test]

@@ -2077,3 +2077,12 @@ fn spelling_is_checked_while_typing() {
     assert_eq!(b.send("spell"), "SPELL continuous=1 grammar=1 correct=0");
     assert!(b.send("menu Edit").contains("|Spelling and Grammar|"));
 }
+
+#[test]
+fn local_addresses_load_over_http_as_typed() {
+    let base = serve();
+    let port = base.rsplit(':').next().unwrap().to_string();
+    let mut b = launch();
+    assert_eq!(b.nav(&format!("barenter localhost:{port}/page/local")), format!("http://localhost:{port}/page/local"));
+    assert!(b.state_until(|s| s.ends_with("title=local")).ends_with("title=local"), "not upgraded to HTTPS first");
+}

@@ -327,6 +327,14 @@ one of the user's), an address (`https://`, but `http://` for local
 hosts, `privacy::is_local_host`), else a search. Keywords are checked in
 Settings → General (`keywords.list/set/delete`; one short word, an http(s)
 address with `%s`).
+
+**Local addresses** (localhost, `*.localhost`, `*.local`, 127/8, 10/8,
+172.16/12, 192.168/16, 169.254/16, `[::1]`, `[fc…]`, `[fd…]`, `[fe80…]`)
+skip HTTPS-first: `decide_action` sets the navigation's
+`preferredHTTPSNavigationPolicy` to keep-as-requested (`privacy::keep_scheme`),
+and the site button shows a computer ("Local address") instead of the
+not-secure warning. Test: `local_addresses_load_over_http_as_typed`.
+
 The bar shows what the user asked for while it loads, otherwise the
 **committed** address (`_committedURL`, private; `_unreachableURL` on error
 pages). `WKWebView.URL` switches to a page-started navigation's target before
