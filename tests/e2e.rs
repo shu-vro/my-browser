@@ -2056,6 +2056,26 @@ fn find_bar_survives_navigation_and_sleep() {
 // tools, local addresses, find counts, folders, PDFs, gestures.
 
 #[test]
+fn pages_translate_and_show_the_original_again() {
+    // The helper "translates" by upper-casing (no language models needed).
+    let mut b = launch_env(&[], &[("MYB_TRANSLATE_FAKE", "1")]);
+    b.nav("go data:text/html;charset=utf-8,<title>t</title><p>Bonjour tout le monde, le chat dort sur le canapé.</p><code>garder</code>");
+    assert_eq!(b.bridge(&["settings.set", "translate_to", "en"]), "true");
+    assert!(b.send("bridge settings.set\ttranslate_to\tEnglish!").starts_with("BRIDGE err"));
+    assert_eq!(b.send("translate"), "TRANSLATED fr 1", "one text (code is left alone)");
+    assert_eq!(
+        b.send("eval document.body.innerText"),
+        "EVAL BONJOUR TOUT LE MONDE, LE CHAT DORT SUR LE CANAPÉ.  garder"
+    );
+    assert!(b.send("menu View").contains("|Show Original|"));
+    assert_eq!(b.send("translate"), "TRANSLATE off");
+    assert!(b.send("eval document.body.innerText").starts_with("EVAL Bonjour tout"));
+    // Already in the target language.
+    assert_eq!(b.bridge(&["settings.set", "translate_to", "fr"]), "true");
+    assert_eq!(b.send("translate"), "TRANSLATE err same");
+}
+
+#[test]
 fn search_keywords_open_their_site() {
     let base = serve();
     let mut b = launch();

@@ -133,6 +133,10 @@ pub struct TabIvars {
     pinned: Cell<bool>,
     /// The page's sound is off (kept across navigations and sleep).
     muted: Cell<bool>,
+    /// Translate Page: the page shows translated text; and which run of it
+    /// replies belong to (a new page or Show Original drops late ones).
+    translated: Cell<bool>,
+    translate_run: Cell<u64>,
 }
 
 /// The saved-passwords menu: (site, frame of the login form, usernames).
@@ -238,6 +242,8 @@ define_class!(
             unsafe { web.setPageZoom(zoom) };
             self.ivars().visit.set(None);
             self.ivars().reader.set(self.ivars().reader_loading.replace(false));
+            self.ivars().translated.set(false);
+            self.ivars().translate_run.set(self.ivars().translate_run.get() + 1);
             self.ivars().requested.replace(None);
             self.ivars().allow_internal.replace(None);
             // A new page starts with a clean slate for dialogs and downloads.
@@ -1804,6 +1810,130 @@ impl Tab {
         }
         if let Some(i) = inspector.filter(|i| responds(i, sel!(show))) {
             let _: () = unsafe { msg_send![&*i, show] };
+        }
+    }
+
+    pub fn is_translated(&self) -> bool {
+        self.ivars().translated.get()
+    }
+
+    /// Translate Page, or Show Original if it's translated. The text goes to
+    /// the translator a part at a time, each part shown as it comes back.
+    pub fn toggle_translate(&self) {
+        let iv = self.ivars();
+        if self.web().is_none() {
+            return self.translate_failed("none", "There's no page to translate.");
+        }
+        iv.translate_run.set(iv.translate_run.get() + 1);
+        if iv.translated.replace(false) {
+            self.translate_js("__mybTr.restore()", None, |_| {});
+            return self.bench_line("TRANSLATE off");
+        }
+        let (this, run) = (self.retain(), iv.translate_run.get());
+        self.translate_js("return JSON.stringify(__mybTr.collect())", None, move |r| {
+            let texts = r
+                .and_then(|r| r.downcast::<NSString>().ok())
+                .map_or_else(Vec::new, |j| crate::translate::parse_texts(&j.to_string()));
+            if texts.is_empty() {
+                return this.translate_failed("empty", "There's no text on this page to translate.");
+            }
+            this.translate_part(std::rc::Rc::new(texts), 0, run);
+        });
+    }
+
+    fn translate_part(&self, texts: std::rc::Rc<Vec<String>>, at: usize, run: u64) {
+        let end = (at + crate::translate::CHUNK).min(texts.len());
+        let to = self.app().store().setting("translate_to");
+        let this = self.retain();
+        let part = texts[at..end].to_vec();
+        self.app().translate(
+            part,
+            &to,
+            Box::new(move |outcome| {
+                // The tab went to another page, or back to the original.
+                if this.ivars().translate_run.get() != run {
+                    return;
+                }
+                match outcome {
+                    Ok((from, done)) => {
+                        let done: Vec<Retained<NSString>> = done.iter().map(|t| NSString::from_str(t)).collect();
+                        let keys = [NSString::from_str("at"), NSString::from_str("texts")];
+                        let values: [Retained<AnyObject>; 2] = [
+                            objc2_foundation::NSNumber::new_usize(at).into(),
+                            NSArray::from_retained_slice(&done).into(),
+                        ];
+                        let keys: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
+                        let args = objc2_foundation::NSDictionary::from_retained_objects(&keys, &values);
+                        this.translate_js("return __mybTr.apply(at, texts)", Some(&args), |_| {});
+                        this.ivars().translated.set(true);
+                        if end < texts.len() {
+                            this.translate_part(texts, end, run);
+                        } else {
+                            this.bench_line(&format!("TRANSLATED {from} {}", texts.len()));
+                        }
+                    }
+                    Err((code, message)) => this.translate_failed(&code, &message),
+                }
+            }),
+        );
+    }
+
+    /// resources/translate.js's functions, then `body`.
+    fn translate_js(
+        &self,
+        body: &str,
+        args: Option<&objc2_foundation::NSDictionary<NSString, AnyObject>>,
+        done: impl FnOnce(Option<Retained<AnyObject>>) + 'static,
+    ) {
+        self.client_js(&format!("{}\n{body}", crate::translate::TRANSLATE_JS), args, done);
+    }
+
+    /// Run `script` (an async function body, with `args` as its variables) in
+    /// the browser's own script world of the main frame, where the page
+    /// can't see it; `done` gets what it returns.
+    fn client_js(
+        &self,
+        script: &str,
+        args: Option<&objc2_foundation::NSDictionary<NSString, AnyObject>>,
+        done: impl FnOnce(Option<Retained<AnyObject>>) + 'static,
+    ) {
+        let Some(web) = self.web() else { return };
+        let done = std::cell::Cell::new(Some(done));
+        let block = RcBlock::new(move |r: *mut AnyObject, _e: *mut NSError| {
+            if let Some(done) = done.take() {
+                done(unsafe { Retained::retain(r) });
+            }
+        });
+        unsafe {
+            web.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+                &NSString::from_str(script),
+                args,
+                None,
+                &WKContentWorld::defaultClientWorld(self.mtm()),
+                Some(&block),
+            )
+        };
+    }
+
+    /// Tell the user why the page wasn't translated (the bench gets the code).
+    fn translate_failed(&self, code: &str, message: &str) {
+        if self.app().is_bench() {
+            return say!("TRANSLATE err {code}");
+        }
+        if code != "install" {
+            return self.confirm(message, &["OK"], |_| {});
+        }
+        self.confirm(message, &["Open Language & Region", "Not Now"], |open| {
+            let url = "x-apple.systempreferences:com.apple.Localization-Settings.extension";
+            if let (true, Some(url)) = (open, NSURL::URLWithString(&NSString::from_str(url))) {
+                objc2_app_kit::NSWorkspace::sharedWorkspace().openURL(&url);
+            }
+        });
+    }
+
+    fn bench_line(&self, line: &str) {
+        if self.app().is_bench() {
+            say!("{line}");
         }
     }
 

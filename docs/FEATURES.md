@@ -55,6 +55,10 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Developer tools**: Inspect Element and View → Show Web Inspector (⌥⌘I);
   a setting turns them off.
 - **Reader mode** (⇧⌘R): the article alone, in large type, without scripts.
+- **Translate Page** (⌥⌘T, View menu): the page's text translated on this
+  Mac by Apple's Translation framework (macOS 26 or later, with the
+  languages downloaded in System Settings); View → Show Original puts it
+  back. Into your Mac's language, or the one set in Settings → General.
 - **Print and save as PDF** (⌘P, and `window.print()`).
 - **Save Page As** (⌘S): the page with its images and styles in one Web
   Archive file, readable offline here, in Safari or with Quick Look.

@@ -22,9 +22,12 @@ if [ "${UNIVERSAL:-0}" = 1 ]; then
   done
   lipo -create -output "$APP/Contents/MacOS/my-browser" \
     target/aarch64-apple-darwin/release/my-browser target/x86_64-apple-darwin/release/my-browser
+  # Translate Page's helper (build.rs builds it next to the browser).
+  lipo -create -output "$APP/Contents/MacOS/my-browser-translate" \
+    target/aarch64-apple-darwin/release/my-browser-translate target/x86_64-apple-darwin/release/my-browser-translate
 else
   cargo build --release --bin my-browser
-  cp target/release/my-browser "$APP/Contents/MacOS/my-browser"
+  cp target/release/my-browser target/release/my-browser-translate "$APP/Contents/MacOS/"
 fi
 cp resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 VERSION=${VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
@@ -79,9 +82,13 @@ PLIST
 # Ad-hoc signature by default: required for macOS to remember permission
 # grants. SIGN_IDENTITY="Developer ID Application: …" signs with a Developer
 # ID instead (with a secure timestamp, as notarization requires).
+# The helper is signed first: the app's signature covers it.
+HELPER="$APP/Contents/MacOS/my-browser-translate"
 if [ -n "${SIGN_IDENTITY:-}" ]; then
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$HELPER"
   codesign --force --options runtime --timestamp --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP"
 else
+  codesign --force --options runtime --sign - "$HELPER"
   codesign --force --options runtime --entitlements "$ENT" --sign - "$APP"
 fi
 echo "built $APP"

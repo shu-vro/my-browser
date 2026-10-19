@@ -23,6 +23,7 @@ mod store;
 mod suggest;
 mod tab;
 mod tabsearch;
+mod translate;
 mod usage;
 
 use std::cell::{Cell, OnceCell, RefCell};
@@ -123,6 +124,8 @@ pub struct AppIvars {
     expected_package: RefCell<Option<String>>,
     /// The installed extension that package updates, and who to tell.
     pending_update: RefCell<Option<(i64, internal::Reply)>>,
+    /// Translate Page's helper process and its requests (translate.rs).
+    translate: RefCell<translate::State>,
 }
 
 define_class!(
@@ -138,10 +141,12 @@ define_class!(
     unsafe impl NSMenuDelegate for App {
         #[unsafe(method(menuNeedsUpdate:))]
         fn menu_needs_update(&self, menu: &NSMenu) {
-            if menu.title().to_string() == "Window" {
-                return self.update_window_menu(menu);
+            match menu.title().to_string().as_str() {
+                "Window" => self.update_window_menu(menu),
+                "View" => self.update_view_menu(menu),
+                "Bookmarks" => self.fill_bookmarks_menu(menu),
+                _ => {}
             }
-            self.fill_bookmarks_menu(menu);
         }
     }
 
@@ -653,6 +658,12 @@ define_class!(
         #[unsafe(method(toggleReader:))]
         fn toggle_reader_action(&self, _s: Option<&AnyObject>) {
             self.with_active(|t| t.toggle_reader());
+        }
+
+        /// Translate Page, or Show Original (View menu).
+        #[unsafe(method(translatePage:))]
+        fn translate_page_action(&self, _s: Option<&AnyObject>) {
+            self.with_active(|t| t.toggle_translate());
         }
 
         /// View → Show Web Inspector (⌥⌘I), unless developer tools are off.
@@ -1653,6 +1664,15 @@ impl App {
         }
     }
 
+    /// "Translate Page" / "Show Original", for the active tab.
+    fn update_view_menu(&self, menu: &NSMenu) {
+        let translated = self.active().is_some_and(|t| t.is_translated());
+        let i = unsafe { menu.indexOfItemWithTarget_andAction(Some(self), Some(sel!(translatePage:))) };
+        if let Some(item) = menu.itemAtIndex(i).filter(|_| i >= 0) {
+            item.setTitle(&NSString::from_str(if translated { "Show Original" } else { "Translate Page" }));
+        }
+    }
+
     /// Every open tab, in the order they were opened.
     pub fn all_tabs(&self) -> Vec<Retained<Tab>> {
         self.ivars().tabs.borrow().clone()
@@ -1720,6 +1740,7 @@ impl App {
             let app = unsafe { &*ptr };
             app.sleep_background_tabs(memory_pressure());
             app.check_heavy_tabs();
+            app.stop_idle_translator();
             app.save_session();
         });
         let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(30.0, true, &block) };
@@ -2040,6 +2061,9 @@ impl App {
             ("sitedata", Some(t)) => t.show_site_data(),
             ("zoom", Some(t)) => say!("{}", t.zoom_state()),
             ("reader", Some(t)) => t.toggle_reader(),
+            // Translate Page / Show Original: `TRANSLATED <from> <texts>`,
+            // `TRANSLATE off` or `TRANSLATE err <code>`.
+            ("translate", Some(t)) => t.toggle_translate(),
             // `SPELL continuous=<0|1> grammar=<0|1> correct=<0|1>`, from the page's web view.
             ("spell", Some(t)) => say!("{}", t.spell_state()),
             // View → Show Web Inspector: `INSPECTOR <0|1>` (whether there's one to show).
@@ -2079,8 +2103,10 @@ impl App {
                 let Some(menu) = menu else { return say!("ERR no menu {name}") };
                 // As when it opens: the delegate's update, then validation.
                 let open = |menu: &NSMenu| {
-                    if name == "Window" {
-                        self.update_window_menu(menu);
+                    match name {
+                        "Window" => self.update_window_menu(menu),
+                        "View" => self.update_view_menu(menu),
+                        _ => {}
                     }
                     menu.update();
                 };
@@ -2684,6 +2710,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Actual Size", sel!(actualSize:), "0", cmd, true),
                 ("Picture in Picture", sel!(pictureInPicture:), "p", cmd_alt, true),
                 ("Reader", sel!(toggleReader:), "R", cmd, true),
+                ("Translate Page", sel!(translatePage:), "t", cmd_alt, true),
                 ("Show Web Inspector", sel!(showInspector:), "i", cmd_alt, true),
             ],
         ),
@@ -2766,7 +2793,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
             // Lets AppKit list open windows and handle Window-menu conventions.
             app.setWindowsMenu(Some(&menu));
         }
-        if title == "Bookmarks" || title == "Window" {
+        if ["Bookmarks", "History", "Window", "View"].contains(&title) {
             menu.setDelegate(Some(ProtocolObject::from_ref(delegate)));
         }
     }

@@ -106,6 +106,10 @@ commands:
   file name.
 - **`/script/<js>` test pages run in `<head>`:** touch the body in a
   `DOMContentLoaded` listener.
+- **The translate helper is built by `build.rs`** next to the binary
+  (`target/release/my-browser-translate`); `scripts/bundle.sh` copies and
+  signs it. Tests use `MYB_TRANSLATE_FAKE=1` (upper-cases) so they don't
+  need language models.
 - **Toggling WebKit's spelling menu items in a test** writes to the app's
   real defaults domain; read the state with `spell` instead.
 

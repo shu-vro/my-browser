@@ -528,6 +528,17 @@ turning it on is two switches: `isInspectable` on every web view and the
 private developer-extras preference (Inspect Element in the page menu). A
 setting turns both off, for people who'd rather not have them.
 
+### Why does Translate Page run in a helper process?
+
+Apple's Translation framework is Swift-only. Linking Swift into the browser
+would load the Swift runtime, Foundation's Swift overlay and Translation at
+every launch, in the process the shell-footprint bar measures. A separate
+executable (`my-browser-translate`, ~100 KB, built by `build.rs`) loads them
+only when a page is translated, and quits a minute after its last request,
+so an unused feature costs nothing. Translation runs on the Mac (no network,
+no gate): macOS downloads language models only when the user asks in System
+Settings, so the browser never connects for it.
+
 ### Why are the built-in bangs off by default?
 
 The owner's call: nothing typed in the address bar should go somewhere the

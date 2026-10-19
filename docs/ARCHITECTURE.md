@@ -72,6 +72,9 @@ name and start time (see benchmark/README.md).
 | `src/passwords.rs` | Saved passwords: the keychain (or memory for throwaway profiles), CSV import |
 | `src/import.rs` | Import bookmarks, history and passwords from Chromium browsers and Safari, and bookmarks files |
 | `src/crash.rs` | The panic hook, finding crash reports, and the pre-filled GitHub issue |
+| `src/translate.rs` | Translate Page: the helper process and its requests |
+| `helpers/translate.swift` | `my-browser-translate`, the helper: Apple's Translation and NaturalLanguage frameworks (built by `build.rs`) |
+| `resources/translate.js`, `find.js`, `picker.js` | Translate Page's text collector, find's highlights and count, Hide Element's picker (all in the browser's own script world, run on demand) |
 | `resources/settings.html` | The internal page: settings, privacy, site settings, bookmarks, passwords, import, history, downloads, storage, extensions, network |
 | `resources/passwords.js` | The saved-passwords form script (its own script world) |
 | `resources/reader.js` | Reader mode's article finder (run on demand, in the browser's script world) |
@@ -635,6 +638,31 @@ nothing twice. Reading another app's data can need the user's permission
 `bookmarks_and_history_import_from_other_browsers` (a made-up `$HOME` with a
 Brave profile and Safari's files).
 
+## Translate Page
+
+View → Translate Page (⌥⌘T, `Tab::toggle_translate`) runs
+`resources/translate.js` in the browser's own script world: it collects the
+page's text nodes (letters only; not in `script`, `code`, `pre`, form
+fields, `translate=no`, `.notranslate` or editable areas; at most 5,000),
+and later puts translations in place keeping each node's surrounding
+spaces, or the originals back (Show Original). The texts go, 200 at a
+time, to `my-browser-translate`, a Swift helper built by `build.rs` next to
+the browser binary (and into `Contents/MacOS` by `scripts/bundle.sh`, signed
+first). One JSON line per request on its stdin, one per reply on stdout:
+NaturalLanguage detects the page's language, Translation
+(`TranslationSession(installedSource:target:)`, macOS 26) translates
+on-device. It runs as its own process so Swift and the frameworks never load
+into the browser (nothing at launch); `App::stop_idle_translator` closes its
+input after a minute without work, on the 30 s tick, and it exits. Replies
+are matched by id; a tab's replies are dropped if it went to another page
+(`translate_run`). Errors come back with a code: `install` (the languages
+aren't downloaded: a sheet offers System Settings → Language & Region),
+`same`, `unsupported`, `old` (macOS 15), `unknown`. The target is the Mac's
+language, or `translate_to`. `MYB_TRANSLATE_FAKE=1` makes the helper
+upper-case instead (tests). Bench: `translate` → `TRANSLATED <from> <n>`,
+`TRANSLATE off` or `TRANSLATE err <code>`. Test:
+`pages_translate_and_show_the_original_again`.
+
 ## Reader mode
 
 View → Reader (⇧⌘R, `Tab::toggle_reader`) runs `resources/reader.js` in the
@@ -941,6 +969,7 @@ key press does.
 | ⇧⌘N | New private window |
 | ⌘P | Print (the panel's PDF menu saves a PDF) |
 | ⌥⌘P | Picture in picture |
+| ⌥⌘T | Translate Page / Show Original |
 | ⌥⌘I | Show Web Inspector |
 | ⌘: / ⌘; | Show Spelling and Grammar / Check Document Now |
 | ⇧⌘R | Reader mode |
@@ -1007,6 +1036,7 @@ active tab.
 | `savepage <path>` | `SAVED <0\|1>` once the page is saved there as a Web Archive |
 | `linkmenu <url> [i]` | `LINKMENU <title>\|…`: a stand-in for WebKit's link menu after our changes; with `i`, picks item `i` |
 | `bookmarksmenu [i]` | `BOOKMARKSMENU <item>\|…` as the menu would open (`-` separator, `Name/` submenu); with `i`, picks item `i` first |
+| `translate` | `TRANSLATED <from> <n>`, `TRANSLATE off` or `TRANSLATE err <code>`: Translate Page / Show Original |
 | `spell` | `SPELL continuous=<0\|1> grammar=<0\|1> correct=<0\|1>` |
 | `inspector` | `INSPECTOR <0\|1>`: there's a Web Inspector to show |
 | `crash` | panics (tests the crash reporter) |
