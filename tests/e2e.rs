@@ -614,7 +614,11 @@ fn pinned_tabs_go_first_survive_close_others_and_restarts() {
 fn tabs_mute_and_show_when_they_play_sound() {
     let mut b = launch();
     b.nav("go about:blank");
-    assert_eq!(b.send("tabflags"), "TABFLAGS pinned=0 muted=0 page_muted=0 audio=0 swipe=1", "swipe to go back");
+    assert_eq!(
+        b.send("tabflags"),
+        "TABFLAGS pinned=0 muted=0 page_muted=0 audio=0 swipe=1 pinch=1",
+        "swipe to go back, pinch to zoom"
+    );
     // A tone, started with the user gesture `eval` carries.
     b.send("eval (() => { const c = new AudioContext(); const o = c.createOscillator(); const g = c.createGain(); g.gain.value = 0.001; o.connect(g).connect(c.destination); o.start(); return 1 })()");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -641,14 +645,25 @@ fn zoom_is_remembered_per_site() {
     b.nav(&format!("go {base}/page/a"));
     b.key("cmd+=");
     b.key("cmd+=");
-    assert_eq!(b.send("zoom"), "ZOOM 1.21");
+    assert_eq!(b.send("zoom"), "ZOOM 1.25 button=125%", "Chrome's steps: 110%, then 125%; the toolbar shows it");
     b.nav(&format!("go {other}/page/b"));
-    assert_eq!(b.send("zoom"), "ZOOM 1.00", "another site has its own zoom");
+    assert_eq!(b.send("zoom"), "ZOOM 1.00 button=", "another site has its own zoom");
     b.nav(&format!("newtab {base}/page/c"));
-    assert_eq!(b.send("zoom"), "ZOOM 1.21", "the site's zoom comes back, in any tab");
+    assert_eq!(b.send("zoom"), "ZOOM 1.25 button=125%", "the site's zoom comes back, in any tab");
     b.key("cmd+0");
     b.nav(&format!("go {base}/page/d"));
-    assert_eq!(b.send("zoom"), "ZOOM 1.00", "actual size forgets it");
+    assert_eq!(b.send("zoom"), "ZOOM 1.00 button=", "actual size forgets it");
+    b.key("cmd+-");
+    assert_eq!(b.send("zoom"), "ZOOM 0.90 button=90%");
+    // A default zoom applies to sites without their own; at it, no button.
+    assert_eq!(b.bridge(&["settings.set", "default_zoom", "110"]), "true");
+    b.nav(&format!("go {other}/page/e"));
+    assert_eq!(b.send("zoom"), "ZOOM 1.10 button=");
+    assert!(b.send("bridge settings.set\tdefault_zoom\t123").starts_with("BRIDGE err"), "only the zoom steps");
+    // Gestures can be turned off.
+    assert_eq!(b.bridge(&["settings.set", "pinch_zoom", "0"]), "true");
+    assert_eq!(b.bridge(&["settings.set", "swipe_navigation", "0"]), "true");
+    assert!(b.send("tabflags").ends_with("swipe=0 pinch=0"));
 }
 
 #[test]

@@ -131,6 +131,8 @@ pub struct AppIvars {
     expected_package: RefCell<Option<String>>,
     /// The installed extension that package updates, and who to tell.
     pending_update: RefCell<Option<(i64, internal::Reply)>>,
+    /// ⌘ + scroll zoom's event monitor.
+    scroll_monitor: OnceCell<Option<Retained<AnyObject>>>,
     /// Translate Page's helper process and its requests (translate.rs).
     translate: RefCell<translate::State>,
 }
@@ -811,12 +813,12 @@ define_class!(
 
         #[unsafe(method(zoomIn:))]
         fn zoom_in_action(&self, _s: Option<&AnyObject>) {
-            self.with_active(|t| t.zoom(Some(1.1)));
+            self.with_active(|t| t.zoom(Some(1)));
         }
 
         #[unsafe(method(zoomOut:))]
         fn zoom_out_action(&self, _s: Option<&AnyObject>) {
-            self.with_active(|t| t.zoom(Some(1.0 / 1.1)));
+            self.with_active(|t| t.zoom(Some(-1)));
         }
 
         #[unsafe(method(actualSize:))]
@@ -1059,6 +1061,7 @@ impl App {
         self.ivars().report.replace(report);
 
         self.start_extensions();
+        self.watch_scroll_zoom();
 
         self.load_shields(move |this, [trackers, local, banners, filters]| {
             let mut report = this.ivars().report.borrow_mut();
@@ -1364,6 +1367,50 @@ impl App {
                 unsafe { web.setInspectable(on) };
             }
         }
+    }
+
+    /// Settings → General → Default zoom.
+    pub fn default_zoom(&self) -> f64 {
+        self.store().setting("default_zoom").parse::<f64>().map_or(1.0, |p| p / 100.0)
+    }
+
+    /// Gestures and the default zoom changed: every open page follows.
+    pub fn apply_gestures(&self) {
+        for t in self.ivars().tabs.borrow().iter() {
+            t.apply_gestures();
+            if let Some(web) = t.web() {
+                let saved = store::site_of(&t.url()).and_then(|s| self.store().zoom(&s));
+                unsafe { web.setPageZoom(saved.unwrap_or(self.default_zoom())) };
+            }
+            t.refresh_zoom_button();
+        }
+    }
+
+    /// ⌘ + scroll zooms the page under the pointer (Settings → General). A
+    /// trackpad's small steps add up to one zoom step.
+    fn watch_scroll_zoom(&self) {
+        let ptr = self as *const App as usize;
+        let total = Cell::new(0.0f64);
+        let block = RcBlock::new(move |e: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+            // The delegate lives until the process exits.
+            let app = unsafe { &*(ptr as *const App) };
+            let event = unsafe { e.as_ref() };
+            if !event.modifierFlags().contains(NSEventModifierFlags::Command) || !app.store().flag("scroll_zoom") {
+                return e.as_ptr();
+            }
+            let Some(tab) = event.window(app.mtm()).and_then(|w| app.tab_for_window(&w)) else { return e.as_ptr() };
+            let step = if event.hasPreciseScrollingDeltas() { 40.0 } else { 1.0 };
+            total.set(total.get() + event.scrollingDeltaY());
+            if total.get().abs() >= step {
+                tab.zoom(Some(if total.get() > 0.0 { 1 } else { -1 }));
+                total.set(0.0);
+            }
+            std::ptr::null_mut()
+        });
+        let monitor = unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(objc2_app_kit::NSEventMask::ScrollWheel, &block)
+        };
+        let _ = self.ivars().scroll_monitor.set(monitor);
     }
 
     pub fn apply_safe_browsing(&self) {

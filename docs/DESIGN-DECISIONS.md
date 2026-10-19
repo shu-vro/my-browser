@@ -560,6 +560,13 @@ frame), its links go through the browser (WebKit refuses links from there to
 `file:`), and files WebKit can't show open in their app, except anything
 that would run code, which is only shown in Finder.
 
+### Why ⌘ + scroll zoom with an event monitor?
+
+WebKit has no setting for it. A local monitor sees every scroll-wheel event
+the app gets; without ⌘ it returns the event at once (a flag test), so
+scrolling costs nothing measurable. With ⌘ it takes the event, so the page
+doesn't also scroll.
+
 ### Why are the built-in bangs off by default?
 
 The owner's call: nothing typed in the address bar should go somewhere the

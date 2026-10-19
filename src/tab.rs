@@ -141,6 +141,9 @@ pub struct TabIvars {
     translate_run: Cell<u64>,
     /// Its video went to picture in picture when the user left the tab.
     auto_pip: Cell<bool>,
+    /// The zoom button left of the star, and the percent it shows.
+    zoom_button: RefCell<Option<Retained<NSButton>>>,
+    shown_zoom: Cell<Option<i32>>,
     /// The PDF viewer over the page (pdf.rs), and a PDF on its way.
     pdf: RefCell<Option<crate::pdf::Viewer>>,
     pdf_expected: Cell<bool>,
@@ -258,8 +261,9 @@ define_class!(
         fn did_commit_navigation(&self, web: &WKWebView, _nav: Option<&WKNavigation>) {
             // The site's own zoom (a zoom set on one site doesn't follow you to the next).
             let url = unsafe { web.URL() }.and_then(|u| u.absoluteString()).map(|u| u.to_string()).unwrap_or_default();
-            let zoom = crate::store::site_of(&url).map_or(1.0, |site| self.app().store().zoom(&site));
-            unsafe { web.setPageZoom(zoom) };
+            let saved = crate::store::site_of(&url).and_then(|site| self.app().store().zoom(&site));
+            unsafe { web.setPageZoom(saved.unwrap_or(self.app().default_zoom())) };
+            self.refresh_zoom_button();
             self.ivars().visit.set(None);
             self.ivars().reader.set(self.ivars().reader_loading.replace(false));
             self.ivars().translated.set(false);
@@ -882,6 +886,11 @@ define_class!(
             }
         }
 
+        #[unsafe(method(resetZoom:))]
+        fn reset_zoom_action(&self, _s: Option<&AnyObject>) {
+            self.zoom(None);
+        }
+
         #[unsafe(method(goHome:))]
         fn go_home_action(&self, _s: Option<&AnyObject>) {
             self.go_home();
@@ -1069,8 +1078,8 @@ impl Tab {
         self.web().is_some_and(|w| responds(&w, sel!(_isPlayingAudio)) && unsafe { msg_send![&*w, _isPlayingAudio] })
     }
 
-    /// `TABFLAGS pinned=<0|1> muted=<0|1> page_muted=<0|1> audio=<0|1> swipe=<0|1>`;
-    /// page_muted and swipe are read back from WebKit.
+    /// `TABFLAGS pinned=<0|1> muted=<0|1> page_muted=<0|1> audio=<0|1> swipe=<0|1> pinch=<0|1>`;
+    /// page_muted, swipe and pinch are read back from WebKit.
     pub fn flags_state(&self) -> String {
         let page_muted = self.web().is_some_and(|w| {
             let state: usize =
@@ -1078,12 +1087,13 @@ impl Tab {
             state & 1 == 1
         });
         format!(
-            "TABFLAGS pinned={} muted={} page_muted={} audio={} swipe={}",
+            "TABFLAGS pinned={} muted={} page_muted={} audio={} swipe={} pinch={}",
             self.is_pinned() as u8,
             self.is_muted() as u8,
             page_muted as u8,
             self.playing_audio() as u8,
-            self.web().is_some_and(|w| unsafe { w.allowsBackForwardNavigationGestures() }) as u8
+            self.web().is_some_and(|w| unsafe { w.allowsBackForwardNavigationGestures() }) as u8,
+            self.web().is_some_and(|w| unsafe { w.allowsMagnification() }) as u8
         )
     }
 
@@ -1287,8 +1297,10 @@ impl Tab {
         unsafe {
             web.setNavigationDelegate(Some(ProtocolObject::from_ref(self)));
             web.setUIDelegate(Some(ProtocolObject::from_ref(self)));
-            // Two-finger swipe left/right on the trackpad goes back/forward.
-            web.setAllowsBackForwardNavigationGestures(true);
+            // Two-finger swipe left/right goes back/forward, pinch and
+            // two-finger double-tap zoom (Settings → General → Gestures).
+            web.setAllowsBackForwardNavigationGestures(self.app().store().flag("swipe_navigation"));
+            web.setAllowsMagnification(self.app().store().flag("pinch_zoom"));
             // Web Inspector (and Safari's Develop menu) may attach, unless turned off.
             web.setInspectable(self.app().store().flag("devtools"));
         }
@@ -2748,21 +2760,58 @@ impl Tab {
         }
     }
 
-    /// Page zoom: `None` resets, otherwise multiply. Remembered for the
-    /// site (not from private windows) and used on its pages from then on.
-    pub fn zoom(&self, factor: Option<f64>) {
+    /// Page zoom: one step in or out (`ZOOM_STEPS`), or back to the default
+    /// zoom (`None`, which also undoes a pinch). Remembered for the site
+    /// (not from private windows) and used on its pages from then on.
+    pub fn zoom(&self, step: Option<i32>) {
+        if let Some(pdf) = self.ivars().pdf.borrow_mut().as_mut() {
+            use crate::pdf::Command;
+            return pdf.run(match step {
+                Some(d) if d > 0 => Command::ZoomIn,
+                Some(_) => Command::ZoomOut,
+                None => Command::FitWidth,
+            });
+        }
+        let Some(web) = self.web() else { return };
+        let default = self.app().default_zoom();
+        let z = step.map_or(default, |d| next_zoom(unsafe { web.pageZoom() }, d));
+        unsafe { web.setPageZoom(z) };
+        if step.is_none() {
+            unsafe { web.setMagnification(1.0) };
+        }
+        if let (Some(site), false) = (crate::store::site_of(&self.url()), self.is_private()) {
+            let keep = ((z - default).abs() > 0.001).then_some(z);
+            self.app().store().set_zoom(&site, keep);
+        }
+        self.refresh_zoom_button();
+    }
+
+    /// The gestures from Settings → General, on this tab's page.
+    pub fn apply_gestures(&self) {
         if let Some(web) = self.web() {
-            let z = factor.map_or(1.0, |f| (unsafe { web.pageZoom() } * f).clamp(0.3, 3.0));
-            unsafe { web.setPageZoom(z) };
-            if let (Some(site), false) = (crate::store::site_of(&self.url()), self.is_private()) {
-                self.app().store().set_zoom(&site, z);
+            let store = self.app().store();
+            unsafe {
+                web.setAllowsMagnification(store.flag("pinch_zoom"));
+                web.setAllowsBackForwardNavigationGestures(store.flag("swipe_navigation"));
             }
         }
     }
 
-    /// `ZOOM <level>`, read from the web view.
+    /// The zoom button ("125%", left of the star) shows while the page isn't
+    /// at the default zoom; clicking it goes back.
+    pub fn refresh_zoom_button(&self) {
+        let percent = self.web().map(|w| (unsafe { w.pageZoom() } * 100.0).round() as i32);
+        let default = (self.app().default_zoom() * 100.0).round() as i32;
+        let shown = percent.filter(|p| *p != default);
+        if self.ivars().shown_zoom.replace(shown) != shown {
+            self.app().refresh_extension_buttons_for(self);
+        }
+    }
+
+    /// `ZOOM <level> button=<shown label>`, read from the web view and toolbar.
     pub fn zoom_state(&self) -> String {
-        format!("ZOOM {:.2}", self.web().map_or(1.0, |w| unsafe { w.pageZoom() }))
+        let button = self.ivars().zoom_button.borrow().as_ref().map(|b| b.title().to_string()).unwrap_or_default();
+        format!("ZOOM {:.2} button={button}", self.web().map_or(1.0, |w| unsafe { w.pageZoom() }))
     }
 
     pub fn focus_address_bar(&self) {
@@ -3201,8 +3250,35 @@ impl Tab {
         if let Some(star) = iv.star.get() {
             star.setFrame(NSRect::new(NSPoint::new(width - 4.0 - right * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
         }
+        // Left of the star: the page's zoom, while it isn't the default.
+        if let Some(old) = iv.zoom_button.take() {
+            old.removeFromSuperview();
+        }
+        let zoom_w = if let Some(percent) = iv.shown_zoom.get() {
+            let b = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str(&format!("{percent}%")),
+                    Some(self),
+                    Some(sel!(resetZoom:)),
+                    mtm,
+                )
+            };
+            b.setBordered(false);
+            b.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(11.0)));
+            b.setContentTintColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+            b.setToolTip(Some(&NSString::from_str("Page zoom for this site. Click to go back to the default (⌘0).")));
+            b.setFrame(NSRect::new(NSPoint::new(width - 4.0 - right * BUTTON_W - 48.0, top), NSSize::new(46.0, 28.0)));
+            b.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
+            );
+            content.addSubview(&b);
+            iv.zoom_button.replace(Some(b));
+            48.0
+        } else {
+            0.0
+        };
         let mut frame = bar.frame();
-        frame.size.width = width - frame.origin.x - 8.0 - right * BUTTON_W;
+        frame.size.width = width - frame.origin.x - 8.0 - right * BUTTON_W - zoom_w;
         bar.setFrame(frame);
         for (i, item) in items.iter().enumerate() {
             let b = unsafe {
@@ -3425,6 +3501,19 @@ fn reveal(path: &str) {
         .activateFileViewerSelectingURLs(&NSArray::from_retained_slice(&[url]));
 }
 
+/// Page zoom levels, as in Chrome and Edge (⌘+ and ⌘- step through them).
+pub const ZOOM_STEPS: [f64; 17] =
+    [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0];
+
+/// The next zoom level up (`dir` > 0) or down from `z`.
+pub fn next_zoom(z: f64, dir: i32) -> f64 {
+    if dir > 0 {
+        ZOOM_STEPS.iter().copied().find(|s| *s > z + 0.001).unwrap_or(ZOOM_STEPS[16])
+    } else {
+        ZOOM_STEPS.iter().copied().rev().find(|s| *s < z - 0.001).unwrap_or(ZOOM_STEPS[0])
+    }
+}
+
 /// Text safe to put in HTML.
 pub fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
@@ -3624,6 +3713,16 @@ mod tests {
         assert!(page.contains("default-src 'none'") && !page.contains("script-src"), "no scripts at all");
         assert!(page.find("Content-Security-Policy").unwrap() < page.find("<p>text").unwrap(), "policy comes first");
         assert!(reader_page("").is_none() && reader_page(r#"{"title":"x"}"#).is_none());
+    }
+
+    #[test]
+    fn zoom_steps_like_other_browsers() {
+        assert_eq!(next_zoom(1.0, 1), 1.1);
+        assert_eq!(next_zoom(1.1, 1), 1.25);
+        assert_eq!(next_zoom(1.0, -1), 0.9);
+        assert_eq!(next_zoom(1.17, -1), 1.1, "from between steps, the next one down");
+        assert_eq!(next_zoom(5.0, 1), 5.0);
+        assert_eq!(next_zoom(0.25, -1), 0.25);
     }
 
     #[test]

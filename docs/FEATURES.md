@@ -56,8 +56,13 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   clears them; a setting turns them off.
 - **Search engine** and **homepage** settings.
 - **Error page** for failed loads (no certificate bypass).
-- **Zoom** in, out and actual size, **remembered per site** (actual size
-  forgets it; private windows don't save it).
+- **Zoom** in, out and actual size in Chrome's steps (90%, 110%, 125%…),
+  **remembered per site** (actual size forgets it; private windows don't
+  save it), with a **default zoom** for every other site; a "125%" button
+  next to the address shows a site's own zoom and resets it.
+- **Gestures**: pinch to zoom, two-finger double-tap smart zoom, two-finger
+  swipe back and forward, and ⌘ + scroll to zoom; each can be turned off in
+  Settings → General.
 - **Spelling** checked as you type (Edit → Spelling and Grammar: check now,
   grammar, correct automatically).
 - **Developer tools**: Inspect Element and View → Show Web Inspector (⌥⌘I);

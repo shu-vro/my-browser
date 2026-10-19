@@ -316,14 +316,28 @@ Every web view allows WebKit's back/forward swipe
 (`allowsBackForwardNavigationGestures`): two fingers left or right on the
 trackpad, with the page sliding as in Safari.
 
-### Zoom
+### Zoom and gestures
 
-Zoom is per site: ⌘+/⌘- multiply `pageZoom` and save it in the `zoom`
-table (site → level; actual size deletes the row; private windows read but
-never write). Every main-frame commit sets the committed site's level
-(`did_commit_navigation`), so it applies in any tab and doesn't follow you
-to the next site. Bench: `zoom` → `ZOOM <level>`. Test:
-`zoom_is_remembered_per_site`.
+Zoom is per site: ⌘+/⌘- step `pageZoom` through Chrome's levels
+(`tab::ZOOM_STEPS`: 25% … 90%, 100%, 110%, 125% … 500%) and save it in the
+`zoom` table (site → level; back at the default zoom deletes the row;
+private windows read but never write). Sites without a row get the
+`default_zoom` setting. Every main-frame commit sets the committed site's
+level (`did_commit_navigation`), so it applies in any tab and doesn't follow
+you to the next site. While a page isn't at the default zoom, a "125%"
+button sits left of the star (`refresh_zoom_button`, rebuilt only when the
+percent changes); clicking it is ⌘0, which also undoes a pinch.
+
+Gestures (Settings → General, each a setting): pinch and two-finger
+double-tap smart zoom are WebKit's magnification (`allowsMagnification`),
+the swipe is `allowsBackForwardNavigationGestures`; both are set on every
+new web view and on open ones when changed (`App::apply_gestures`). ⌘ +
+scroll is a local event monitor on scroll-wheel events
+(`App::watch_scroll_zoom`): with ⌘ held it takes the event and steps the
+zoom of the tab under the pointer, a trackpad's small deltas adding up to
+40 points per step; without ⌘ it returns the event untouched. Bench: `zoom`
+→ `ZOOM <level> button=<label>`, `tabflags` shows `swipe=` and `pinch=`.
+Test: `zoom_is_remembered_per_site`.
 
 ### Address bar
 
@@ -1149,6 +1163,7 @@ key press does.
 | ⌥⌘I | Show Web Inspector |
 | ⇧⌘S | Take Screenshot → Select Area |
 | ⌘: / ⌘; | Show Spelling and Grammar / Check Document Now |
+| ⌘ + scroll | Zoom (a setting) |
 | An extension's keys | Its command (Extensions menu) |
 | ⇧⌘R | Reader mode |
 | ⌥⌘A | AutoFill password for the focused field |
@@ -1206,8 +1221,8 @@ active tab.
 | `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |
 | `printpdf <path>` | `PRINTED <0\|1>` once the page is saved there as a PDF (also printed when any print panel closes) |
 | `tabsearch <query>` | `TABSEARCH <title>\|…`: Search Tabs opened with that query, the matches as listed; answer with `dialog` |
-| `tabflags` | `TABFLAGS pinned=<0\|1> muted=<0\|1> page_muted=<0\|1> audio=<0\|1> swipe=<0\|1>` for the active tab |
-| `zoom` | `ZOOM <level>`: the active tab's page zoom |
+| `tabflags` | `TABFLAGS pinned=<0\|1> muted=<0\|1> page_muted=<0\|1> audio=<0\|1> swipe=<0\|1> pinch=<0\|1>` for the active tab |
+| `zoom` | `ZOOM <level> button=<label>`: the active tab's page zoom and the zoom button's label |
 | `bartype <text>` / `barkey up\|down\|enter\|esc` | `SUGGEST [*]search:<text>\|[*]page:<url>\|…`: the address bar's suggestion list after typing or a key (`*` = chosen; empty when closed) |
 | `savesearch <text>` | `SAVEDSEARCH`: save a search as Return in the bar would, without loading it |
 | `sitedata` | `SITEDATA <name>:<kinds>\|…`: the site data sheet for the active tab's site (answer with `dialog`) |

@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Settings the settings page may change, with their defaults.
-pub const SETTINGS: [(&str, &str); 21] = [
+pub const SETTINGS: [(&str, &str); 25] = [
     // duckduckgo | brave | startpage | google
     ("search", "duckduckgo"),
     // Page for new tabs; empty means a blank page.
@@ -46,6 +46,13 @@ pub const SETTINGS: [(&str, &str); 21] = [
     ("devtools", "1"),
     // Leaving a tab whose video is playing with sound puts it in picture in picture.
     ("auto_pip", "1"),
+    // Gestures: pinch (and two-finger double-tap) to zoom, two-finger swipe
+    // between pages, ⌘ + scroll to zoom.
+    ("pinch_zoom", "1"),
+    ("swipe_navigation", "1"),
+    ("scroll_zoom", "1"),
+    // Page zoom for sites without their own, in percent (one of ZOOM_STEPS).
+    ("default_zoom", "100"),
     // Built-in bangs that are on (`!w rust`), comma-separated: none until the
     // user turns them on in Settings → General.
     ("bangs", ""),
@@ -268,7 +275,11 @@ impl Store {
             | "address_suggestions"
             | "password_auth"
             | "devtools"
-            | "auto_pip" => value == "0" || value == "1",
+            | "auto_pip"
+            | "pinch_zoom"
+            | "swipe_navigation"
+            | "scroll_zoom" => value == "0" || value == "1",
+            "default_zoom" => crate::tab::ZOOM_STEPS.iter().any(|z| (z * 100.0).round().to_string() == value),
             "downloads_dir" => value.is_empty() || Path::new(value).is_dir(),
             "translate_to" => crate::translate::valid_language(value),
             "screenshot_to" => ["file", "clipboard"].contains(&value),
@@ -652,21 +663,26 @@ impl Store {
 
     // ---- page zoom per site
 
-    /// The zoom the user chose for this site (1.0 if none).
-    pub fn zoom(&self, site: &str) -> f64 {
-        self.db.query_row("SELECT level FROM zoom WHERE site = ?1", [site], |r| r.get(0)).unwrap_or(1.0)
+    /// The zoom the user chose for this site, if any (else the default zoom).
+    pub fn zoom(&self, site: &str) -> Option<f64> {
+        self.db.query_row("SELECT level FROM zoom WHERE site = ?1", [site], |r| r.get(0)).ok()
     }
 
-    /// Remember a site's zoom; actual size forgets it.
-    pub fn set_zoom(&self, site: &str, level: f64) {
-        let _ = if (level - 1.0).abs() < 0.01 {
-            self.db.execute("DELETE FROM zoom WHERE site = ?1", [site])
-        } else {
-            self.db.execute(
+    /// Remember a site's zoom; None (back to the default) forgets it.
+    pub fn set_zoom(&self, site: &str, level: Option<f64>) {
+        let _ = match level {
+            None => self.db.execute("DELETE FROM zoom WHERE site = ?1", [site]),
+            Some(level) => self.db.execute(
                 "INSERT INTO zoom (site, level) VALUES (?1, ?2) ON CONFLICT(site) DO UPDATE SET level = excluded.level",
                 params![site, level],
-            )
+            ),
         };
+    }
+
+    /// Every site's zoom: (site, level).
+    pub fn zooms(&self) -> Vec<(String, f64)> {
+        let Ok(mut stmt) = self.db.prepare("SELECT site, level FROM zoom ORDER BY site") else { return Vec::new() };
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map(|rows| rows.flatten().collect()).unwrap_or_default()
     }
 
     // ---- bookmarks
@@ -1040,11 +1056,11 @@ mod tests {
     #[test]
     fn zoom_is_remembered_per_site() {
         let s = Store::open(None).unwrap();
-        assert_eq!(s.zoom("a.example"), 1.0);
-        s.set_zoom("a.example", 1.21);
-        assert_eq!(s.zoom("a.example"), 1.21);
-        assert_eq!(s.zoom("b.example"), 1.0);
-        s.set_zoom("a.example", 1.0);
+        assert_eq!(s.zoom("a.example"), None);
+        s.set_zoom("a.example", Some(1.25));
+        assert_eq!(s.zoom("a.example"), Some(1.25));
+        assert_eq!(s.zoom("b.example"), None);
+        s.set_zoom("a.example", None);
         assert_eq!(s.db.query_row("SELECT COUNT(*) FROM zoom", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "forgotten");
     }
 

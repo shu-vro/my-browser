@@ -122,6 +122,7 @@ pub fn handle(app: &App, args: Vec<String>, reply: Reply) {
                     "safe_browsing" => app.apply_safe_browsing(),
                     "theme" => app.apply_theme(),
                     "devtools" => app.apply_devtools(),
+                    "pinch_zoom" | "swipe_navigation" | "default_zoom" => app.apply_gestures(),
                     _ => {}
                 }
                 "true".to_string()

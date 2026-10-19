@@ -124,6 +124,18 @@
       <input type="checkbox" data-setting="auto_pip"></div>
     <div class="row"><div><div>Developer tools</div><div class="hint">Inspect Element in the page's menu and View → Show Web Inspector (⌥⌘I). Off, pages can't be inspected, not even from Safari's Develop menu.</div></div>
       <input type="checkbox" data-setting="devtools"></div>
+    <h2>Gestures and zoom</h2>
+    <div class="row"><div><div>Pinch to zoom</div><div class="hint">Pinch on the trackpad to magnify; double-tap with two fingers to zoom into what's under them (smart zoom).</div></div>
+      <input type="checkbox" data-setting="pinch_zoom"></div>
+    <div class="row"><div><div>Swipe between pages</div><div class="hint">Two fingers left or right on the trackpad go back or forward.</div></div>
+      <input type="checkbox" data-setting="swipe_navigation"></div>
+    <div class="row"><div><div>⌘ + scroll to zoom</div><div class="hint">Hold ⌘ and scroll (or swipe up and down on the trackpad) to change the page's zoom.</div></div>
+      <input type="checkbox" data-setting="scroll_zoom"></div>
+    <div class="row"><div><div>Default zoom</div><div class="hint">For sites you haven't zoomed. ⌘+ and ⌘- change one site's zoom, ⌘0 goes back; a button next to the address shows a site's own zoom.</div></div>
+      <select data-setting="default_zoom">
+        <option value="50">50%</option><option value="67">67%</option><option value="75">75%</option><option value="80">80%</option><option value="90">90%</option>
+        <option value="100">100%</option><option value="110">110%</option><option value="125">125%</option><option value="150">150%</option><option value="175">175%</option><option value="200">200%</option>
+      </select></div>
     <h2>Search keywords</h2>
     <p class="note">Type a keyword, a space and what to search for, like <code>w rust</code>. Keywords go straight to the site; the search engine never sees them.</p>
     <ul class="list" id="keywords-list"></ul>
