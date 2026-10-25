@@ -162,6 +162,16 @@ and keeps the change in the profile's database, not in macOS's
 `NSUserKeyEquivalents` defaults: those are shared by every profile, and
 tests would have changed the owner's shortcuts.
 
+### Why is the launcher a child panel, and why are its commands the menu bar?
+
+Search Tabs began as an `NSAlert` sheet. Ending a sheet makes its window key
+and activates the app, even in `--on-top` bench mode, where the browser must
+never take focus. A titled panel with a hidden title bar, added as a child
+window, looks the same (rounded, shadowed, material) and is only made key
+when the browser is in use. Commands are read from the menu bar when it opens
+and run as a click on the item, so the launcher can't drift from the menus,
+shows changed shortcuts, and has no action of its own to secure.
+
 ### Why does the address bar give up focus when a page loads?
 
 While you type, the address bar must not change under you, so updates pause

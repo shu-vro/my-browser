@@ -599,6 +599,57 @@ fn search_tabs_finds_and_switches_to_a_tab() {
 }
 
 #[test]
+fn launcher_finds_bookmarks_history_and_commands_and_keeps_private_tabs_apart() {
+    let base = serve();
+    let mut b = launch();
+    b.nav(&format!("go {base}/page/Zebrafish"));
+    b.state_until(|s| s.ends_with("title=Zebrafish"));
+    b.key("cmd+d");
+    b.nav(&format!("go {base}/page/Quokkas"));
+    b.state_until(|s| s.ends_with("title=Quokkas"));
+    b.nav(&format!("go {base}/page/start"));
+    b.state_until(|s| s.ends_with("title=start"));
+    // A bookmark (listed once, though it's in history too) opens in the tab.
+    assert_eq!(b.send("launcher zebra"), "LAUNCHER bookmark:Zebrafish");
+    assert_eq!(b.send("dialog ok"), "ANSWERED 1");
+    assert!(b.state_until(|s| s.ends_with("title=Zebrafish")).ends_with("title=Zebrafish"));
+    // A visited page.
+    assert_eq!(b.send("launcher quokka"), "LAUNCHER history:Quokkas");
+    assert_eq!(b.send("dialog ok"), "ANSWERED 1");
+    assert!(b.state_until(|s| s.ends_with("title=Quokkas")).ends_with("title=Quokkas"));
+    // Commands come from the menu bar, with their current shortcuts, and
+    // run as a click on the item would.
+    assert_eq!(b.send("launcher reader"), "LAUNCHER command:Reader ⇧⌘R");
+    assert_eq!(b.send("dialog cancel"), "ANSWERED 1");
+    assert_eq!(b.send("launcher pin tab"), "LAUNCHER command:Pin Tab");
+    assert_eq!(b.send("dialog ok"), "ANSWERED 1");
+    assert!(b.send("tabflags").starts_with("TABFLAGS pinned=1"));
+    assert_eq!(b.send("launcher unpin tab"), "LAUNCHER command:Unpin Tab", "titles as the menu shows them");
+    assert_eq!(b.send("dialog cancel"), "ANSWERED 1");
+
+    // A private window finds its own tabs and bookmarks, no history and no normal tabs.
+    b.key("cmd+shift+n");
+    b.nav(&format!("go {base}/page/Secretplan"));
+    b.state_until(|s| s.ends_with("title=Secretplan"));
+    assert_eq!(b.send("launcher quokka"), "LAUNCHER ", "no history in private");
+    assert_eq!(b.send("dialog cancel"), "ANSWERED 1");
+    assert_eq!(b.send("launcher secret"), "LAUNCHER tab:Secretplan");
+    assert_eq!(b.send("dialog cancel"), "ANSWERED 1");
+    assert_eq!(b.send("launcher zebra"), "LAUNCHER bookmark:Zebrafish");
+    assert_eq!(b.send("dialog cancel"), "ANSWERED 1");
+    assert_eq!(b.send("tabsearch "), "TABSEARCH Secretplan", "the normal window's tab isn't listed");
+    assert_eq!(b.send("dialog cancel"), "ANSWERED 1");
+    // And a normal window never sees the private tab or its visit.
+    b.key("cmd+n");
+    assert_eq!(b.send("private"), "PRIVATE 0");
+    assert_eq!(b.send("launcher secret"), "LAUNCHER ");
+    assert_eq!(b.send("dialog cancel"), "ANSWERED 1");
+    assert_eq!(b.send("launcher quokka"), "LAUNCHER tab:Quokkas", "the other normal window's tab");
+    assert_eq!(b.send("dialog cancel"), "ANSWERED 1");
+    b.quit();
+}
+
+#[test]
 fn pinned_tabs_go_first_survive_close_others_and_restarts() {
     let base = serve();
     let profile = TempProfile::new("pinned");

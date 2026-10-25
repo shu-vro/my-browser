@@ -551,7 +551,7 @@ define_class!(
 
         /// Quit (⌘Q). Open sheets close first, as cancelled: AppKit
         /// silently refuses to quit while one holding a text field (a page's
-        /// prompt(), Search Tabs) is up.
+        /// prompt()) is up.
         #[unsafe(method(quit:))]
         fn quit_action(&self, _s: Option<&AnyObject>) {
             self.quit();
@@ -647,10 +647,10 @@ define_class!(
             self.sync_ext_windows();
         }
 
-        /// Search Tabs (⇧⌘A).
+        /// The launcher, Search Tabs and More (⇧⌘A).
         #[unsafe(method(searchTabs:))]
         fn search_tabs_action(&self, _s: Option<&AnyObject>) {
-            self.with_active(|t| tabsearch::TabSearch::open(self, t, ""));
+            self.with_active(|t| tabsearch::TabSearch::open(self, t, "", false));
         }
 
         #[unsafe(method(pinTab:))]
@@ -2385,8 +2385,11 @@ impl App {
                 }
             }
             ("tabs", _) => say!("{}", self.tabs_line()),
-            // Open Search Tabs with this query: `TABSEARCH <title>|…` as listed.
-            ("tabsearch", Some(t)) => tabsearch::TabSearch::open(self, &t, arg),
+            // Open the launcher with this query: `TABSEARCH <title>|…`, the tabs
+            // as listed; `launcher` lists every row,
+            // `LAUNCHER <kind>:<title> [shortcut]|…`.
+            ("tabsearch", Some(t)) => tabsearch::TabSearch::open(self, &t, arg, false),
+            ("launcher", Some(t)) => tabsearch::TabSearch::open(self, &t, arg, true),
             // What macOS does when another app opens a link with us.
             ("openurl", _) => {
                 self.open_external(vec![arg.to_string()]);
@@ -2633,7 +2636,8 @@ impl App {
             // Answer the sheet on screen: `dialog ok|cancel [check]`.
             ("dialog", Some(t)) => {
                 let ok = arg.starts_with("ok");
-                say!("ANSWERED {}", t.answer_dialog(ok, arg.ends_with("check")) as u8);
+                let answered = tabsearch::TabSearch::answer(ok) || t.answer_dialog(ok, arg.ends_with("check"));
+                say!("ANSWERED {}", answered as u8);
             }
             // Where the selection (the current find match) starts in its text node.
             ("selection", Some(t)) => match t.web() {
@@ -3216,7 +3220,7 @@ fn build_menu(app: &NSApplication, delegate: &App, mtm: MainThreadMarker) {
                 ("Next Tab", sel!(nextTab:), "\t", ctrl, true),
                 ("Previous Tab", sel!(previousTab:), "\t", ctrl_shift, true),
                 ("Show All Tabs", sel!(toggleTabOverview:), "\\", cmd_shift, true),
-                ("Search Tabs…", sel!(searchTabs:), "A", cmd, true),
+                ("Search Tabs and More…", sel!(searchTabs:), "A", cmd, true),
                 ("Pin Tab", sel!(pinTab:), "", none, true),
                 ("Mute Tab", sel!(muteTab:), "", none, true),
                 ("Move Tab to New Window", sel!(moveTabToNewWindow:), "", none, true),

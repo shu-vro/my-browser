@@ -56,7 +56,7 @@ name and start time (see benchmark/README.md).
 |---|---|
 | `src/main.rs` | `App`, the application delegate and the only long-lived object. It owns the profile store, the shared WebKit objects (data store, preferences, process pool, user content controller, extension controller), the tab list, downloads in flight and the menu bar. It also runs the bench protocol. |
 | `src/tab.rs` | `Tab`: one native window tab with its toolbar (back, forward, reload, home, site button, address bar) and (while awake) one `WKWebView`. Navigation policy, JavaScript dialogs, permission prompts, the site menu, error pages, extension buttons, and the extension-tab delegate. |
-| `src/tabsearch.rs` | Search Tabs (⇧⌘A): the sheet, its list and the matcher |
+| `src/tabsearch.rs` | The launcher, Search Tabs and More (⇧⌘A): the panel, its list, the matcher and the menu-bar walk |
 | `src/usage.rs` | Memory and CPU of the browser's processes (Settings → Tabs, heavy-tab badge) |
 | `src/home.rs` | The native new tab page (banner, search field, most visited sites) |
 | `src/extensions.rs` | Extensions: read at launch, started on first click, turned on per site, toolbar buttons |
@@ -261,15 +261,42 @@ active tab (`App::update_window_menu`, its `menuNeedsUpdate:`). Tests:
 `pinned_tabs_go_first_survive_close_others_and_restarts`,
 `tabs_mute_and_show_when_they_play_sound`.
 
-**Search Tabs** (⇧⌘A, `src/tabsearch.rs`): an `NSAlert` sheet on the
-active tab with a search field over a cell-based `NSTableView` of the tabs of
-the same kind (private windows only find private tabs), most recently used
-first. Every word of the query must appear in the title or address
-(`tabsearch::rank`: title start, title, address start, address). ↑/↓ move,
-Tab/⇧Tab go round the list (`tabsearch::cycle`), Return or double-click switches, Esc cancels. Built when asked for; the
-sheet's handler holds it and it's freed when the sheet closes. Bench:
-`tabsearch <query>` → `TABSEARCH <title>|…`, answered with `dialog ok|cancel`.
-Test: `search_tabs_finds_and_switches_to_a_tab`.
+**The launcher** (Window → Search Tabs and More…, ⇧⌘A, `src/tabsearch.rs`):
+one search field over four kinds of rows, each with an SF Symbol:
+- **open tabs** of the active tab's kind only (private windows find private
+  tabs, normal windows never do), most recently used first;
+- **commands**: the menu bar walked when the launcher opens (submenus too,
+  each menu brought up to date as when it opens: Pin/Unpin, Translate/Show
+  Original, validation), keeping the enabled items that target the app
+  delegate, so text editing, the window list and the Bookmarks/History page
+  items are left out. Each shows its menu and its current shortcut (a
+  changed one included). Choosing one is `performActionForItemAtIndex:` on
+  its menu, a click: no other path to any action;
+- **bookmarks** (`Store::bookmarks`) and **history** (the page rows of
+  `Store::suggestions`, most visited first; not in private windows), queried
+  per keystroke with the query's longest word, at most 8 each, an address
+  listed once (a tab beats a bookmark beats history).
+
+Every word of the query must appear in the title or address/menu
+(`tabsearch::rank`: title start, title, address start, address). Tabs come
+first; the rest by rank, then commands, bookmarks, history; at most 8
+commands. An empty query lists the tabs. ↑/↓ move, Tab/⇧Tab go round
+(`tabsearch::cycle`), Return or double-click opens (a tab is selected, a page
+loads in the tab as from the History menu), Esc or a click elsewhere closes.
+Page titles and addresses are shown as plain one-line strings (control
+characters removed, 300 characters at most), never markup.
+
+It's a titled `NSPanel` with a hidden title bar (rounded corners, shadow,
+keyboard focus come with it) over an `NSVisualEffectView`, a 22 pt borderless
+field and a cell-based table (inset style; the intercell spacing centers the
+text), added as a **child window** of the tab's window, not a sheet: ending a
+sheet made the window key and the app active even in `--on-top` mode. With
+`--on-top` it's ordered in but never made key. Built when asked for; a
+thread-local holds the open one, and it's freed with its panel when it
+closes. Bench: `tabsearch <query>` → `TABSEARCH <title>|…` (the tabs),
+`launcher <query>` → `LAUNCHER <kind>:<title> [shortcut]|…` (every row), both
+answered with `dialog ok|cancel`. Tests: `search_tabs_finds_and_switches_to_a_tab`,
+`launcher_finds_bookmarks_history_and_commands_and_keeps_private_tabs_apart`.
 
 **Session restore** saves every window (`session.win`, a column added in
 0.2) in tab-bar order, every 30 s and at quit; at launch each window comes
@@ -1255,6 +1282,7 @@ key press does.
 |---|---|
 | ⌘T / ⌘N / ⌘W | New tab / new window / close tab |
 | ⇧⌘N | New private window |
+| ⇧⌘A | Launcher: tabs, commands, bookmarks, history |
 | ⌘P | Print (the panel's PDF menu saves a PDF) |
 | ⌥⌘P | Picture in picture |
 | ⌥⌘T | Translate Page / Show Original |
@@ -1320,7 +1348,8 @@ active tab.
 | `menu <Menu>[/<Item>]` | `MENU <item>\|…` (`-` separator) after picking `<Item>` if given, as a click would |
 | `private` | `PRIVATE <0\|1>`: the active tab is private (read from its address bar) |
 | `printpdf <path>` | `PRINTED <0\|1>` once the page is saved there as a PDF (also printed when any print panel closes) |
-| `tabsearch <query>` | `TABSEARCH <title>\|…`: Search Tabs opened with that query, the matches as listed; answer with `dialog` |
+| `tabsearch <query>` | `TABSEARCH <title>\|…`: the launcher opened with that query, the matching tabs as listed; answer with `dialog` |
+| `launcher <query>` | `LAUNCHER <kind>:<title> [shortcut]\|…` (kind: tab, command, bookmark, history): the launcher with that query, every row as listed; answer with `dialog` |
 | `tabflags` | `TABFLAGS pinned=<0\|1> muted=<0\|1> page_muted=<0\|1> audio=<0\|1> swipe=<0\|1> pinch=<0\|1>` for the active tab |
 | `zoom` | `ZOOM <level> button=<label>`: the active tab's page zoom and the zoom button's label |
 | `bartype <text>` / `barkey up\|down\|enter\|esc` | `SUGGEST [*]search:<text>\|[*]page:<url>\|…`: the address bar's suggestion list after typing or a key (`*` = chosen; empty when closed) |

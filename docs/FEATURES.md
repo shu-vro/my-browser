@@ -119,8 +119,12 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   sleep, kept by Close Other Tabs and by session restore.
 - **Mute a tab** (Window → Mute Tab, or click the speaker in the tab); tabs
   playing sound show a speaker.
-- **Search Tabs** (⇧⌘A): type part of a title or address, Return switches;
-  most recently used first. ↑/↓ or Tab/⇧Tab (going round) choose a tab.
+- **Launcher** (⇧⌘A, Window → Search Tabs and More…): one field finds open
+  tabs (most recently used first; private windows only see private tabs),
+  menu commands with their shortcuts (New Tab, Settings, Reader, Translate,
+  Take Screenshot…), bookmarks and history (not in private windows). Return
+  opens, ↑/↓ or Tab/⇧Tab (going round) choose, Esc or a click elsewhere
+  closes.
 - Switch tabs with ⌘1–⌘9, ⌃Tab / ⌃⇧Tab, ⇧⌘[ / ⇧⌘].
 - **Session restore**: every window and tab, in order, with the same tab
   selected.
