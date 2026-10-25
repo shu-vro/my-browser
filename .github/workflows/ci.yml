@@ -32,4 +32,14 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
       - run: cargo fmt --check
       - run: cargo clippy --release --all-targets -- -D warnings
+      - name: Sound device
+        # GitHub's Mac runners have no audio device, so WebKit never reports
+        # sound playing and the picture-in-picture test (it only follows
+        # videos with sound) can't pass. BlackHole is a virtual one.
+        run: |
+          system_profiler SPAudioDataType
+          brew install --cask blackhole-2ch
+          sudo killall coreaudiod || true
+          sleep 3
+          system_profiler SPAudioDataType
       - run: cargo test --release

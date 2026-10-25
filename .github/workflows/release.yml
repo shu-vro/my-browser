@@ -52,6 +52,16 @@ jobs:
           fetch-depth: 0 # history and tags, for the release notes
       - name: Rust
         run: rustup update stable && rustup default stable && rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Sound device
+        # GitHub's Mac runners have no audio device, so WebKit never reports
+        # sound playing and the picture-in-picture test (it only follows
+        # videos with sound) can't pass. BlackHole is a virtual one.
+        run: |
+          system_profiler SPAudioDataType
+          brew install --cask blackhole-2ch
+          sudo killall coreaudiod || true
+          sleep 3
+          system_profiler SPAudioDataType
       - name: Test
         run: cargo test --release
       - name: Signing certificate
