@@ -523,6 +523,15 @@ Arguments must be an array of strings. Each op validates its input, and
 The page inserts all data from websites (titles, URLs, file names) with
 `textContent`, never as HTML.
 
+**Look.** All internal pages use one set of CSS tokens (`tab::PAGE_CSS`,
+repeated at the top of settings.html): the system font, macOS-like grays,
+`AccentColor` (with a blue fallback) and `prefers-color-scheme`, which
+follows the theme setting through `NSApp.appearance`. In settings.html,
+consecutive `.row`s form one rounded card by CSS alone (`:has`), so a new
+row needs no wrapper. The `.row` and `.list li` checkboxes are drawn as
+switches but stay real checkboxes. Icons are inline SVG paths; nothing is
+fetched (the CSP allows only inline code and `data:` images).
+
 Bridge ops: `settings.get/set`, `keywords.list/set/delete`, `filters.get/set`,
 `autofill.list/save/delete`, `profiles.list/create/open/delete`,
 `sync.export/import`, `history.list/delete/clear`,

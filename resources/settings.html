@@ -6,88 +6,146 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:">
 <title>Settings</title>
 <style>
-  :root {
-    --bg: #ffffff; --panel: #f6f6f7; --text: #1d1d1f; --muted: #5c5c61; --line: #e3e3e6;
-    --accent: #0a66d8; --danger: #c62828; --ok: #1f7a3a;
-  }
+  /* Design tokens: the same as tab::PAGE_CSS (folder, error and reader pages). */
+  :root { color-scheme: light dark;
+    --bg: #f2f2f5; --card: #fff; --side: #e8e8ec; --text: #1d1d1f; --muted: #6e6e73; --line: #0000001a;
+    --hover: #0000000b; --off: #00000021; --accent: #0a66d8; --danger: #d70015; --ok: #248a3d; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #1c1c1e; --panel: #2a2a2d; --text: #f2f2f4; --muted: #c7c7cc; --line: #3a3a3d;
-            --accent: #4d9bff; --danger: #ff6b6b; --ok: #5cd27c; }
+    :root { --bg: #1e1e20; --card: #2c2c2e; --side: #262629; --text: #f5f5f7; --muted: #a1a1a6; --line: #ffffff1a;
+            --hover: #ffffff10; --off: #ffffff29; --accent: #3d8eff; --danger: #ff6961; --ok: #5cd27c; }
   }
+  @supports (color: AccentColor) { :root { --accent: AccentColor; } }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--text); display: flex; min-height: 100vh; }
-  nav { width: 190px; padding: 24px 12px; border-right: 1px solid var(--line); flex-shrink: 0;
+  body { margin: 0; font: 13px/1.45 -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased;
+         background: var(--bg); color: var(--text); display: flex; min-height: 100vh; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 40%, transparent); outline-offset: 1px; }
+  code { font-family: ui-monospace, Menlo, monospace; font-size: .92em; background: var(--hover); padding: 1px 4px; border-radius: 4px; }
+
+  /* Sidebar: one colored icon per section, like System Settings. */
+  nav { width: 216px; padding: 18px 10px; background: var(--side); border-right: 1px solid var(--line); flex-shrink: 0;
         position: sticky; top: 0; height: 100vh; overflow-y: auto; }
-  nav a { display: block; padding: 7px 12px; border-radius: 7px; color: var(--text); text-decoration: none; margin-bottom: 2px; }
+  nav b { display: block; font-size: 11px; font-weight: 600; color: var(--muted); padding: 0 10px 8px; letter-spacing: .02em; }
+  nav a { display: flex; align-items: center; gap: 9px; padding: 4px 8px; border-radius: 7px; color: var(--text);
+          text-decoration: none; margin-bottom: 1px; transition: background .12s; }
+  nav a:hover { background: var(--hover); }
   nav a.on { background: var(--accent); color: #fff; }
-  main { flex: 1; padding: 28px 36px; max-width: 860px; }
-  h1 { font-size: 22px; margin: 0 0 18px; }
-  h2 { font-size: 15px; margin: 26px 0 10px; }
+  nav svg { width: 22px; height: 22px; padding: 3.5px; border-radius: 6px; background: var(--c, #8e8e93); flex-shrink: 0;
+            fill: none; stroke: #fff; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; box-shadow: 0 .5px 1px #0003; }
+  nav a.on svg { box-shadow: 0 0 0 1px #ffffff80; }
+  @media (max-width: 640px) { nav { width: auto; } nav a { font-size: 0; gap: 0; } nav b { display: none; } }
+
+  main { flex: 1; padding: 30px 40px 64px; max-width: 800px; margin: 0 auto; min-width: 0; }
+  h1 { font-size: 24px; font-weight: 700; letter-spacing: -.01em; margin: 0 0 14px; }
+  h2 { font-size: 13px; font-weight: 600; margin: 28px 4px 8px; }
   section { display: none; } section.on { display: block; }
-  .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
-  .row .hint { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
-  input[type=text], input[type=search], input[type=number], select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
-  input[type=search] { width: 100%; margin-bottom: 12px; }
-  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .note { color: var(--muted); font-size: 12.5px; margin: 8px 4px 12px; }
+  p:has(> button) { margin: 12px 0; }
+
+  /* Rows that follow each other form one rounded card. */
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px; min-height: 44px;
+         background: var(--card); }
+  .row + .row { border-top: 1px solid var(--line); }
+  :not(.row) + .row, section > .row:first-child { border-radius: 10px 10px 0 0; margin-top: 10px; }
+  .row:not(:has(+ .row)) { border-bottom-left-radius: 10px; border-bottom-right-radius: 10px; margin-bottom: 10px; }
+  .row > div:first-child { min-width: 0; }
+  .row .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .row > span { white-space: nowrap; color: var(--muted); }
+
+  input[type=text], input[type=search], input[type=number], select, textarea {
+    font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 6px;
+    padding: 4px 8px; box-shadow: inset 0 .5px 1px #0000000d; transition: border-color .15s, box-shadow .15s; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
+  select { -webkit-appearance: none; appearance: none; padding-right: 26px; cursor: pointer; box-shadow: 0 .5px 1px #00000014;
+    background: var(--card) url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%238e8e93' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><path d='M3.5 4.5 6 2l2.5 2.5M3.5 7.5 6 10l2.5-2.5'/></svg>") no-repeat right 7px center / 12px; }
+  input[type=search] { -webkit-appearance: none; appearance: none; width: 100%; margin-bottom: 12px; padding: 6px 10px 6px 30px; border-radius: 8px;
+    background: var(--card) url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238e8e93' stroke-width='2.5' stroke-linecap='round'><circle cx='10.5' cy='10.5' r='6.5'/><path d='m20 20-4.5-4.5'/></svg>") no-repeat 10px center / 14px; }
+  textarea { font: 12px/1.5 ui-monospace, Menlo, monospace; width: 100%; min-height: 180px; padding: 10px 12px; border-radius: 10px; }
+
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 6px;
+           padding: 3px 12px; cursor: pointer; white-space: nowrap; box-shadow: 0 .5px 1px #00000014; transition: filter .12s; }
+  button:hover:not(:disabled) { filter: brightness(.96); }
+  @media (prefers-color-scheme: dark) { button:hover:not(:disabled) { filter: brightness(1.2); } }
+  button:active:not(:disabled) { filter: brightness(.9); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: transparent; color: #fff; }
   button.danger { color: var(--danger); }
-  .list { list-style: none; margin: 0; padding: 0; }
-  .list li { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+
+  /* Switches: still real checkboxes. */
+  input[type=checkbox] { accent-color: var(--accent); }
+  .row input[type=checkbox], .list li > input[type=checkbox] {
+    -webkit-appearance: none; appearance: none; position: relative; flex-shrink: 0; width: 34px; height: 20px; margin: 0;
+    border-radius: 10px; background: var(--off); cursor: pointer; transition: background .2s; }
+  .row input[type=checkbox]::before, .list li > input[type=checkbox]::before {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 2px #0000004d, 0 0 0 .5px #0000000d; transition: transform .2s; }
+  .row input[type=checkbox]:checked, .list li > input[type=checkbox]:checked { background: var(--accent); }
+  .row input[type=checkbox]:checked::before, .list li > input[type=checkbox]:checked::before { transform: translateX(14px); }
+  input[type=checkbox]:disabled { opacity: .45; cursor: default; }
+
+  .list { list-style: none; margin: 0 0 10px; padding: 0; background: var(--card); border-radius: 10px; overflow: hidden; }
+  .list:empty { display: none; }
+  .list li { display: flex; align-items: center; gap: 10px; padding: 9px 14px; }
+  .list li + li { border-top: 1px solid var(--line); }
   .list .main { flex: 1; min-width: 0; }
   .list .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .list .sub { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .list .time { color: var(--muted); font-size: 12px; white-space: nowrap; }
-  .empty { color: var(--muted); padding: 18px 0; }
-  .tag { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
-  .note { color: var(--muted); font-size: 12.5px; }
-  a { color: var(--accent); }
-  #toast { position: fixed; bottom: 18px; right: 18px; background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
-  #toast.show { opacity: .92; }
-  progress { width: 120px; }
+  .list label.sub { display: flex; align-items: center; gap: 4px; }
+  .empty { color: var(--muted); padding: 16px 14px; text-align: center; }
+  li.empty { justify-content: center; }
+  .tag { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--hover); border: 1px solid var(--line); color: var(--muted); box-shadow: none; }
+  button.tag { font-size: 12px; padding: 2px 10px; min-width: 52px; color: var(--text); font-variant-numeric: tabular-nums; }
+  #toast { position: fixed; bottom: 22px; left: 50%; transform: translate(-50%, 8px); background: var(--text); color: var(--bg);
+           padding: 7px 16px; border-radius: 18px; box-shadow: 0 6px 20px #0003; opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none; }
+  #toast.show { opacity: .94; transform: translate(-50%, 0); }
+  progress { width: 120px; accent-color: var(--accent); }
   .list a.title { display: block; white-space: normal; overflow-wrap: anywhere; color: inherit; text-decoration: none; }
-  .list a.title:hover { text-decoration: underline; }
+  .list a.title:hover { color: var(--accent); }
   .bar { display: flex; gap: 10px; align-items: center; margin-bottom: 4px; }
   .bar input[type=search] { margin: 0; flex: 1; }
-  .day { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 22px 0 2px; }
-  .hist li { padding: 7px 8px; margin: 0 -8px; border-bottom: none; border-radius: 7px; }
-  .hist li:hover { background: var(--panel); }
-  .hist .tile { width: 26px; height: 26px; border-radius: 6px; flex-shrink: 0; display: grid; place-items: center; font-weight: 600; font-size: 13px; color: #fff; }
+  .day { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 22px 4px 6px; }
+  .hist li { padding: 7px 14px; transition: background .12s; }
+  .hist li:hover { background: var(--hover); }
+  .hist .tile { width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; display: grid; place-items: center; font-weight: 600; font-size: 13px; color: #fff; }
   .hist .time { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
-  .hist .x { border: none; background: none; color: var(--muted); padding: 2px 8px; font-size: 16px; line-height: 1; visibility: hidden; }
+  .hist .x { border: none; background: none; box-shadow: none; color: var(--muted); padding: 2px 8px; font-size: 16px; line-height: 1; visibility: hidden; }
   .hist li:hover .x, .hist .x:focus-visible { visibility: visible; }
   .hist .x:hover { color: var(--danger); }
-  textarea { font: 12px/1.5 ui-monospace, Menlo, monospace; width: 100%; min-height: 180px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; margin: 8px 0 12px; }
   .grid input { width: 100%; }
-  .bar.add { margin-top: 14px; }
+  .bar.add { margin-top: 12px; }
   .bar.add input { flex: 1; }
   .avatar { width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center; font-weight: 600; font-size: 14px; color: #fff; }
-  .bangs { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 14px; margin: 6px 0 4px; }
+  .bangs { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0 14px; margin: 6px 0 4px; padding: 6px 14px; background: var(--card); border-radius: 10px; }
   .bangs label { display: flex; align-items: center; gap: 8px; padding: 5px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .bangs code { font-weight: 600; }
+  .bangs code { font-weight: 600; background: none; padding: 0; }
   .bangs .sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
 <nav>
-  <a href="#general">General</a>
-  <a href="#tabs">Tabs</a>
-  <a href="#privacy">Privacy</a>
-  <a href="#permissions">Site settings</a>
-  <a href="#bookmarks">Bookmarks</a>
-  <a href="#passwords">Passwords</a>
-  <a href="#autofill">Autofill</a>
-  <a href="#import">Import</a>
-  <a href="#history">History</a>
-  <a href="#downloads">Downloads</a>
-  <a href="#storage">Storage</a>
-  <a href="#sitedata">Site data</a>
-  <a href="#extensions">Extensions</a>
-  <a href="#network">Network</a>
-  <a href="#shortcuts">Shortcuts</a>
-  <a href="#profiles">Profiles</a>
-  <a href="#sync">Sync</a>
-  <a href="#about">About</a>
+  <b>Settings</b>
+  <a href="#general"><svg viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>General</a>
+  <a href="#tabs" style="--c:#007aff"><svg viewBox="0 0 24 24"><rect x="3" y="8" width="14" height="12" rx="2"/><path d="M7 4h12a2 2 0 0 1 2 2v10"/></svg>Tabs</a>
+  <a href="#privacy" style="--c:#3478f6"><svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6z"/></svg>Privacy</a>
+  <a href="#permissions" style="--c:#30b0c7"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg>Site settings</a>
+  <a href="#bookmarks" style="--c:#ff9500"><svg viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></svg>Bookmarks</a>
+  <a href="#passwords" style="--c:#636366"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8m-3 3 3 3m-5-1 2 2"/></svg>Passwords</a>
+  <a href="#autofill" style="--c:#34c759"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/></svg>Autofill</a>
+  <a href="#import" style="--c:#5856d6"><svg viewBox="0 0 24 24"><path d="M12 3v11m-4-4 4 4 4-4M4 15v4h16v-4"/></svg>Import</a>
+  <a href="#history" style="--c:#af52de"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>History</a>
+  <a href="#downloads" style="--c:#0a84ff"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v9m-4-4 4 4 4-4"/></svg>Downloads</a>
+  <a href="#storage" style="--c:#8e8e93"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>Storage</a>
+  <a href="#sitedata" style="--c:#a2845e"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9.5h0M15 9h0M14 15h0M8.5 14.5h0"/></svg>Site data</a>
+  <a href="#extensions" style="--c:#ff375f"><svg viewBox="0 0 24 24"><path d="M4 9h4V7a2 2 0 1 1 4 0v2h4v4h2a2 2 0 1 1 0 4h-2v4H4z"/></svg>Extensions</a>
+  <a href="#network" style="--c:#30d158"><svg viewBox="0 0 24 24"><path d="M7 20V4M3 8l4-4 4 4m6-4v16m-4-4 4 4 4-4"/></svg>Network</a>
+  <a href="#shortcuts" style="--c:#8e8e93"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h0m4 0h0m4 0h0m4 0h0M7 14h10"/></svg>Shortcuts</a>
+  <a href="#profiles" style="--c:#5ac8fa"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></svg>Profiles</a>
+  <a href="#sync" style="--c:#007aff"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 0 1-14 5.3M4 12a8 8 0 0 1 14-5.3M18 3v4h-4M6 21v-4h4"/></svg>Sync</a>
+  <a href="#about" style="--c:#8e8e93"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-9.5v.5"/></svg>About</a>
 </nav>
 <main>
   <section id="general">

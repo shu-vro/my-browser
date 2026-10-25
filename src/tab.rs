@@ -3524,9 +3524,13 @@ impl Tab {
         let Some(web) = self.web() else { return };
         let html = format!(
             "<!doctype html><meta charset=utf-8><meta http-equiv=Content-Security-Policy content=\"default-src 'none'; style-src 'unsafe-inline'\"><title>{t}</title>\
-             <style>body{{font:15px -apple-system,sans-serif;max-width:560px;margin:18vh auto;padding:0 24px;color:#333}}\
-             @media(prefers-color-scheme:dark){{body{{background:#1c1c1e;color:#ddd}}}}h1{{font-size:22px}}p{{line-height:1.5}}code{{word-break:break-all;opacity:.7}}</style>\
-             <h1>{t}</h1><p>{d}</p><p><code>{u}</code></p>",
+             <style>{css}body{{display:grid;place-items:center;min-height:100vh;padding:24px}}\
+             main{{max-width:520px;background:var(--card);border-radius:14px;padding:32px 36px 28px;text-align:center;box-shadow:0 0 0 1px var(--line),0 12px 40px #0000001a}}\
+             svg{{width:44px;height:44px;color:var(--muted)}}h1{{font-size:20px;margin:12px 0 8px}}p{{font-size:14px;line-height:1.5;color:var(--muted);margin:0 0 16px}}\
+             code{{display:inline-block;max-width:100%;padding:4px 10px;border-radius:6px;background:var(--hover);word-break:break-all}}</style>\
+             <main><svg viewBox=\"0 0 24 24\" fill=none stroke=currentColor stroke-width=1.6 stroke-linecap=round stroke-linejoin=round><path d=\"M12 3 2 20h20zM12 10v4m0 3v.5\"/></svg>\
+             <h1>{t}</h1><p>{d}</p><code>{u}</code></main>",
+            css = PAGE_CSS,
             t = escape_html(title),
             d = escape_html(detail),
             u = escape_html(url)
@@ -3568,6 +3572,17 @@ pub fn next_zoom(z: f64, dir: i32) -> f64 {
         ZOOM_STEPS.iter().copied().rev().find(|s| *s < z - 0.001).unwrap_or(ZOOM_STEPS[0])
     }
 }
+
+/// The look shared by the folder, error and reader pages (resources/settings.html
+/// repeats these tokens): the system font, macOS colors, the user's accent color,
+/// light and dark. Nothing in it loads anything.
+pub const PAGE_CSS: &str = ":root{color-scheme:light dark;--bg:#f2f2f5;--card:#fff;--text:#1d1d1f;--muted:#6e6e73;--line:#0000001a;--hover:#0000000b;--accent:#0a66d8}\
+@media(prefers-color-scheme:dark){:root{--bg:#1e1e20;--card:#2c2c2e;--text:#f5f5f7;--muted:#a1a1a6;--line:#ffffff1a;--hover:#ffffff10;--accent:#3d8eff}}\
+@supports(color:AccentColor){:root{--accent:AccentColor}}\
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 -apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased}\
+a{color:var(--accent)}:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 40%,transparent);outline-offset:1px}\
+code,pre{font-family:ui-monospace,Menlo,monospace;font-size:.9em}\
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}";
 
 /// Text safe to put in HTML.
 pub fn escape_html(s: &str) -> String {
@@ -3616,15 +3631,18 @@ fn reader_page(json: &str) -> Option<String> {
         "<!doctype html><html><head><meta charset=utf-8>\
          <meta http-equiv=Content-Security-Policy content=\"default-src 'none'; img-src * data:; media-src *; style-src 'unsafe-inline'\">\
          <title>{t}</title><style>\
-         :root{{color-scheme:light dark}}\
-         body{{font:21px/1.6 ui-serif,Georgia,serif;max-width:36em;margin:56px auto;padding:0 28px;color:#26231f;background:#fbfaf6}}\
-         @media(prefers-color-scheme:dark){{body{{color:#ddd;background:#1c1c1e}}a{{color:#7ab7ff}}}}\
-         h1{{font:700 36px/1.2 -apple-system,sans-serif;margin:.2em 0 .8em}}h2,h3{{font-family:-apple-system,sans-serif;line-height:1.3}}\
-         .site{{font:14px -apple-system,sans-serif;opacity:.6;margin:0}}\
-         img,video,picture{{max-width:100%;height:auto}}figure{{margin:1.5em 0}}figcaption{{font-size:15px;opacity:.7}}\
-         pre{{overflow:auto;font-size:15px;line-height:1.4}}blockquote{{margin-left:0;padding-left:1em;border-left:3px solid #8884}}\
-         table{{border-collapse:collapse;font-size:16px}}td,th{{border:1px solid #8884;padding:4px 8px}}\
+         {css}\
+         body{{font:21px/1.65 ui-serif,Georgia,serif;max-width:36em;margin:0 auto;padding:64px 28px 96px;color:#26231f;background:#fbfaf6}}\
+         @media(prefers-color-scheme:dark){{body{{color:#e3e3e6;background:var(--bg)}}}}\
+         h1{{font:700 38px/1.15 -apple-system,system-ui,sans-serif;letter-spacing:-.02em;margin:.25em 0 1em;padding-bottom:.6em;border-bottom:1px solid var(--line)}}\
+         h2,h3{{font-family:-apple-system,system-ui,sans-serif;line-height:1.3;letter-spacing:-.01em;margin-top:1.6em}}\
+         .site{{font:600 12px -apple-system,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.08em;color:var(--accent);margin:0}}\
+         img,video,picture{{max-width:100%;height:auto;border-radius:8px}}figure{{margin:1.6em 0}}figcaption{{font:14px/1.4 -apple-system,system-ui,sans-serif;color:var(--muted);margin-top:.5em}}\
+         pre{{overflow:auto;font-size:15px;line-height:1.45;padding:14px 16px;border-radius:10px;background:var(--hover)}}\
+         blockquote{{margin:1.4em 0;padding-left:1em;border-left:3px solid var(--accent);color:var(--muted)}}\
+         table{{border-collapse:collapse;font-size:16px}}td,th{{border:1px solid var(--line);padding:4px 8px}}hr{{border:0;border-top:1px solid var(--line)}}\
          </style></head><body><p class=site>{s}</p><h1>{t}</h1>{html}</body></html>",
+        css = PAGE_CSS,
         t = escape_html(&title),
         s = escape_html(&site),
     ))

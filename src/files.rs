@@ -197,21 +197,22 @@ pub fn folder_page(dir: &Path, hidden: bool) -> String {
         r#"<!doctype html><html><head><meta charset=utf-8>
 <meta http-equiv=Content-Security-Policy content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:">
 <title>{t}</title><style>
-:root{{color-scheme:light dark;--line:#e3e3e6;--muted:#6e6e73;--hover:#f2f2f4;--accent:#0a66d8}}
-@media(prefers-color-scheme:dark){{:root{{--line:#3a3a3d;--muted:#a1a1a6;--hover:#2c2c2e;--accent:#4d9bff}}}}
-body{{font:13px -apple-system,sans-serif;margin:0;padding:18px 26px}}
-nav{{color:var(--muted);margin-bottom:10px;overflow-wrap:anywhere}} nav a{{color:inherit;text-decoration:none}} nav a:hover{{color:var(--accent)}}
+{css}
+body{{padding:22px 28px 40px}}
+nav{{color:var(--muted);font-size:12px;margin-bottom:4px;overflow-wrap:anywhere}} nav a{{color:inherit;text-decoration:none}} nav a:hover{{color:var(--accent)}}
 nav a+a::before{{content:" › ";color:var(--muted)}}
-h1{{font-size:22px;margin:4px 0 12px}}
-.bar{{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}}
-.btn{{border:1px solid var(--line);border-radius:6px;padding:4px 10px;color:inherit;text-decoration:none}} .btn:hover{{background:var(--hover)}}
-input{{font:inherit;flex:1;min-width:160px;max-width:320px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit}}
-table{{border-collapse:collapse;width:100%}} th{{text-align:left;font-weight:600;color:var(--muted);border-bottom:1px solid var(--line);padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap}}
-th.on::after{{content:" ▲"}} th.on.down::after{{content:" ▼"}}
-td{{padding:4px 8px;border-bottom:1px solid var(--line);white-space:nowrap}} tr:hover td{{background:var(--hover)}}
+h1{{font-size:24px;font-weight:700;letter-spacing:-.01em;margin:2px 0 14px;overflow-wrap:anywhere}}
+.bar{{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap}}
+.btn{{border:1px solid var(--line);border-radius:6px;padding:3px 11px;color:inherit;text-decoration:none;background:var(--card);box-shadow:0 .5px 1px #00000014}} .btn:hover{{filter:brightness(.96)}}
+input{{font:inherit;flex:1;min-width:160px;max-width:320px;padding:4px 10px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:inherit;-webkit-appearance:none}}
+input:focus{{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 30%,transparent)}}
+table{{border-collapse:separate;border-spacing:0;width:100%;background:var(--card);border-radius:10px;overflow:clip;box-shadow:0 0 0 1px var(--line)}}
+th{{position:sticky;top:0;background:var(--card);text-align:left;font-weight:600;font-size:12px;color:var(--muted);border-bottom:1px solid var(--line);padding:7px 10px;cursor:pointer;user-select:none;white-space:nowrap}} th:hover{{color:var(--text)}}
+th.on{{color:var(--text)}} th.on::after{{content:"▲";font-size:8px;margin-left:5px;vertical-align:1px}} th.on.down::after{{content:"▼"}}
+td{{padding:5px 10px;white-space:nowrap}} tr+tr td{{border-top:1px solid var(--line)}} tbody tr:hover td{{background:var(--hover)}}
 td:first-child{{width:100%;white-space:normal}} td a{{color:inherit;text-decoration:none;display:flex;align-items:center;gap:8px}}
 td a:hover{{color:var(--accent)}} img{{width:18px;height:18px;flex-shrink:0}} .date,.size{{color:var(--muted);font-variant-numeric:tabular-nums}}
-.empty{{color:var(--muted)}}
+.empty{{color:var(--muted);background:var(--card);border-radius:10px;padding:28px;margin:14px 0;text-align:center}}
 </style></head><body>
 <nav>{crumbs}</nav><h1>{t}</h1>
 <div class=bar>{up}<input id=q type=search placeholder="Filter" autofocus>{hidden_link}{reveal}</div>
@@ -236,6 +237,7 @@ for (const th of document.querySelectorAll("th")) th.onclick = () => {{
 }};
 document.querySelector("th[data-key=name]")?.classList.add("on");
 </script></body></html>"#,
+        css = crate::tab::PAGE_CSS,
         t = escape_html(&title),
         crumbs = crumbs.join(""),
     )

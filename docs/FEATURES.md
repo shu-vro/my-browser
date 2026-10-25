@@ -234,7 +234,13 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 
 - **Settings** at `mybrowser://settings` (⌘,): General, Tabs, Privacy, Site
   settings, Network, History, Downloads, Bookmarks, Passwords, Import,
-  Extensions, Storage, Shortcuts, Autofill, Profiles, Sync, About.
+  Extensions, Storage, Shortcuts, Autofill, Profiles, Sync, About. Laid
+  out like System Settings: a sidebar with a colored icon per section,
+  options grouped in rounded cards, switches for on/off options, your Mac's
+  accent color, light and dark.
+- **One look for the built-in pages**: folder pages, error pages and reader
+  mode share the settings page's colors and type (system font, accent
+  color, light and dark), with nothing loaded from the network.
 - **New tab page**: banner, search bar and most visited sites, each can be
   turned off.
 - **Site data per site**: the site menu's Site Data… lists what the site and
