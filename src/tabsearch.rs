@@ -144,10 +144,14 @@ define_class!(
     unsafe impl NSTextFieldDelegate for TabSearch {}
 
     unsafe impl NSWindowDelegate for TabSearch {
-        /// A click elsewhere closes it, as a menu would.
+        /// A click elsewhere closes it, as a menu would. Not in bench mode:
+        /// browsers tested side by side take focus from each other, and the
+        /// bench answers with `dialog`.
         #[unsafe(method(windowDidResignKey:))]
         fn resigned(&self, _n: &NSNotification) {
-            self.finish(false);
+            if !self.ivars().app.get().is_some_and(|a| a.is_bench()) {
+                self.finish(false);
+            }
         }
     }
 
