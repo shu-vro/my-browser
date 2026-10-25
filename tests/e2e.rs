@@ -1495,7 +1495,13 @@ fn downloads_show_by_the_address_bar_and_cancel_without_leaving_a_file() {
     let shown = b.until("dlbutton", |l| l.starts_with("DLBUTTON shown=1 bar=") && !l.ends_with('-'));
     assert!(shown.starts_with("DLBUTTON shown=1"), "{shown}");
     assert!(b.send("dllist").starts_with("DLLIST big.bin active "));
-    assert!(dir.0.join("big.bin.download").exists());
+    // WebKit creates the file once data arrives.
+    let part = dir.0.join("big.bin.download");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !part.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(part.exists());
     assert!(!dir.0.join("big.bin").exists());
     // Cancelling ends it, deletes the partial file and says so in both lists.
     let list = b.bridge(&["downloads.list"]);
