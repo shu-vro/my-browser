@@ -177,6 +177,14 @@ define_class!(
             self.app().set_active(self);
         }
 
+        /// Cmd+W and the tab's close button: pick the next tab before macOS
+        /// does (it would pick the right-hand neighbor).
+        #[unsafe(method(windowShouldClose:))]
+        fn window_should_close(&self, _w: &NSWindow) -> Bool {
+            self.app().tab_closing(self);
+            Bool::YES
+        }
+
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _n: &NSNotification) {
             self.app().extensions_leave_site(self, None);

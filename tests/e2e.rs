@@ -547,6 +547,16 @@ fn keyboard_shortcuts_drive_tabs() {
     assert!(b.tabs().starts_with("TABS count=2"), "cmd+shift+t");
     assert!(b.state_until(|s| s.contains("title=one")).contains("title=one"), "reopened tab is active and loaded");
 
+    // Closing a tab goes back to the one you were on before, not its
+    // right-hand neighbor. Cmd+T opens next to "two": two, three, one.
+    b.key("cmd+1");
+    b.key("cmd+t");
+    b.nav(&format!("go {base}/page/three"));
+    assert!(b.tabs().starts_with("TABS count=3 active=1"), "three opened next to two");
+    b.key("cmd+w");
+    assert!(b.tabs().starts_with("TABS count=2 active=0"), "cmd+w went back to two");
+    assert!(b.state_until(|s| s.contains("title=two")).contains("title=two"));
+
     // History shortcuts.
     b.key("cmd+[");
     b.key("cmd+]");

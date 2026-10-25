@@ -1573,6 +1573,25 @@ impl App {
         }
     }
 
+    /// The tab to show when `tab` closes: the one in its window you were on
+    /// most recently.
+    fn previous_tab(&self, tab: &Tab) -> Option<Retained<Tab>> {
+        let windows = tab.window().tabGroup()?.windows();
+        windows
+            .iter()
+            .filter(|w| !std::ptr::eq(&**w, tab.window()))
+            .filter_map(|w| self.tab_for_window(&w))
+            .max_by_key(|t| t.ivars().last_active.get())
+    }
+
+    pub fn tab_closing(&self, tab: &Tab) {
+        if self.is_active(tab) {
+            if let Some(prev) = self.previous_tab(tab) {
+                self.select(&prev);
+            }
+        }
+    }
+
     pub fn tab_closed(&self, tab: &Tab) {
         let url = tab.url();
         // Private tabs leave nothing behind, not even Reopen Closed Tab.
@@ -1583,14 +1602,10 @@ impl App {
             }
             closed.push(url);
         }
-        // macOS picks the next selected tab in the group; follow it, since
-        // "became key" isn't sent when the app isn't frontmost.
-        let next = tab
-            .window()
-            .tabGroup()
-            .map(|g| g.windows())
-            .and_then(|ws| ws.iter().find(|w| !std::ptr::eq(&**w, tab.window())))
-            .and_then(|w| self.tab_for_window(&w));
+        // Closed without `windowShouldClose` (Close Other Tabs, a script):
+        // still go back to the previous tab, since "became key" isn't sent
+        // when the app isn't frontmost.
+        let next = self.previous_tab(tab);
         // Tell extensions; the window closes with its last tab.
         let ext_window = self.ext_window_for(tab);
         let window_closing = next.is_none();
