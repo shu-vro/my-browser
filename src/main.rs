@@ -1585,10 +1585,10 @@ impl App {
     }
 
     pub fn tab_closing(&self, tab: &Tab) {
-        if self.is_active(tab) {
-            if let Some(prev) = self.previous_tab(tab) {
-                self.select(&prev);
-            }
+        if self.is_active(tab)
+            && let Some(prev) = self.previous_tab(tab)
+        {
+            self.select(&prev);
         }
     }
 
