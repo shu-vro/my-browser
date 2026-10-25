@@ -493,11 +493,12 @@ define_class!(
     }
 
     unsafe impl NSControlTextEditingDelegate for Tab {
-        /// Typing in the address bar: suggestions.
+        /// Typing in the address bar or the new tab page's search: suggestions.
         #[unsafe(method(controlTextDidChange:))]
         fn text_did_change(&self, n: &NSNotification) {
-            if let Some(bar) = self.ivars().bar.get().filter(|b| n.object().is_some_and(|o| std::ptr::eq(&*o, &***b as &NSObject as *const NSObject as *const AnyObject))) {
-                self.suggest_for(&bar.stringValue().to_string());
+            let field = n.object().and_then(|o| o.downcast::<NSTextField>().ok());
+            if let Some(field) = field.filter(|f| self.suggests(f)) {
+                self.suggest_for(&field.stringValue().to_string(), &field);
             }
         }
 
@@ -513,6 +514,9 @@ define_class!(
             let bar = self.ivars().bar.get().is_some_and(|b| std::ptr::eq::<NSControl>(&***b, control));
             if bar {
                 self.bar_command(control, command)
+            } else if is_home_search(control) {
+                // Return without a chosen suggestion is the field's action (homeSearch:).
+                control.downcast_ref::<NSTextField>().and_then(|f| self.suggest_keys(f, command)).unwrap_or(false)
             } else if command == sel!(cancelOperation:) {
                 self.hide_find();
                 true
@@ -1698,21 +1702,11 @@ impl Tab {
     /// Address bar keys: ↑/↓ and Esc for the suggestion list, Return to go
     /// (to the chosen suggestion, else to what was typed). True if handled.
     fn bar_command(&self, control: &NSControl, command: objc2::runtime::Sel) -> bool {
-        let suggest = self.ivars().suggest.get();
-        if command == sel!(moveDown:) || command == sel!(moveUp:) {
-            return suggest.is_some_and(|s| s.step(if command == sel!(moveDown:) { 1 } else { -1 }));
-        }
-        if command == sel!(cancelOperation:) {
-            let shown = suggest.is_some_and(|s| s.is_shown());
-            self.hide_suggestions();
-            return shown;
+        if let Some(handled) = control.downcast_ref::<NSTextField>().and_then(|f| self.suggest_keys(f, command)) {
+            return handled;
         }
         if command != sel!(insertNewline:) {
             return false;
-        }
-        if let Some(item) = suggest.and_then(|s| s.chosen()) {
-            self.open_suggestion(&item);
-            return true;
         }
         self.hide_suggestions();
         let text = control.stringValue().to_string();
@@ -1742,12 +1736,57 @@ impl Tab {
         }
     }
 
-    /// Show what matches `typed` under the address bar.
-    fn suggest_for(&self, typed: &str) {
+    /// The address bar and the new tab page's search field suggest.
+    fn suggests(&self, field: &NSTextField) -> bool {
+        self.ivars().bar.get().is_some_and(|b| std::ptr::eq::<NSTextField>(&**b, field)) || is_home_search(field)
+    }
+
+    /// Show what matches `typed` under `field`.
+    fn suggest_for(&self, typed: &str, field: &NSTextField) {
         let store = self.app().store();
         let items = if store.flag("address_suggestions") { store.suggestions(typed, 8) } else { Vec::new() };
-        let Some(bar) = self.ivars().bar.get() else { return };
-        self.ivars().suggest.get_or_init(|| crate::suggest::Suggest::new(self)).show(items, bar);
+        self.show_suggestions(items, field);
+    }
+
+    fn show_suggestions(&self, items: Vec<crate::store::Suggestion>, field: &NSTextField) {
+        self.ivars().suggest.get_or_init(|| crate::suggest::Suggest::new(self)).show(items, field);
+    }
+
+    /// ↑/↓, Esc and Return in a field that suggests. ↑/↓ with the list
+    /// closed opens it: past searches (newest first) when nothing has been
+    /// typed, else what matches the text. `None`: not handled here.
+    fn suggest_keys(&self, field: &NSTextField, command: objc2::runtime::Sel) -> Option<bool> {
+        let suggest = self.ivars().suggest.get();
+        let shown = suggest.is_some_and(|s| s.is_shown());
+        if command == sel!(moveDown:) || command == sel!(moveUp:) {
+            if !shown {
+                let text = field.currentEditor().map_or_else(|| field.stringValue(), |e| e.string()).to_string();
+                let store = self.app().store();
+                // Untouched (empty, or the page's own address): recent searches.
+                let shown = || self.web().map_or_else(|| self.url(), |w| self.shown_url(&w));
+                let untouched = text.trim().is_empty() || (!is_home_search(field) && text == shown());
+                if !store.flag("address_suggestions") {
+                    return Some(false);
+                } else if untouched {
+                    self.show_suggestions(store.recent_searches(8), field);
+                } else {
+                    self.suggest_for(&text, field);
+                }
+            }
+            let step = if command == sel!(moveDown:) { 1 } else { -1 };
+            return Some(self.ivars().suggest.get().is_some_and(|s| s.step(step)));
+        }
+        if command == sel!(cancelOperation:) {
+            self.hide_suggestions();
+            return Some(shown);
+        }
+        if command == sel!(insertNewline:)
+            && let Some(item) = suggest.and_then(|s| s.chosen())
+        {
+            self.open_suggestion(&item);
+            return Some(true);
+        }
+        None
     }
 
     fn hide_suggestions(&self) {
@@ -1777,8 +1816,24 @@ impl Tab {
             return "SUGGEST error no editor".into();
         };
         editor.setString(&NSString::from_str(text));
-        self.suggest_for(text);
+        if let Some(bar) = self.ivars().bar.get() {
+            self.suggest_for(text, bar);
+        }
         self.suggest_state()
+    }
+
+    /// Bench: put the cursor in the new tab page's search field (`barkey`
+    /// then presses keys there). False without one.
+    pub fn focus_home_search(&self) -> bool {
+        fn find(view: &NSView) -> Option<Retained<NSTextField>> {
+            view.subviews().iter().find_map(|v| match v.downcast::<NSTextField>() {
+                Ok(f) if is_home_search(&f) => Some(f),
+                Ok(_) => None,
+                Err(v) => find(&v),
+            })
+        }
+        let field = self.ivars().home.borrow().as_deref().and_then(find);
+        field.is_some_and(|f| self.window().makeFirstResponder(Some(&f)))
     }
 
     pub fn bar_press(&self, key: &str) -> String {
@@ -3818,6 +3873,11 @@ fn observed(web: &WKWebView) -> Vec<&'static str> {
         keys.push("_isPlayingAudio");
     }
     keys
+}
+
+/// The new tab page's search field (its action is `homeSearch:`).
+fn is_home_search(control: &NSControl) -> bool {
+    control.action() == Some(sel!(homeSearch:))
 }
 
 fn symbol_image(symbol: &str, label: &str) -> Retained<NSImage> {

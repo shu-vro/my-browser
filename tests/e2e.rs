@@ -2077,10 +2077,29 @@ fn address_bar_suggests_past_searches_and_visited_pages() {
     let line = b.send("barkey enter");
     assert_eq!(line, "SUGGEST ", "the list closes");
     assert!(b.state_until(|s| s.ends_with("title=Rustacean")).ends_with("title=Rustacean"));
+    b.send("key cmd+l");
+    assert_eq!(b.send("barkey down"), "SUGGEST *search:rust book", "the page's address: recent searches");
+    assert_eq!(b.send("barkey esc"), "SUGGEST ");
     // Esc closes the list; turning suggestions off hides them and keeps no searches.
     assert!(b.send("bartype rust").starts_with("SUGGEST search:"));
     assert_eq!(b.send("barkey esc"), "SUGGEST ");
+    // ↓ in an untouched bar (empty, or the page's address) lists recent
+    // searches only; with text typed, what matches it.
+    b.send("bartype ");
+    assert_eq!(b.send("barkey up"), "SUGGEST *search:rust book");
+    b.send("barkey esc");
+    b.send("bartype rustac");
+    b.send("barkey esc");
+    assert_eq!(b.send("barkey down"), format!("SUGGEST *page:{base}/page/Rustacean"));
+    b.send("barkey esc");
+    // The new tab page's search does the same.
+    b.send("key cmd+t");
+    assert!(b.state_until(|s| s.contains("title=New Tab")).contains("title=New Tab"));
+    assert_eq!(b.send("homefocus"), "HOMEFOCUS 1");
+    assert_eq!(b.send("barkey down"), "SUGGEST *search:rust book");
+    assert_eq!(b.send("barkey esc"), "SUGGEST ");
     assert_eq!(b.bridge(&["settings.set", "address_suggestions", "0"]), "true");
+    assert_eq!(b.send("barkey down"), "SUGGEST ", "off: no list");
     assert_eq!(b.send("bartype rust"), "SUGGEST ");
     assert_eq!(b.bridge(&["history.clear"]), "true");
     assert!(b.bridge(&["storage.get"]).contains(r#""searches":0"#), "clearing history clears searches");

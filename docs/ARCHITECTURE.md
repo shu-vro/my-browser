@@ -468,7 +468,12 @@ first; search engines' result pages left out as they repeat a search), at
 most 8. They show in a borderless non-activating `NSPanel` (a child window,
 so typing stays in the bar) with a cell-based table. ↑/↓ choose, Return
 opens the choice (else what was typed), Esc or leaving the bar closes it,
-a click opens a row. Return on text that isn't an address (`is_address`)
+a click opens a row. With the list closed, ↑/↓ open it: the 8 latest
+searches (`Store::recent_searches`, text only) when the bar is untouched
+(empty or the page's address), else the matches for its text
+(`Tab::suggest_keys`). The new tab page's search field works the same way
+(its delegate is the tab; it's told apart by its `homeSearch:` action);
+bench `homefocus` puts the cursor there for `barkey`. Return on text that isn't an address (`is_address`)
 and the new tab page's search save the text, except in private windows or
 with the `address_suggestions` setting off. Nothing is sent to a search
 engine while typing. Clearing history clears searches; Settings → Storage

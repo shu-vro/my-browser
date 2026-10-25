@@ -62,8 +62,9 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   MKV and AVI open in their app).
 - **Suggestions while typing** in the address bar: your past searches and
   pages from your history, from this Mac only (nothing is sent to a search
-  engine as you type). Settings → Storage shows the file they're kept in and
-  clears them; a setting turns them off.
+  engine as you type). ↑/↓ in an untouched address bar or the new tab
+  page's search lists your recent searches (text only). Settings → Storage
+  shows the file they're kept in and clears them; a setting turns them off.
 - **Search engine** and **homepage** settings.
 - **Error page** for failed loads (no certificate bypass).
 - **Zoom** in, out and actual size in Chrome's steps (90%, 110%, 125%…),

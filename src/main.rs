@@ -2343,6 +2343,8 @@ impl App {
             }
             ("bartype", Some(t)) => say!("{}", t.bar_type(arg)),
             ("barkey", Some(t)) => say!("{}", t.bar_press(arg)),
+            // The cursor into the new tab page's search: `HOMEFOCUS <0|1>`.
+            ("homefocus", Some(t)) => say!("HOMEFOCUS {}", t.focus_home_search() as u8),
             ("barblur", Some(t)) => {
                 t.address_bar_key(None);
                 say!("BLURRED");

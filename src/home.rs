@@ -496,6 +496,8 @@ fn search_field(tab: &Tab, mtm: MainThreadMarker) -> Retained<NSView> {
     unsafe {
         field.setTarget(Some(tab));
         field.setAction(Some(sel!(homeSearch:)));
+        // Suggestions and ↑/↓ for recent searches, as in the address bar.
+        field.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(tab)));
     }
     plate.addSubview(&field);
     view(&plate)

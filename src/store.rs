@@ -386,6 +386,16 @@ impl Store {
         let _ = self.db.execute("DELETE FROM searches", []);
     }
 
+    /// The latest searches, newest first: what ↑/↓ show in an untouched
+    /// address bar or new tab search.
+    pub fn recent_searches(&self, limit: usize) -> Vec<Suggestion> {
+        let Ok(mut stmt) = self.db.prepare("SELECT text FROM searches ORDER BY at DESC, text LIMIT ?1") else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0));
+        rows.into_iter().flatten().flatten().map(Suggestion::Search).collect()
+    }
+
     /// What the address bar suggests for `typed`: past searches containing
     /// it (newest first, those starting with it before the rest), then
     /// visited pages whose address or title contains it (most visited
@@ -1041,7 +1051,13 @@ mod tests {
         );
         assert_eq!(s.suggestions("100%", 8), [], "LIKE wildcards are literal");
         assert_eq!(s.suggestions("rust", 2).len(), 2);
+        // Untouched bar, ↑/↓: the latest searches only, no pages.
+        for (text, at) in [("learn rust", 1), ("python", 3), ("rust book", 2)] {
+            s.db.execute("UPDATE searches SET at = ?2 WHERE text = ?1", params![text, at]).unwrap();
+        }
+        assert_eq!(s.recent_searches(2), [Suggestion::Search("python".into()), Suggestion::Search("rust book".into())]);
         s.clear_history();
+        assert!(s.recent_searches(8).is_empty());
         assert_eq!(s.search_count(), 0, "clearing history clears searches");
     }
 
