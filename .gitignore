@@ -1,2 +1,5 @@
 /target
 /experiments
+**/*.p12
+**/*.pem
+**/*.env*
