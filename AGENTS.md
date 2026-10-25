@@ -38,7 +38,7 @@ WebKit's own devtools (a setting); extensions yes. Full vision and rules:
 
 ```sh
 cargo build --release                  # always test release builds
-cargo test --release                   # 161 tests, ~20 s, opens windows (needs GUI session; needs Xcode's swiftc for build.rs)
+cargo test --release                   # 169 tests, ~25 s, opens windows (needs GUI session; needs Xcode's swiftc for build.rs)
 git config core.hooksPath .githooks    # once per clone: fmt, clippy, tests before every commit
 ./target/release/bench --runs 1        # ~2 min quick benchmark (floating window)
 ./target/release/bench --only startup  # ~20 s: idle CPU, wakeups, footprint only
@@ -124,10 +124,15 @@ commands:
 ## Commits
 
 One commit per feature or fix, made when it's done and tested, with the
-code, tests and docs for it together. The subject line is imperative and
-says what changed for the user ("Add find in page (Cmd+F)"). The body says
-why, with the numbers if anything was measured. Commit only when the owner
-has asked for commits in this session.
+code, tests and docs for it together. Messages follow [Conventional
+Commits](https://www.conventionalcommits.org/): `type(scope): subject`, with
+`feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `ci`, `build` or `chore`,
+an optional scope for the area (`tabs`, `downloads`, `settings`…), and an
+imperative subject that says what changed for the user
+(`feat(find): add find in page (Cmd+F)`). The body says why, with the numbers
+if anything was measured. A release is `chore(release): <version>`, bumping
+`package.version`. Commit only when the owner has asked for commits in this
+session.
 
 ## When you finish a session
 
