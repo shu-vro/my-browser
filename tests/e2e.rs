@@ -203,6 +203,10 @@ fn handle(mut s: TcpStream) {
         // The signed test package, served under any file name (as Google serves `<id>_<version>.crx`).
         let crx = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/title.crx")).unwrap();
         ("application/x-chrome-extension", format!("Content-Disposition: attachment; filename=\"{name}\"\r\n"), crx)
+    } else if path == "/tone.mp4" {
+        // 2 s of test pattern with a quiet 440 Hz tone (H.264 + AAC). No byte
+        // ranges here, so pages play it from a blob.
+        ("video/mp4", String::new(), include_bytes!("fixtures/tone.mp4").to_vec())
     } else if let Some(js) = path.strip_prefix("/script/") {
         html(format!("<title>start</title><script>{}</script>", percent_decode(js)))
     } else {
@@ -2205,20 +2209,21 @@ fn screenshots_take_the_whole_page_the_visible_part_or_an_area() {
 fn a_playing_video_goes_picture_in_picture_when_its_tab_is_left() {
     let base = serve();
     let mut b = launch_with(&["--on-top"]);
-    let js = "addEventListener('DOMContentLoaded', () => { document.body.innerHTML = '<video id=v width=320 height=240></video>' }); \
-              function start() { const c = document.createElement('canvas'); c.width = 320; c.height = 240; \
-              const g = c.getContext('2d'); let i = 0; setInterval(() => { g.fillStyle = `hsl(${i++ % 360} 80% 50%)`; g.fillRect(0, 0, 320, 240) }, 40); \
-              const ac = new AudioContext(); const o = ac.createOscillator(); const gain = ac.createGain(); gain.gain.value = 0.001; \
-              const d = ac.createMediaStreamDestination(); o.connect(gain).connect(d); o.start(); \
-              const s = c.captureStream(25); s.addTrack(d.stream.getAudioTracks()[0]); v.srcObject = s; v.play(); return 1 }";
+    // A real file, not a canvas and AudioContext stream: on CI's virtual Macs
+    // such a stream never delivered a frame (readyState stayed 0).
+    let js = "addEventListener('DOMContentLoaded', async () => { document.body.innerHTML = '<video id=v width=320 height=240 loop></video>'; \
+              v.src = URL.createObjectURL(await (await fetch('/tone.mp4')).blob()) }); \
+              function start() { v.play(); return 1 }";
     b.nav(&format!("go {base}/script/{}", encode(js)));
+    let media = "eval JSON.stringify({seen: document.visibilityState, paused: v.paused, ready: v.readyState})";
+    let loaded = b.until("eval v.readyState > 1", |s| s == "EVAL 1");
+    assert_eq!(loaded, "EVAL 1", "the video never loaded: {}", b.send(media));
     // Other tests' floating windows can cover this one, and WebKit doesn't
     // play media in a covered (hidden) page: wait until it's really visible.
     let visible = b.until("eval document.visibilityState", |s| s == "EVAL visible");
     assert_eq!(visible, "EVAL visible", "the window never became visible");
     assert_eq!(b.send("eval start()"), "EVAL 1");
     let flags = b.until("tabflags", |s| s.contains("audio=1"));
-    let media = "eval JSON.stringify({seen: document.visibilityState, paused: v.paused, ready: v.readyState})";
     assert!(flags.contains("audio=1"), "never played: {flags} {}", b.send(media));
     writeln!(b.stdin, "newtab").unwrap();
     b.wait_all(&["TABS", "AUTOPIP 1"]);
