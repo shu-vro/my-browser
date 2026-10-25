@@ -34,12 +34,17 @@ use objc2_web_kit::{
 use crate::App;
 
 /// Height of the toolbar row (buttons + address bar) above the page.
-const TOOLBAR_H: f64 = 32.0;
+const TOOLBAR_H: f64 = 40.0;
+/// Height of toolbar buttons and the address pill, centered in the row.
+const CONTROL_H: f64 = 28.0;
+/// The pill's corner radius.
+const PILL_R: f64 = 8.0;
 /// Height of the find bar under the toolbar, while it's open.
-const FIND_H: f64 = 30.0;
+const FIND_H: f64 = 34.0;
 const BUTTON_W: f64 = 30.0;
-/// WKWebView properties whose changes refresh the toolbar.
-const OBSERVED: [&str; 5] = ["URL", "title", "canGoBack", "canGoForward", "loading"];
+/// WKWebView properties whose changes refresh the toolbar (`estimatedProgress`
+/// only moves the loading line).
+const OBSERVED: [&str; 6] = ["URL", "title", "canGoBack", "canGoForward", "loading", "estimatedProgress"];
 /// Scheme of the browser's own pages (settings, history, downloads, extensions).
 pub const INTERNAL: &str = "mybrowser";
 /// "Check for Updates…": the latest GitHub release, opened as a normal page
@@ -51,6 +56,10 @@ pub struct TabIvars {
     app: OnceCell<Retained<App>>,
     window: OnceCell<Retained<NSWindow>>,
     bar: OnceCell<Retained<NSTextField>>,
+    /// The rounded field around the site button, address, zoom and star.
+    pill: OnceCell<Retained<Fill>>,
+    /// The thin loading line under the toolbar, hidden when not loading.
+    progress: OnceCell<Retained<Fill>>,
     back: OnceCell<Retained<NSButton>>,
     forward: OnceCell<Retained<NSButton>>,
     reload: OnceCell<Retained<NSButton>>,
@@ -746,6 +755,9 @@ define_class!(
             if key == "_isPlayingAudio" {
                 return self.refresh_badges();
             }
+            if key == "estimatedProgress" {
+                return self.refresh_progress();
+            }
             if key == "title" {
                 self.remember_page();
                 let title = self.title();
@@ -1214,10 +1226,14 @@ impl Tab {
             );
             window.setLevel(NSFloatingWindowLevel);
         }
+        // One surface: the title bar shows the window's background, like the
+        // toolbar row under it (and the tab bar between them, when shown).
+        window.setTitlebarAppearsTransparent(true);
         let content = window.contentView().unwrap();
 
-        // Toolbar row: back, forward, reload/stop, home, site button, address bar.
-        let top = h - TOOLBAR_H + 2.0;
+        // Toolbar row: back, forward, reload/stop, home, then the address
+        // pill (site button, address, zoom, star), then extension buttons.
+        let top = h - TOOLBAR_H + (TOOLBAR_H - CONTROL_H) / 2.0;
         let pin_top = NSAutoresizingMaskOptions::ViewMinYMargin;
         let buttons = [
             ("chevron.left", "Back", sel!(goBack:), &self.ivars().back),
@@ -1226,41 +1242,50 @@ impl Tab {
             ("house", "Home", sel!(goHome:), &self.ivars().home_button),
         ];
         for (i, (symbol, label, action, slot)) in buttons.into_iter().enumerate() {
-            let button = unsafe {
-                NSButton::buttonWithImage_target_action(&symbol_image(symbol, label), Some(self), Some(action), mtm)
-            };
-            button.setBordered(false);
-            button.setFrame(NSRect::new(NSPoint::new(4.0 + i as f64 * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
+            let button = tool_button(symbol, label, Some(action), self, 14.0, mtm);
+            button.setFrame(NSRect::new(
+                NSPoint::new(8.0 + i as f64 * (BUTTON_W + 2.0), top),
+                NSSize::new(BUTTON_W, CONTROL_H),
+            ));
             button.setAutoresizingMask(pin_top);
             content.addSubview(&button);
             let _ = slot.set(button);
         }
-        let site = unsafe {
-            NSButton::buttonWithImage_target_action(
-                &symbol_image("info.circle", "Site settings"),
-                Some(self),
-                Some(sel!(showSiteMenu:)),
-                mtm,
-            )
+        // The pill: a quiet fill (a dark one marks a private window, as in
+        // Safari), with the site button inside at its left.
+        let pill_x = 8.0 + 4.0 * (BUTTON_W + 2.0) + 6.0;
+        let fill = if self.is_private() {
+            objc2_app_kit::NSColor::colorWithSRGBRed_green_blue_alpha(0.20, 0.19, 0.30, 1.0)
+        } else {
+            objc2_app_kit::NSColor::quaternarySystemFillColor()
         };
-        site.setBordered(false);
-        site.setFrame(NSRect::new(NSPoint::new(4.0 + 4.0 * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
-        site.setAutoresizingMask(pin_top);
+        let pill = Fill::new(
+            NSRect::new(NSPoint::new(pill_x, top), NSSize::new(w - pill_x - 8.0, CONTROL_H)),
+            fill,
+            PILL_R,
+            mtm,
+        );
+        pill.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | pin_top);
+        if self.is_private() {
+            // Light text and icons on the dark pill, whatever the theme.
+            objc2_app_kit::NSAppearanceCustomization::setAppearance(
+                &**pill,
+                objc2_app_kit::NSAppearance::appearanceNamed(unsafe { objc2_app_kit::NSAppearanceNameDarkAqua })
+                    .as_deref(),
+            );
+        }
+        content.addSubview(&pill);
+        let site = tool_button("info.circle", "Site settings", Some(sel!(showSiteMenu:)), self, 12.0, mtm);
+        site.setFrame(NSRect::new(NSPoint::new(3.0, 2.0), NSSize::new(26.0, CONTROL_H - 4.0)));
         site.setToolTip(Some(&NSString::from_str("Site settings: protections and permissions")));
-        content.addSubview(&site);
+        site.setContentTintColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+        pill.addSubview(&site);
         let _ = self.ivars().site_button.set(site);
         self.ivars().shown_site_symbol.set("info.circle");
-        let bar_x = 8.0 + 5.0 * BUTTON_W;
-        let bar = NSTextField::textFieldWithString(&NSString::from_str(""), mtm);
-        bar.setFrame(NSRect::new(NSPoint::new(bar_x, top + 3.0), NSSize::new(w - bar_x - 8.0, 22.0)));
-        bar.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | pin_top);
+        let bar = AddressField::field(mtm);
+        let line = bar.cell().map_or(17.0, |c| c.cellSize().height);
+        bar.setFrame(NSRect::new(NSPoint::new(30.0, (CONTROL_H - line) / 2.0), NSSize::new(0.0, line)));
         if self.is_private() {
-            // A dark address bar marks a private window, as in Safari.
-            bar.setDrawsBackground(true);
-            bar.setBackgroundColor(Some(&objc2_app_kit::NSColor::colorWithSRGBRed_green_blue_alpha(
-                0.17, 0.17, 0.22, 1.0,
-            )));
-            bar.setTextColor(Some(&objc2_app_kit::NSColor::whiteColor()));
             bar.setPlaceholderString(Some(&NSString::from_str("Private: search or enter address")));
         } else if let Some(profile) = self.app().profile_name() {
             // Which profile this window is (Settings → Profiles).
@@ -1271,20 +1296,28 @@ impl Tab {
         // No action: Return is handled in `control:textView:doCommandBySelector:`.
         // An action also fires when editing ends, so clicking away reloaded the page.
         unsafe { bar.setDelegate(Some(ProtocolObject::from_ref(self))) };
-        content.addSubview(&bar);
+        bar.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+        pill.addSubview(&bar);
         let _ = self.ivars().bar.set(bar);
-        let star = unsafe {
-            NSButton::buttonWithImage_target_action(
-                &symbol_image("star", "Bookmark this page"),
-                Some(self),
-                Some(sel!(toggleBookmark:)),
-                mtm,
-            )
-        };
-        star.setBordered(false);
-        star.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin | pin_top);
-        content.addSubview(&star);
+        let star = tool_button("star", "Bookmark this page", Some(sel!(toggleBookmark:)), self, 12.0, mtm);
+        star.setContentTintColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
+        star.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
+        pill.addSubview(&star);
         let _ = self.ivars().star.set(star);
+        let _ = self.ivars().pill.set(pill);
+        // A hairline between the toolbar and the page, and over it the
+        // loading line (`refresh_progress`): plain layer colors, nothing
+        // drawn, nothing animated.
+        let edge = |height: f64, color: Retained<objc2_app_kit::NSColor>| {
+            let f = Fill::new(NSRect::new(NSPoint::new(0.0, h - TOOLBAR_H), NSSize::new(w, height)), color, 0.0, mtm);
+            f.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | pin_top);
+            content.addSubview(&f);
+            f
+        };
+        edge(1.0, objc2_app_kit::NSColor::separatorColor());
+        let progress = edge(2.0, objc2_app_kit::NSColor::controlAccentColor());
+        progress.setHidden(true);
+        let _ = self.ivars().progress.set(progress);
         let _ = self.ivars().window.set(window);
         self.set_extension_buttons(&self.app().extension_buttons(self));
     }
@@ -1458,7 +1491,7 @@ impl Tab {
         );
 
         let field = NSSearchField::new(mtm);
-        field.setFrame(NSRect::new(NSPoint::new(8.0, 4.0), NSSize::new(260.0, 22.0)));
+        field.setFrame(NSRect::new(NSPoint::new(8.0, (FIND_H - 22.0) / 2.0), NSSize::new(260.0, 22.0)));
         field.setPlaceholderString(Some(&NSString::from_str("Find on page")));
         unsafe {
             field.setTarget(Some(self));
@@ -1469,19 +1502,17 @@ impl Tab {
 
         let buttons = [
             ("chevron.up", "Previous match", sel!(findPreviousButton:), 274.0),
-            ("chevron.down", "Next match", sel!(findNextButton:), 300.0),
+            ("chevron.down", "Next match", sel!(findNextButton:), 302.0),
         ];
         for (symbol, label, action, x) in buttons {
-            let b = unsafe {
-                NSButton::buttonWithImage_target_action(&symbol_image(symbol, label), Some(self), Some(action), mtm)
-            };
-            b.setBordered(false);
-            b.setFrame(NSRect::new(NSPoint::new(x, 3.0), NSSize::new(26.0, 24.0)));
+            let b = tool_button(symbol, label, Some(action), self, 12.0, mtm);
+            b.setToolTip(Some(&NSString::from_str(label)));
+            b.setFrame(NSRect::new(NSPoint::new(x, (FIND_H - 24.0) / 2.0), NSSize::new(26.0, 24.0)));
             row.addSubview(&b);
         }
 
         let status = NSTextField::labelWithString(&NSString::from_str(""), mtm);
-        status.setFrame(NSRect::new(NSPoint::new(334.0, 7.0), NSSize::new(200.0, 16.0)));
+        status.setFrame(NSRect::new(NSPoint::new(336.0, (FIND_H - 16.0) / 2.0), NSSize::new(200.0, 16.0)));
         status.setTextColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
         row.addSubview(&status);
 
@@ -1493,9 +1524,18 @@ impl Tab {
                 mtm,
             )
         };
-        done.setFrame(NSRect::new(NSPoint::new(width - 76.0, 2.0), NSSize::new(68.0, 26.0)));
+        done.setFrame(NSRect::new(NSPoint::new(width - 76.0, (FIND_H - 26.0) / 2.0), NSSize::new(68.0, 26.0)));
         done.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
         row.addSubview(&done);
+        // A hairline between the find bar and the page, like the toolbar's.
+        let edge = Fill::new(
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, 1.0)),
+            objc2_app_kit::NSColor::separatorColor(),
+            0.0,
+            mtm,
+        );
+        edge.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+        row.addSubview(&edge);
 
         let _ = self.ivars().find_field.set(field);
         let _ = self.ivars().find_status.set(status);
@@ -2975,6 +3015,7 @@ impl Tab {
                 if loading { ("xmark", "Stop", sel!(stop:)) } else { ("arrow.clockwise", "Reload", sel!(reload:)) };
             reload.setImage(Some(&symbol_image(symbol, label)));
             unsafe { reload.setAction(Some(action)) };
+            self.refresh_progress();
         }
         let url = match &web {
             Some(w) => self.shown_url(w),
@@ -3036,6 +3077,33 @@ impl Tab {
             url
         };
         window.setTitle(&NSString::from_str(&shown));
+    }
+
+    /// The loading line: as wide as WebKit's `estimatedProgress`, shown only
+    /// while the page loads. Moved by KVO, never by a timer.
+    fn refresh_progress(&self) {
+        let Some(line) = self.ivars().progress.get() else { return };
+        let progress = self.web().filter(|w| unsafe { w.isLoading() }).map(|w| unsafe { w.estimatedProgress() });
+        match progress {
+            Some(p) if p < 1.0 => {
+                let mut frame = line.frame();
+                frame.size.width = self.window().contentView().unwrap().frame().size.width * p.max(0.1);
+                line.setFrame(frame);
+                line.setHidden(false);
+            }
+            _ => line.setHidden(true),
+        }
+    }
+
+    /// `PROGRESS shown=<0|1> width=<percent of the window>`, read from the line.
+    pub fn progress_state(&self) -> String {
+        let Some(line) = self.ivars().progress.get() else { return "PROGRESS shown=0 width=0".into() };
+        let width = self.window().contentView().unwrap().frame().size.width;
+        format!(
+            "PROGRESS shown={} width={}",
+            !line.isHidden() as u8,
+            (line.frame().size.width / width * 100.0).round() as i32
+        )
     }
 
     /// The address to show: what the user asked for while it loads, otherwise
@@ -3241,38 +3309,41 @@ impl Tab {
     pub fn set_extension_buttons(&self, items: &[crate::extensions::ExtButton]) {
         let mtm = self.mtm();
         let iv = self.ivars();
-        let (Some(window), Some(bar)) = (iv.window.get(), iv.bar.get()) else { return };
+        let (Some(window), Some(bar), Some(pill)) = (iv.window.get(), iv.bar.get(), iv.pill.get()) else { return };
         let content = window.contentView().unwrap();
         for (b, _) in iv.ext_buttons.borrow_mut().drain(..) {
             b.removeFromSuperview();
         }
         let width = content.frame().size.width;
-        let top = content.frame().size.height - TOOLBAR_H + 2.0;
+        let top = content.frame().size.height - TOOLBAR_H + (TOOLBAR_H - CONTROL_H) / 2.0;
         let n = items.len() as f64;
+        // Buttons right of the pill, `k` places from the right edge.
+        let at_right = |b: &NSButton, k: f64| {
+            b.setFrame(NSRect::new(NSPoint::new(width - 8.0 - k * BUTTON_W, top), NSSize::new(BUTTON_W, CONTROL_H)));
+            b.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
+            );
+            content.addSubview(b);
+        };
         // Left of the extension buttons: blocked requests waiting for an answer.
         let waiting = self.app().net_waiting();
         if let Some(old) = iv.net_button.take() {
             old.removeFromSuperview();
         }
         if waiting {
-            let b = unsafe {
-                NSButton::buttonWithImage_target_action(
-                    &symbol_image("network.badge.shield.half.filled", "Blocked network requests"),
-                    Some(self),
-                    Some(sel!(showNetworkSettings:)),
-                    mtm,
-                )
-            };
-            b.setBordered(false);
+            let b = tool_button(
+                "network.badge.shield.half.filled",
+                "Blocked network requests",
+                Some(sel!(showNetworkSettings:)),
+                self,
+                14.0,
+                mtm,
+            );
             b.setContentTintColor(Some(&objc2_app_kit::NSColor::systemOrangeColor()));
             b.setToolTip(Some(&NSString::from_str(
                 "An extension's network request was blocked. Click to allow or deny it.",
             )));
-            b.setFrame(NSRect::new(NSPoint::new(width - 4.0 - (n + 1.0) * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
-            b.setAutoresizingMask(
-                NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
-            );
-            content.addSubview(&b);
+            at_right(&b, n + 1.0);
             iv.net_button.replace(Some(b));
         }
         // Left of those: "Add to my-browser" on a Chrome Web Store page.
@@ -3281,31 +3352,31 @@ impl Tab {
         }
         let store = !self.is_private() && crate::extensions::webstore_id(&self.url()).is_some();
         if store {
-            let b = unsafe {
-                NSButton::buttonWithImage_target_action(
-                    &symbol_image("puzzlepiece.extension.fill", "Add to my-browser"),
-                    Some(self),
-                    Some(sel!(addFromWebStore:)),
-                    mtm,
-                )
-            };
-            b.setBordered(false);
+            let b = tool_button(
+                "puzzlepiece.extension.fill",
+                "Add to my-browser",
+                Some(sel!(addFromWebStore:)),
+                self,
+                14.0,
+                mtm,
+            );
             b.setContentTintColor(Some(&objc2_app_kit::NSColor::controlAccentColor()));
             b.setToolTip(Some(&NSString::from_str("Add this extension to my-browser")));
-            let x = width - 4.0 - (n + waiting as u8 as f64 + 1.0) * BUTTON_W;
-            b.setFrame(NSRect::new(NSPoint::new(x, top), NSSize::new(BUTTON_W, 28.0)));
-            b.setAutoresizingMask(
-                NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
-            );
-            content.addSubview(&b);
+            at_right(&b, n + waiting as u8 as f64 + 1.0);
             iv.store_button.replace(Some(b));
         }
-        // The star sits between the address bar and those buttons.
-        let right = n + waiting as u8 as f64 + store as u8 as f64 + 1.0;
+        // The pill ends where those buttons begin.
+        let right = n + waiting as u8 as f64 + store as u8 as f64;
+        let mut frame = pill.frame();
+        frame.size.width = width - frame.origin.x - 8.0 - right * BUTTON_W - if right > 0.0 { 4.0 } else { 0.0 };
+        pill.setFrame(frame);
+        let pill_w = frame.size.width;
+        // Inside the pill, at its right: the star, and left of it the page's
+        // zoom while it isn't the default.
+        let star_x = pill_w - 29.0;
         if let Some(star) = iv.star.get() {
-            star.setFrame(NSRect::new(NSPoint::new(width - 4.0 - right * BUTTON_W, top), NSSize::new(BUTTON_W, 28.0)));
+            star.setFrame(NSRect::new(NSPoint::new(star_x, 2.0), NSSize::new(26.0, CONTROL_H - 4.0)));
         }
-        // Left of the star: the page's zoom, while it isn't the default.
         if let Some(old) = iv.zoom_button.take() {
             old.removeFromSuperview();
         }
@@ -3318,37 +3389,31 @@ impl Tab {
                     mtm,
                 )
             };
-            b.setBordered(false);
+            b.setBezelStyle(objc2_app_kit::NSBezelStyle::Toolbar);
+            b.setShowsBorderOnlyWhileMouseInside(true);
             b.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(11.0)));
             b.setContentTintColor(Some(&objc2_app_kit::NSColor::secondaryLabelColor()));
             b.setToolTip(Some(&NSString::from_str("Page zoom for this site. Click to go back to the default (⌘0).")));
-            b.setFrame(NSRect::new(NSPoint::new(width - 4.0 - right * BUTTON_W - 48.0, top), NSSize::new(46.0, 28.0)));
-            b.setAutoresizingMask(
-                NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
-            );
-            content.addSubview(&b);
+            b.setFrame(NSRect::new(NSPoint::new(star_x - 46.0, 2.0), NSSize::new(46.0, CONTROL_H - 4.0)));
+            b.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
+            pill.addSubview(&b);
             iv.zoom_button.replace(Some(b));
-            48.0
+            46.0
         } else {
             0.0
         };
         let mut frame = bar.frame();
-        frame.size.width = width - frame.origin.x - 8.0 - right * BUTTON_W - zoom_w;
+        frame.size.width = star_x - frame.origin.x - zoom_w - 2.0;
         bar.setFrame(frame);
         for (i, item) in items.iter().enumerate() {
             let b = unsafe {
                 NSButton::buttonWithImage_target_action(&item.image, Some(self), Some(sel!(extensionClicked:)), mtm)
             };
-            b.setBordered(false);
+            b.setBezelStyle(objc2_app_kit::NSBezelStyle::Toolbar);
+            b.setShowsBorderOnlyWhileMouseInside(true);
             b.setImageScaling(objc2_app_kit::NSImageScaling::ScaleProportionallyDown);
             b.setTag(item.id as isize);
-            b.setFrame(NSRect::new(
-                NSPoint::new(width - 4.0 - (n - i as f64) * BUTTON_W, top),
-                NSSize::new(BUTTON_W, 28.0),
-            ));
-            b.setAutoresizingMask(
-                NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
-            );
+            at_right(&b, n - i as f64);
             // Dimmed while it's off on this site.
             b.setAlphaValue(if item.on { 1.0 } else { 0.45 });
             let hint = if item.always {
@@ -3388,7 +3453,6 @@ impl Tab {
             unsafe { manage.setTarget(Some(self)) };
             menu.addItem(&manage);
             unsafe { b.setMenu(Some(&menu)) };
-            content.addSubview(&b);
             iv.ext_buttons.borrow_mut().push((b, item.on));
         }
     }
@@ -3761,6 +3825,125 @@ fn symbol_image(symbol: &str, label: &str) -> Retained<NSImage> {
         Some(&NSString::from_str(label)),
     )
     .expect("SF Symbol missing")
+}
+
+/// A toolbar button: an SF Symbol at `points`, medium weight, flat until
+/// the pointer is over it (AppKit's own hover and press look, no tracking
+/// code of ours).
+fn tool_button(
+    symbol: &str,
+    label: &str,
+    action: Option<objc2::runtime::Sel>,
+    target: &AnyObject,
+    points: f64,
+    mtm: MainThreadMarker,
+) -> Retained<NSButton> {
+    let b = unsafe { NSButton::buttonWithImage_target_action(&symbol_image(symbol, label), Some(target), action, mtm) };
+    b.setBezelStyle(objc2_app_kit::NSBezelStyle::Toolbar);
+    b.setShowsBorderOnlyWhileMouseInside(true);
+    let config = objc2_app_kit::NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
+        points,
+        unsafe { objc2_app_kit::NSFontWeightMedium },
+        objc2_app_kit::NSImageSymbolScale::Medium,
+    );
+    b.setSymbolConfiguration(Some(&config));
+    b
+}
+
+pub struct FillIvars {
+    color: Retained<objc2_app_kit::NSColor>,
+    radius: f64,
+}
+
+define_class!(
+    /// A (rounded) rectangle of one color, drawn by its layer: no backing
+    /// store, and the color follows light and dark (`updateLayer` runs
+    /// again when the appearance changes).
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = FillIvars]
+    pub struct Fill;
+
+    impl Fill {
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            let Some(layer) = self.layer() else { return };
+            // Resolved against the view's appearance, current while updating.
+            let cg = self.ivars().color.CGColor();
+            unsafe {
+                let _: () = msg_send![&*layer, setBackgroundColor: &*cg];
+                let _: () = msg_send![&*layer, setCornerRadius: self.ivars().radius];
+                let _: () = msg_send![&*layer, setCornerCurve: &*NSString::from_str("continuous")];
+            }
+        }
+    }
+);
+
+impl Fill {
+    fn new(
+        frame: NSRect,
+        color: Retained<objc2_app_kit::NSColor>,
+        radius: f64,
+        mtm: MainThreadMarker,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(FillIvars { color, radius });
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+        this.setWantsLayer(true);
+        this
+    }
+}
+
+define_class!(
+    /// The address field: borderless inside its pill, with the focus ring
+    /// drawn around the whole pill instead of the text.
+    #[unsafe(super(NSTextField))]
+    #[thread_kind = MainThreadOnly]
+    struct AddressField;
+
+    impl AddressField {
+        #[unsafe(method(focusRingMaskBounds))]
+        fn focus_ring_mask_bounds(&self) -> NSRect {
+            self.pill_rect()
+        }
+
+        #[unsafe(method(drawFocusRingMask))]
+        fn draw_focus_ring_mask(&self) {
+            let r = self.pill_rect();
+            objc2_app_kit::NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(r, PILL_R, PILL_R).fill();
+        }
+    }
+);
+
+impl AddressField {
+    fn field(mtm: MainThreadMarker) -> Retained<NSTextField> {
+        let this: Retained<Self> = unsafe { msg_send![Self::alloc(mtm), initWithFrame: NSRect::ZERO] };
+        let field = Retained::into_super(this);
+        field.setBezeled(false);
+        field.setBordered(false);
+        field.setDrawsBackground(false);
+        field.setEditable(true);
+        field.setSelectable(true);
+        field.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(13.0)));
+        field.setUsesSingleLineMode(true);
+        if let Some(cell) = field.cell() {
+            cell.setScrollable(true);
+            cell.setWraps(false);
+        }
+        field
+    }
+
+    /// The pill (the field's superview), in the field's coordinates.
+    fn pill_rect(&self) -> NSRect {
+        match unsafe { self.superview() } {
+            Some(pill) => self.convertRect_fromView(pill.bounds(), Some(&pill)),
+            None => self.bounds(),
+        }
+    }
 }
 
 #[cfg(test)]

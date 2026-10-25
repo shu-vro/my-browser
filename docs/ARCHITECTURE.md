@@ -397,10 +397,41 @@ keep showing its own fake login under that address (tested:
 `address_bar_cannot_be_spoofed_by_a_slow_navigation`). A new popup with
 nothing committed shows an empty bar, since its opener can still write into it.
 
-The site button left of the bar shows a lock (HTTPS), a warning (plain HTTP)
+The site button at the left of the bar shows a lock (HTTPS), a warning (plain HTTP)
 or an info icon, and opens the site menu: Shields, local network access,
 JavaScript, camera, microphone, location and multiple downloads for the site, and a link
 to all site settings.
+
+**Toolbar look** (`Tab::build_window`, `set_extension_buttons`): the title
+bar is transparent (`titlebarAppearsTransparent`), so title bar, tab bar and
+the toolbar row read as one surface. The row (40 pt) holds back, forward,
+reload/stop and home, then the **pill**, then extension, blocked-request and
+Web Store buttons at the right; plain frames and autoresizing, no Auto
+Layout. Buttons are `NSBezelStyle::Toolbar` with
+`showsBorderOnlyWhileMouseInside`: flat, with AppKit's own hover and press
+look (its tracking areas, nothing of ours). SF Symbols get a
+`symbolConfiguration` (14 pt medium in the row, 12 pt in the pill and find
+bar); images stay plain, so `STAR` still reads the accessibility label.
+The pill is a `Fill` view (a layer's background color and continuous
+corner radius set in `updateLayer`: no backing store, redrawn by AppKit on
+light/dark changes) with `quaternarySystemFillColor`, or a dark purple in
+private windows (which also set the pill's appearance to dark so text and
+icons are light in either theme). Inside it: the site button, the address
+field (`AddressField`, a borderless `NSTextField` subclass whose
+`focusRingMaskBounds`/`drawFocusRingMask` put the system focus ring around
+the whole pill), the zoom button and the star; `set_extension_buttons`
+sizes the pill and the field. The suggestion list opens under the pill, as
+wide as it. A 1 pt `separatorColor` hairline sits under the row (and under
+the find bar).
+
+**Loading line**: a 2 pt `Fill` in `controlAccentColor` over that hairline,
+`estimatedProgress` wide (at least 10%), shown only while `isLoading`.
+`estimatedProgress` is one of the observed keys (`OBSERVED`, removed with
+the others before a web view is dropped); its changes only move the line
+(`Tab::refresh_progress`), not the whole toolbar. No timer and no
+animation: idle, it's a hidden view. Bench: `progress` → `PROGRESS
+shown=<0|1> width=<percent>`; checked in
+`address_bar_cannot_be_spoofed_by_a_slow_navigation`.
 
 **Suggestions** (`src/suggest.rs`): while the bar is edited
 (`controlTextDidChange:`), `Store::suggestions` matches the text against past
@@ -1281,6 +1312,7 @@ active tab.
 | `netbutton` | `NETBUTTON <0\|1>`: the blocked-requests button is showing |
 | `openurl <url>` | a `TABS` line: opens it like a link from another app (`application:openURLs:`) |
 | `star` | `STAR on=<0\|1>`: the star shows the page as bookmarked |
+| `progress` | `PROGRESS shown=<0\|1> width=<percent>`: the loading line under the toolbar |
 | `storebutton` / `storeclick` | `STOREBUTTON <0\|1>` (the Web Store button is showing) / presses it, `STORECLICK`; the install reports `INSTALLED <json>` |
 | `reader` | `READER on\|off\|none`: toggles reader mode (`none`: no article found) |
 | `fillpassword <i>` | `FILLPASSWORD`: picks account `i` from the last `PASSWORDS <user>\|…` menu (the bench prints that instead of showing it) |

@@ -2443,6 +2443,7 @@ impl App {
                 say!("STORECLICK");
             }
             ("star", Some(t)) => say!("{}", t.star_state()),
+            ("progress", Some(t)) => say!("{}", t.progress_state()),
             ("tabflags", Some(t)) => say!("{}", t.flags_state()),
             // The site data sheet: `SITEDATA <name>:<kinds>|…`.
             ("sitedata", Some(t)) => t.show_site_data(),

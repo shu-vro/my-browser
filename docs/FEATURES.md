@@ -39,7 +39,10 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   with two fingers on the trackpad to go back or forward.
 - **Address bar**: type an address or a search; shows the committed address
   (can't be spoofed by a slow navigation); Return on the current address only
-  focuses the page.
+  focuses the page. A rounded field with the site button, zoom and star
+  inside it, in a toolbar that shares one surface with the title bar; flat
+  buttons that highlight on hover; a thin **loading line** under the toolbar
+  while a page loads.
 - **Local addresses** (`localhost:3000`, `192.168.1.1`, `printer.local`)
   open over plain HTTP as typed, never upgraded to HTTPS first; the site
   button shows a computer and says the page is local.
@@ -168,7 +171,7 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 
 - Camera, microphone, screen sharing, location and multiple downloads are
   asked per site and remembered.
-- Change them for one site from the button left of the address bar, or all
+- Change them for one site from the button at the left of the address bar, or all
   of them in Settings → Site settings.
 - Web notifications are always denied.
 

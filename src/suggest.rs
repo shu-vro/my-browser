@@ -106,7 +106,11 @@ impl Suggest {
         let (panel, table) = self.build();
         table.reloadData();
         unsafe { table.deselectAll(None) };
-        let below = window.convertRectToScreen(bar.convertRect_toView(bar.bounds(), None));
+        // Under the whole address pill (the bar's superview), as wide as it.
+        let below = match unsafe { bar.superview() } {
+            Some(pill) => window.convertRectToScreen(pill.convertRect_toView(pill.bounds(), None)),
+            None => window.convertRectToScreen(bar.convertRect_toView(bar.bounds(), None)),
+        };
         let height = rows as f64 * ROW_H + 6.0;
         panel.setFrame_display(
             NSRect::new(

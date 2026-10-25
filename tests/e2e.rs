@@ -1578,6 +1578,10 @@ fn address_bar_cannot_be_spoofed_by_a_slow_navigation() {
     writeln!(b.stdin, "go {other}/slow/typed").unwrap();
     std::thread::sleep(Duration::from_millis(300));
     assert!(b.send("state").contains(&format!("url={other}/slow/typed")));
+    // The loading line shows while it loads, and goes when it's done.
+    assert!(b.send("progress").starts_with("PROGRESS shown=1 "), "the loading line shows");
+    b.state_until(|s| s.ends_with("title=typed"));
+    assert!(b.until("progress", |s| s.starts_with("PROGRESS shown=0 ")).starts_with("PROGRESS shown=0 "));
 }
 
 #[test]
