@@ -153,6 +153,8 @@
   <section id="tabs">
     <h1>Tabs</h1>
     <p class="note">What each tab costs right now, as macOS counts it (the "Memory" column in Activity Monitor). A sleeping tab uses no memory and reloads when you click it. Tabs from the same site may share one page process.</p>
+    <div class="row"><div><div>Keep background tabs awake</div><div class="hint">At most this many; the ones you used least recently sleep, and links you open in the background beyond it load when you click them. 0 = no limit. Two in Low Power Mode. A background tab using 256 MB or more sleeps after three minutes, unless it's the last one you left (or tabs never sleep, in General). Pinned tabs, tabs playing sound or on a call, and tabs on screen in another window stay awake.</div></div>
+      <span><input type="number" min="0" max="100" data-setting="awake_tabs_max" style="width:70px"> tabs</span></div>
     <div class="row"><div><div id="tabs-total">Browser</div><div class="hint" id="tabs-parts"></div></div>
       <button id="tabs-sleep-all">Sleep background tabs</button></div>
     <ul class="list" id="tabs-list"></ul>

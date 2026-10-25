@@ -827,7 +827,7 @@ define_class!(
         #[unsafe(method(openLinkInNewTab:))]
         fn open_link_in_new_tab(&self, sender: &NSMenuItem) {
             if let Some(url) = represented_url(sender) {
-                self.app().open_tab_in(self.is_private(), &url, true);
+                self.app().open_link_in_background(self.is_private(), &url);
             }
         }
 
@@ -1035,6 +1035,28 @@ impl Tab {
 
     pub fn heavy(&self) -> Option<String> {
         self.ivars().heavy.borrow().clone()
+    }
+
+    /// The page process's memory at the last heavy-tab check, if it was
+    /// sampled in the background.
+    pub fn sampled_footprint(&self) -> Option<u64> {
+        self.ivars().sampled.get().map(|(u, _)| u.footprint)
+    }
+
+    /// The sleep policies leave this tab awake (memory pressure doesn't):
+    /// pinned, playing sound (music, a video in picture in picture), on a
+    /// call (camera or microphone), showing a sheet, or on screen in another
+    /// window.
+    pub fn keep_awake(&self) -> bool {
+        use objc2_web_kit::WKMediaCaptureState as Capture;
+        let capturing = self.web().is_some_and(|w| unsafe {
+            w.cameraCaptureState() != Capture::None || w.microphoneCaptureState() != Capture::None
+        });
+        self.is_pinned()
+            || self.playing_audio()
+            || capturing
+            || self.ivars().alert.borrow().is_some()
+            || self.window().occlusionState().contains(objc2_app_kit::NSWindowOcclusionState::Visible)
     }
 
     pub fn is_pinned(&self) -> bool {
@@ -2927,7 +2949,7 @@ impl Tab {
             return WKNavigationActionPolicy::Download;
         }
         if link && unsafe { action.modifierFlags() }.contains(NSEventModifierFlags::Command) {
-            self.app().open_tab_in(self.is_private(), &url, true);
+            self.app().open_link_in_background(self.is_private(), &url);
             return WKNavigationActionPolicy::Cancel;
         }
         // Leaving the site turns off extensions that were clicked on for it,

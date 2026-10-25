@@ -9,13 +9,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Settings the settings page may change, with their defaults.
-pub const SETTINGS: [(&str, &str); 25] = [
+pub const SETTINGS: [(&str, &str); 26] = [
     // duckduckgo | brave | startpage | google
     ("search", "duckduckgo"),
     // Page for new tabs; empty means a blank page.
     ("homepage", ""),
     // Background tabs unload their page after this many minutes (0 = never).
     ("tab_sleep_minutes", "5"),
+    // At most this many background tabs stay awake (0 = no limit); the least
+    // recently used beyond it sleep, and links opened in the background beyond
+    // it open asleep.
+    ("awake_tabs_max", "4"),
     // Reopen last session's tabs (asleep, so they cost almost nothing) at launch.
     ("restore_session", "1"),
     // Built-in tracker blocker (Disconnect list).
@@ -262,6 +266,7 @@ impl Store {
             "search" => ["duckduckgo", "brave", "startpage", "google"].contains(&value),
             "homepage" => value.is_empty() || value.starts_with("https://") || value.starts_with("http://"),
             "tab_sleep_minutes" => value.parse::<u32>().is_ok_and(|m| m <= 24 * 60),
+            "awake_tabs_max" => value.parse::<u32>().is_ok_and(|n| n <= 100),
             "theme" => ["system", "light", "dark"].contains(&value),
             "restore_session"
             | "block_trackers"
@@ -876,6 +881,10 @@ mod tests {
         assert!(s.set_setting("search", "evil").is_err());
         assert!(s.set_setting("tab_sleep_minutes", "-1").is_err());
         assert!(s.set_setting("tab_sleep_minutes", "30").is_ok());
+        assert_eq!(s.setting("awake_tabs_max"), "4");
+        assert!(s.set_setting("awake_tabs_max", "0").is_ok(), "no limit");
+        assert!(s.set_setting("awake_tabs_max", "101").is_err());
+        assert!(s.set_setting("awake_tabs_max", "two").is_err());
         assert!(s.set_setting("homepage", "javascript:alert(1)").is_err());
         assert!(s.set_setting("profile_id", "x").is_err(), "internal keys are not settable");
         assert!(s.set_setting("downloads_dir", "/definitely/not/here").is_err());

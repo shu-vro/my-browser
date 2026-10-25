@@ -1913,21 +1913,56 @@ impl App {
         }
     }
 
-    /// Put background tabs to sleep: idle ones after the configured minutes
-    /// (one minute in Low Power Mode or when the Mac runs hot), all of them
-    /// when `all` (memory pressure).
+    /// Put background tabs to sleep (`to_sleep`): idle ones after the
+    /// configured minutes, heavy ones sooner, the least recently used beyond
+    /// `awake_tabs_max`; all of them when `all` (memory pressure).
     fn sleep_background_tabs(&self, all: bool) {
-        let minutes: u64 = self.store().setting("tab_sleep_minutes").parse().unwrap_or(0);
-        let idle = sleep_after(minutes, saving_power());
-        for tab in self.ivars().tabs.borrow().clone() {
-            let since = tab.ivars().last_active.get().map_or(Duration::ZERO, |t| t.elapsed());
-            // Pinned tabs and tabs playing sound (music, a video in picture in
-            // picture) stay awake, unless macOS runs out of memory.
-            let idle = idle.filter(|_| !tab.is_pinned() && !tab.playing_audio());
-            if !self.is_active(&tab) && (all || idle.is_some_and(|idle| since >= idle)) {
-                tab.sleep();
-            }
+        if all {
+            self.all_tabs().iter().for_each(|t| t.sleep());
+            return;
         }
+        let saving = saving_power();
+        let minutes: u64 = self.store().setting("tab_sleep_minutes").parse().unwrap_or(0);
+        let tabs = self.warm_tabs();
+        let seen: Vec<(Duration, Option<u64>)> = tabs
+            .iter()
+            .map(|t| (t.ivars().last_active.get().map_or(Duration::ZERO, |at| at.elapsed()), t.sampled_footprint()))
+            .collect();
+        for i in to_sleep(&seen, sleep_after(minutes, saving), self.awake_cap(saving)) {
+            tabs[i].sleep();
+        }
+    }
+
+    /// Awake background tabs the sleep policies may unload (not
+    /// `Tab::keep_awake`), most recently used first.
+    fn warm_tabs(&self) -> Vec<Retained<Tab>> {
+        let mut tabs: Vec<_> = self
+            .all_tabs()
+            .into_iter()
+            .filter(|t| t.web().is_some() && !self.is_active(t) && !t.keep_awake())
+            .collect();
+        tabs.sort_by_key(|t| std::cmp::Reverse(t.ivars().last_active.get()));
+        tabs
+    }
+
+    /// How many background tabs stay awake (0 = no limit); two at most in
+    /// Low Power Mode or when the Mac runs hot.
+    fn awake_cap(&self, saving: bool) -> usize {
+        let cap: usize = self.store().setting("awake_tabs_max").parse().unwrap_or(0);
+        if saving && cap > 0 { cap.min(2) } else { cap }
+    }
+
+    /// A link opened in a background tab (⌘-click, Open Link in New Tab).
+    /// With the awake background tabs already at `awake_tabs_max`, it opens
+    /// asleep and loads when clicked: opening many links at once costs no
+    /// page process each. (Popups and extension tabs always load: their
+    /// opener needs the page.)
+    pub fn open_link_in_background(&self, private: bool, url: &str) -> Retained<Tab> {
+        let cap = self.awake_cap(saving_power());
+        let lazy = cap > 0 && self.warm_tabs().len() >= cap;
+        let tab = Tab::create(self, None, url, "", lazy, private);
+        self.add_tab(&tab, self.neighbor(private).as_deref(), false);
+        tab
     }
 
     /// "Pin Tab" / "Unpin Tab", "Mute Tab" / "Unmute Tab", for the active tab.
@@ -2371,6 +2406,14 @@ impl App {
             ("sleep", _) => {
                 self.sleep_background_tabs(true);
                 say!("{}", self.tabs_line());
+            }
+            // The timer's sleep policies now (without memory pressure):
+            // `ASLEEP <0|1> …` per tab, in tab-bar order.
+            ("tick", _) => {
+                self.sleep_background_tabs(false);
+                let flags: Vec<String> =
+                    self.ordered_tabs().iter().map(|t| (t.is_asleep() as u8).to_string()).collect();
+                say!("ASLEEP {}", flags.join(" "));
             }
             // Run the heavy-tab check now: `HEAVY <0|1> …` per tab, in tab-bar order.
             ("heavy", _) => {
@@ -2868,6 +2911,25 @@ fn sleep_after(minutes: u64, saving: bool) -> Option<Duration> {
     (minutes > 0).then(|| Duration::from_secs(minutes * 60))
 }
 
+/// A background tab whose page process uses this much sleeps after
+/// `HEAVY_AFTER` in the background, unless it's the last one you left.
+const HEAVY_MB: u64 = 256;
+const HEAVY_AFTER: Duration = Duration::from_secs(180);
+
+/// Which of the sleepable background tabs to put to sleep, given (time in
+/// the background, sampled footprint) for each, most recently used first:
+/// those idle for `idle`, those beyond the first `cap` (0 = no limit), and
+/// heavy ones after `HEAVY_AFTER` except the first. With `idle` off
+/// ("never"), only the cap applies.
+fn to_sleep(tabs: &[(Duration, Option<u64>)], idle: Option<Duration>, cap: usize) -> Vec<usize> {
+    let heavy = |&(since, footprint): &(Duration, Option<u64>)| {
+        idle.is_some() && since >= HEAVY_AFTER && footprint.is_some_and(|f| f >= HEAVY_MB << 20)
+    };
+    (0..tabs.len())
+        .filter(|&i| idle.is_some_and(|idle| tabs[i].0 >= idle) || (cap > 0 && i >= cap) || (i > 0 && heavy(&tabs[i])))
+        .collect()
+}
+
 /// Turn address-bar input into a URL: keep explicit schemes, add https:// to
 /// things that look like hosts, send everything else to the search engine.
 fn normalize(input: &str, search: &str) -> String {
@@ -3317,6 +3379,24 @@ mod tests {
         assert_eq!(sleep_after(5, true), Some(Duration::from_secs(60)));
         assert_eq!(sleep_after(0, true), None, "never means never");
         assert_eq!(sleep_after(0, false), None);
+    }
+
+    #[test]
+    fn background_tabs_beyond_the_cap_or_heavy_sleep() {
+        let min = |m: u64| Duration::from_secs(m * 60);
+        let mb = |m: u64| Some(m << 20);
+        let idle = Some(min(5));
+        // Most recently used first: the cap keeps the first two.
+        let tabs = [(min(0), None), (min(1), None), (min(2), None), (min(4), None)];
+        assert_eq!(to_sleep(&tabs, idle, 2), vec![2, 3]);
+        assert_eq!(to_sleep(&tabs, idle, 0), Vec::<usize>::new(), "0 = no limit");
+        assert_eq!(to_sleep(&[(min(0), None), (min(6), None)], idle, 4), vec![1], "idle too long");
+        // Heavy: 256 MB or more, three minutes in the background, not the last one left.
+        let heavy = [(min(3), mb(900)), (min(3), mb(256)), (min(4), mb(100))];
+        assert_eq!(to_sleep(&heavy, idle, 0), vec![1]);
+        assert_eq!(to_sleep(&[(min(0), None), (min(2), mb(900))], idle, 0), Vec::<usize>::new(), "not yet");
+        assert_eq!(to_sleep(&heavy, None, 0), Vec::<usize>::new(), "never sleep: only the cap applies");
+        assert_eq!(to_sleep(&heavy, None, 2), vec![2]);
     }
 
     #[test]

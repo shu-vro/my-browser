@@ -170,15 +170,43 @@ A tab has two states:
   the web view. The order matters: KVO on a freed object crashes.
 - `Tab::wake` creates a new web view from `App::make_config()` and loads the
   saved URL. Waking happens whenever a tab becomes the active tab.
-- The active tab never sleeps, and the idle timer leaves pinned tabs and
-  tabs playing sound alone (memory pressure still sleeps them).
+- The active tab never sleeps. The policies below leave alone tabs for
+  which `Tab::keep_awake` holds: pinned, playing sound (which covers
+  picture in picture), camera or microphone in use (`cameraCaptureState`,
+  `microphoneCaptureState`), a sheet open (`Tab.alert`), or on screen in
+  another window (occlusion state). Memory pressure still sleeps them.
 - `App::sleep_background_tabs` runs from one 30-second timer (with 10 s
-  tolerance, so macOS can batch the wakeup). It puts to sleep tabs idle longer
-  than the `tab_sleep_minutes` setting, or every background tab if
-  `kern.memorystatus_vm_pressure_level` reports pressure. In Low Power Mode,
-  or when `NSProcessInfo.thermalState` is serious or critical, the timeout
-  drops to one minute (`sleep_after`; 0 still means never). The same tick
-  saves the session.
+  tolerance, so macOS can batch the wakeup). Under
+  `kern.memorystatus_vm_pressure_level` pressure it sleeps every background
+  tab. Otherwise `to_sleep` (a pure function, unit-tested) picks from the
+  awake, sleepable background tabs, most recently used first
+  (`App::warm_tabs`, by `last_active`):
+  - idle longer than `tab_sleep_minutes` (default 5);
+  - beyond the first `awake_tabs_max` (default 4, 0 = no limit): the warm
+    set;
+  - heavy: the footprint sampled by the previous tick's `check_heavy` is
+    `HEAVY_MB` (256 MB) or more and the tab has been in the background
+    `HEAVY_AFTER` (3 min), unless it's the first in the list. Off when
+    `tab_sleep_minutes` is 0 ("never" means only the cap and pressure).
+
+  In Low Power Mode, or when `NSProcessInfo.thermalState` is serious or
+  critical, the timeout drops to one minute (`sleep_after`; 0 still means
+  never) and the cap to two (`App::awake_cap`). The same tick saves the
+  session. Nothing else runs on a timer: switching tabs doesn't trim the
+  warm set at once, the next tick does (≤ 40 s).
+- **Background links open asleep when the warm set is full**
+  (`App::open_link_in_background`, for ⌘-click and Open Link in New Tab):
+  with `awake_tabs_max` awake sleepable background tabs already, the new tab
+  is created asleep (no web view, like a restored tab) and loads when
+  clicked. Opening 20 links costs 4 page processes, not 20. Popups
+  (`open_tab_with_config`, opener and `window.open` need the live web view)
+  and extension tabs (`tabs.create` callers may script the tab right away)
+  always load. Waking reloads the URL; mute is a tab ivar and the zoom is per
+  site, so both come back (`tabs_mute_and_show_when_they_play_sound`,
+  `zoom_is_remembered_per_site`).
+- Bench: `tick` runs the sleep policies now (without pressure) and prints
+  `ASLEEP <0|1> …` in tab-bar order. Test:
+  `background_tabs_beyond_the_cap_sleep_and_links_beyond_it_open_asleep`.
 
 **What tabs cost** (`src/usage.rs`): each awake tab's page process id
 comes from the private `_webProcessIdentifier` (`TUNE web_process_id`), and
@@ -1226,6 +1254,7 @@ active tab.
 | `switch <i>` | `LOADED …` if the tab was asleep (it wakes), else a `TABS` line |
 | `tabs` / `sleep` | `TABS count=<n> active=<i> asleep=<k> windows=<w>` (`sleep` first puts background tabs to sleep) |
 | `heavy` | `HEAVY <0|1> …`: runs the heavy-tab check now, one flag per tab in tab-bar order |
+| `tick` | `ASLEEP <0|1> …`: runs the timer's sleep policies now (idle, cap, heavy; no pressure), one flag per tab in tab-bar order |
 | `state` | `STATE back=<0\|1> forward=<0\|1> url=<address bar> title=<window title>`, read from the real UI |
 | `visible` | `VISIBLE <0\|1>` |
 | `key <combo>` | `KEY ok\|none` (whether a menu item took it) |

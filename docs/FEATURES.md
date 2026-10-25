@@ -10,6 +10,13 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Sleeping tabs**: a background tab unloads its page and process after a
   few minutes (setting, default 5), or at once when macOS runs low on memory.
   Clicking it reloads it.
+- **Awake tab cap**: at most 4 background tabs stay awake (Settings → Tabs;
+  0 = no limit, two in Low Power Mode); the least recently used beyond it
+  sleep, and links opened in the background beyond it (⌘-click, Open Link
+  in New Tab) load when you click them. A background tab using 256 MB or
+  more sleeps after three minutes unless it's the last one you left.
+  Pinned tabs, tabs playing sound or on a call (camera, microphone), with a
+  dialog open, or on screen in another window stay awake.
 - **Settings → Tabs**: memory and CPU of every tab's page process, the
   browser itself and WebKit's network and graphics helpers, refreshed every
   2 s; sleep or close any tab from there.

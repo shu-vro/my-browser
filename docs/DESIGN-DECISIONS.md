@@ -52,6 +52,25 @@ reload when you return to the tab. That's why the active tab never sleeps,
 and background tabs only sleep after `tab_sleep_minutes` (default 5) or under
 memory pressure.
 
+### Why cap awake background tabs at 4, and open background links asleep beyond it?
+
+The idle timer alone lets memory climb for five minutes: ten tabs opened in
+a row are ten page processes (roughly 40–150 MB each) until they time out.
+`awake_tabs_max` keeps the four most recently used background tabs awake
+(Zephium's default too) and sleeps the rest on the existing 30 s tick, so
+the ⌃Tab working set of a handful of tabs switches instantly while the long
+tail costs nothing. Two in Low Power Mode, like Zephium's memory-saving mode.
+The trim waits for the tick rather than running on every tab switch: the
+spike from one woken tab is one process, and switching stays free of extra
+work. Links opened in the background beyond the cap are created asleep
+instead of loading and being put to sleep a tick later: the spike never
+happens and no load is wasted. The cost is that the 5th and later
+background links load when clicked. Popups and extension tabs always load
+(their opener or extension needs the page). A heavy tab (256 MB, Zephium's
+number) sleeps after three minutes instead of five, except the last one you
+left, which you're most likely to go back to; the footprint comes from the
+heavy-tab check's existing sample, so there's no new sampler or timer.
+
 ### Why restore sessions asleep?
 
 A restored tab you never click shouldn't cost a page process. With 50 tabs

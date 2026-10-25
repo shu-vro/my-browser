@@ -746,6 +746,34 @@ fn background_tabs_sleep_and_wake() {
 }
 
 #[test]
+fn background_tabs_beyond_the_cap_sleep_and_links_beyond_it_open_asleep() {
+    let base = serve();
+    let mut b = launch();
+    assert_eq!(b.bridge(&["settings.set", "awake_tabs_max", "2"]), "true");
+    assert!(b.send("bridge settings.set\tawake_tabs_max\t-1").starts_with("BRIDGE err"));
+    assert!(b.send("bridge settings.set\tawake_tabs_max\tmany").starts_with("BRIDGE err"));
+    b.nav(&format!("go {base}/page/t0"));
+    b.send("menu Window/Pin Tab");
+    for t in ["t1", "t2", "t3", "t4"] {
+        b.nav(&format!("newtab {base}/page/{t}"));
+    }
+    b.send("switch 4");
+    assert!(b.state_until(|s| s.ends_with("title=t4")).ends_with("title=t4"));
+    // Background tabs by last use: t3, t2, t1 (t0 is pinned). Two stay awake.
+    assert_eq!(b.send("tick"), "ASLEEP 0 1 0 0 0", "the least recently used one sleeps, not the pinned one");
+    // The warm set is full: a link opened in a new tab opens asleep, next to this one.
+    b.send(&format!("linkmenu {base}/page/lazy 1"));
+    assert_eq!(b.send("tick"), "ASLEEP 0 1 0 0 0 1");
+    assert!(b.tabs().starts_with("TABS count=6 active=4"), "stays on the tab it was opened from");
+    // It loads when clicked.
+    assert!(b.nav("switch 5").ends_with("/page/lazy"));
+    // No limit: links load in the background.
+    assert_eq!(b.bridge(&["settings.set", "awake_tabs_max", "0"]), "true");
+    b.send(&format!("linkmenu {base}/page/eager 1"));
+    assert_eq!(b.send("tick"), "ASLEEP 0 1 0 0 0 0 0");
+}
+
+#[test]
 fn tabs_list_their_memory_and_busy_background_tabs_are_marked_heavy() {
     let base = serve();
     let mut b = launch();
