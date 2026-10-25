@@ -243,8 +243,9 @@
 
   <section id="permissions">
     <h1>Site settings</h1>
-    <p class="note">What each site may use. Sites ask the first time; your answer is remembered here. Change it below or from the site button left of the address bar.</p>
-    <ul class="list" id="perm-list"></ul>
+    <p class="note">Sites ask the first time; your answer is remembered here, under what it's for. Only sites with an answer are listed; remove one (×) and it asks again. You can also change them from the site button left of the address bar.</p>
+    <input type="search" id="perm-q" placeholder="Filter sites">
+    <div id="perm-list"></div>
   </section>
 
   <section id="bookmarks">
@@ -516,37 +517,46 @@ $("tabs-sleep-all").onclick = async () => {
 loaders.tabs = () => { tabsPrev = null; loadTabs(); };
 
 // ---- site permissions
-const PERM_LABELS = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", downloads: "Multiple downloads", passwords: "Save passwords" };
+// One group per permission, listing only the sites with an answer (the store
+// keeps nothing for "ask"); × forgets that answer.
+const PERMS = [
+  ["camera", "Camera", { allow: "Allowed", deny: "Blocked" }],
+  ["microphone", "Microphone", { allow: "Allowed", deny: "Blocked" }],
+  ["screen", "Screen sharing", { allow: "Allowed", deny: "Blocked" }],
+  ["location", "Location", { allow: "Allowed", deny: "Blocked" }],
+  ["downloads", "Multiple downloads", { allow: "Allowed", deny: "Blocked" }],
+  ["passwords", "Save passwords", { allow: "Offer to save", deny: "Never save" }],
+  ["javascript", "JavaScript", { allow: "Allowed", deny: "Blocked" }],
+  ["local_network", "Local network", { allow: "Allowed", deny: "Blocked" }],
+  ["shields", "Protections", { on: "On", off: "Off" }],
+];
 async function loadPermissions() {
   const rows = await call("perm.list");
-  const sites = {};
-  for (const r of rows) (sites[r.site] = sites[r.site] || {})[r.kind] = r.value;
+  const q = $("perm-q").value.trim().toLowerCase();
   const list = $("perm-list"); list.replaceChildren();
-  if (!rows.length) list.append(el("li", "empty", "No site has asked for anything yet."));
-  for (const [site, perms] of Object.entries(sites)) {
-    const li = el("li"); li.style.flexWrap = "wrap";
-    const main = el("div", "main"); main.append(el("div", "title", site)); li.append(main);
-    const set = (kind, value) => call("perm.set", site, kind, value).then(() => { toast("Saved"); loadPermissions(); }, fail);
-    for (const [kind, label] of Object.entries(PERM_LABELS)) {
-      const sel = el("select"); sel.title = label;
-      for (const [v, t] of [["ask", label + ": ask"], ["allow", label + ": allow"], ["deny", label + ": block"]]) {
-        const o = el("option", null, t); o.value = v; sel.append(o);
-      }
-      sel.value = perms[kind] || "ask"; sel.onchange = () => set(kind, sel.value);
-      li.append(sel);
+  if (!rows.length) { const ul = el("ul", "list"); ul.append(el("li", "empty", "No site has asked for anything yet.")); list.append(ul); return; }
+  const set = (site, kind, value) => call("perm.set", site, kind, value).then(() => { toast("Saved"); loadPermissions(); }, fail);
+  for (const [kind, label, values] of PERMS) {
+    const sites = rows.filter(r => r.kind === kind && r.site.includes(q));
+    if (!sites.length) continue;
+    list.append(el("h2", null, `${label} · ${sites.length}`));
+    const ul = el("ul", "list hist");
+    for (const { site, value } of sites) {
+      const li = el("li");
+      const tile = el("span", "tile", (site[0] || "?").toUpperCase()); tile.style.background = tileColor(site);
+      const main = el("div", "main"); main.append(el("div", "title", site));
+      const sel = el("select"); sel.title = `${label} on ${site}`;
+      for (const [v, t] of Object.entries(values)) { const o = el("option", null, t); o.value = v; sel.append(o); }
+      sel.value = value; sel.onchange = () => set(site, kind, sel.value);
+      const x = el("button", "x", "×"); x.title = "Forget: the site asks again"; x.setAttribute("aria-label", `Forget ${label} for ${site}`);
+      x.onclick = () => set(site, kind, "ask");
+      li.append(tile, main, sel, x); ul.append(li);
     }
-    const toggle = (kind, on, label, set_on, set_off) => {
-      const l = el("label", "sub"); const c = el("input"); c.type = "checkbox"; c.checked = on;
-      c.onchange = () => set(kind, c.checked ? set_on : set_off); l.append(c, " " + label); li.append(l);
-    };
-    toggle("shields", perms.shields !== "off", "Protections", "ask", "off");
-    toggle("local_network", perms.local_network === "allow", "Local network", "allow", "ask");
-    toggle("javascript", perms.javascript !== "deny", "JavaScript", "ask", "deny");
-    const forget = el("button", null, "Reset"); forget.title = "Forget everything about this site";
-    forget.onclick = () => call("perm.forget", site).then(loadPermissions, fail); li.append(forget);
-    list.append(li);
+    list.append(ul);
   }
+  if (!list.childElementCount) { const ul = el("ul", "list"); ul.append(el("li", "empty", "No site matches.")); list.append(ul); }
 }
+$("perm-q").oninput = loadPermissions;
 loaders.permissions = loadPermissions;
 
 // ---- history

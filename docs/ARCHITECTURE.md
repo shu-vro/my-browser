@@ -509,9 +509,10 @@ the default.
 A prompt is a sheet "<site> wants to …" with Allow / Don't Allow and a
 "Remember for this site" checkbox (on; absent in private windows). Web
 notifications are denied, by choice: WebKit's default without a provider,
-and the owner doesn't want them. Settings → Site
-settings lists every site with a saved choice and changes or forgets it
-(`perm.list`, `perm.set`, `perm.forget`). Changing Shields or local network
+and the owner doesn't want them. Settings → Site settings groups the saved
+choices by kind (one card per permission, only the sites with a row, a
+filter by site); each row changes its value or forgets it with ×
+(`perm.list`, `perm.set` with `ask`; `perm.forget` drops a whole site). Changing Shields or local network
 access recompiles the affected rule list (the tracker list takes ~1 s, the
 local list is tiny) and reloads the tab.
 

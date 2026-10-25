@@ -177,7 +177,8 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - Camera, microphone, screen sharing, location and multiple downloads are
   asked per site and remembered.
 - Change them for one site from the button at the left of the address bar, or all
-  of them in Settings → Site settings.
+  of them in Settings → Site settings, grouped by permission (Camera,
+  Microphone…), listing only the sites with an answer, with a filter.
 - Web notifications are always denied.
 
 ## Media
