@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// Settings the settings page may change, with their defaults.
-pub const SETTINGS: [(&str, &str); 26] = [
+pub const SETTINGS: [(&str, &str); 27] = [
     // duckduckgo | brave | startpage | google
     ("search", "duckduckgo"),
     // Page for new tabs; empty means a blank page.
@@ -40,6 +40,7 @@ pub const SETTINGS: [(&str, &str); 26] = [
     ("home_art", "1"),
     ("home_search", "1"),
     ("home_top_sites", "1"),
+    ("home_stats", "1"),
     // Address bar suggestions from past searches and history; searches are saved only while on.
     ("address_suggestions", "1"),
     // Touch ID (or the Mac's password) before a saved password is filled or copied.
@@ -277,6 +278,7 @@ impl Store {
             | "home_art"
             | "home_search"
             | "home_top_sites"
+            | "home_stats"
             | "address_suggestions"
             | "password_auth"
             | "devtools"

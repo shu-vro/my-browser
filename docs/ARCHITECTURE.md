@@ -602,14 +602,41 @@ Bridge ops: `settings.get/set`, `keywords.list/set/delete`, `filters.get/set`,
 ### New tab page (`src/home.rs`)
 
 New tabs and windows show a native AppKit page unless the user set a
-homepage: no web view, so no page process. It has the banner (each █ of the
-art drawn as a rectangle in a custom view, over an offset echo; colors adapt
-to light and dark), a search field (address-bar rules) and up to 8 most
-visited sites (`Store::top_sites`: scheme + host, counted over the latest 5000
-visits), each switchable in Settings. Plain frames and autoresizing, no Auto
-Layout or stack views, and no second font: measured, those cost ~2 MB more in
-the app process. Loading a page removes the view. Site buttons carry their
-address in the tooltip.
+homepage: no web view, so no page process. One centered column (plain frames
+and autoresizing, kept centered as the window resizes) on a background view
+whose layer is a radial `CAGradientLayer` (`makeBackingLayer`; colors set in
+`viewDidMoveToWindow` and `viewDidChangeEffectiveAppearance`, because a
+gradient layer never gets `updateLayer`). Top to bottom, each switchable in
+Settings:
+
+- the banner (`home_art`): each █ of the art a rectangle in a custom view,
+  its ink sweeping blue to violet, over a faint offset echo;
+- a search pill (`home_search`, address-bar rules): a borderless field and a
+  magnifier symbol on a `Plate`, a view whose fill, border and corner are
+  layer properties set in `updateLayer`;
+- up to 8 most visited sites (`home_top_sites`; `Store::top_sites`: scheme +
+  host, counted over the latest 5000 visits) as `Tile`s: a button whose
+  square is a gradient sublayer, with two small labels for the initial and
+  the host. The color comes from the site's name (`site_name`: the label
+  before the public suffix, `en.wikipedia.org` → wikipedia) hashed into 10
+  hand-picked hues. No favicons: fetching them would be a network request of
+  the browser's own. The address is the tooltip, which `homeSite:` opens;
+- a status line (`home_stats`): open tabs and how many are asleep, the
+  footprint of the app plus its WebKit helpers (`usage`, read once when the
+  page is built, ~1-2 ms), and the shields settings. One attributed label on
+  a plate; nothing is sampled afterwards;
+- Customize, which opens Settings → General.
+
+Memory is in layer bitmaps (footprint's "CoreAnimation" category), one per
+view that draws, about 35 KB plus its area. So only the banner and the
+labels draw; everything else is layer properties, composited without a
+bitmap. Measured with `footprint` on the app (8 sites, light): the old page
+2640 KB, this one 3248 KB (+0.6 MB: the tiles' 16 labels vs the old 8
+buttons, and the status line ~130 KB). Tried and dropped: tiles drawn in
+`drawRect` (+4.7 MB), one two-line label per tile (more than two small
+ones), three cards of three labels each (~420 KB vs the line's ~130 KB).
+No Auto Layout, stack views or second font: measured, those cost ~2 MB more.
+Loading a page removes the view.
 
 ### Theme
 

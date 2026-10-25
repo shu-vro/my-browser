@@ -404,6 +404,13 @@ frames, a text field and drawing the banner as rectangles brought it to
 ~+0.5 MB. Drawing the banner layer at 1x was tried and was worse (+1 MB: a
 layer of its own costs more than it saves).
 
+The redesign (glow background, search pill, letter tiles, status line) kept
+to that budget by drawing as little as possible: every view that draws gets
+a layer bitmap of about 35 KB plus its area, while layer colors, gradients
+and corners cost nothing in the app. The page went from 2640 to 3248 KB of
+CoreAnimation memory with 8 sites; tiles drawn in `drawRect` would have
+been +4.7 MB (ARCHITECTURE.md, "New tab page").
+
 ### Why are extensions off until clicked, and started only on first click?
 
 The owner asked for it, and it's the safest default: an extension with

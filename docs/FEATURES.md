@@ -210,7 +210,9 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   then (with more) All Bookmarks with folders; Settings → Bookmarks (⌥⌘B).
 - **History** (⌘Y): searchable, delete one entry or clear all. The History
   menu shows the 10 latest pages.
-- **Most visited sites** on the new tab page.
+- **Most visited sites** on the new tab page, as letter tiles: the site's
+  initial on a color picked from its name (no icons are fetched), the
+  address in the tooltip.
 - **Downloads** (⌥⌘L): to ~/Downloads or a chosen folder, unique and
   sanitized file names, a list with progress, open, **Quick Look** (or Space),
   show in Finder, cancel and remove.
@@ -248,8 +250,10 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **One look for the built-in pages**: folder pages, error pages and reader
   mode share the settings page's colors and type (system font, accent
   color, light and dark), with nothing loaded from the network.
-- **New tab page**: banner, search bar and most visited sites, each can be
-  turned off.
+- **New tab page**: a soft glow background that follows light and dark, the
+  banner, a search pill, most visited sites as letter tiles and a status
+  line (open and asleep tabs, the browser's memory, whether shields are on,
+  read on the Mac when the page opens), each can be turned off.
 - **Site data per site**: the site menu's Site Data… lists what the site and
   its subdomains keep (cookies, local storage, databases, cache) with a
   delete button each; Settings → Site data lists and deletes every site's.

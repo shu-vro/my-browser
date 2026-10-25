@@ -1330,6 +1330,7 @@ impl Tab {
             art: store.flag("home_art"),
             search: store.flag("home_search"),
             sites: if store.flag("home_top_sites") { store.top_sites(8) } else { Vec::new() },
+            stats: if store.flag("home_stats") { crate::home::stats(app, self) } else { Vec::new() },
         };
         self.ivars().home_state.replace(format!(
             "HOME shown=1 art={} search={} sites={}",
