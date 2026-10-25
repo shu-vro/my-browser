@@ -54,6 +54,40 @@ jobs:
         run: rustup update stable && rustup default stable && rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Test
         run: cargo test --release
+      - name: Signing certificate
+        # The owner's Apple Development certificate (secrets SIGNING_P12, a
+        # base64 .p12 export, and SIGNING_P12_PASSWORD) gives every release the
+        # same code identity, so saved passwords in the Keychain and privacy
+        # permissions keep trusting the browser after an update. Without the
+        # secrets the build is signed ad hoc, as before.
+        env:
+          P12: ${{ secrets.SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.SIGNING_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12" ]; then
+            echo "::notice::No signing secrets: the release is signed ad hoc."
+            exit 0
+          fi
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          pw=$(openssl rand -hex 16)
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
+          security import "$RUNNER_TEMP/id.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/id.p12"
+          # The intermediate that issues Apple Development certificates; without
+          # it codesign can't build the chain (errSecInternalComponent).
+          curl -sSfL --max-time 60 -o "$RUNNER_TEMP/wwdr-g3.cer" https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer
+          security import "$RUNNER_TEMP/wwdr-g3.cer" -k "$kc"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          id=$(security find-identity -v -p codesigning "$kc" | grep -oE '[0-9A-F]{40}' | head -1)
+          if [ -z "$id" ]; then
+            echo "::error::SIGNING_P12 holds no valid code-signing identity."
+            exit 1
+          fi
+          echo "SIGN_IDENTITY=$id" >> "$GITHUB_ENV"
       - name: Build
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -72,6 +106,13 @@ jobs:
             cp -RL "target/$t/release/my-browser.dSYM" "dist/my-browser-$VERSION-$t.dSYM"
             ditto -c -k --keepParent "dist/my-browser-$VERSION-$t.dSYM" "dist/my-browser-$VERSION-$t.dSYM.zip"
           done
+          # Fail rather than publish an ad hoc build when signing was set up.
+          if [ -n "${SIGN_IDENTITY:-}" ]; then
+            codesign -dv target/release/my-browser.app 2>&1 | grep -q '^TeamIdentifier=[A-Z0-9]\{10\}$'
+          fi
+      - name: Remove signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

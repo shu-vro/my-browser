@@ -215,9 +215,10 @@ entitlements.
   system resolves again when it connects, so a name with a zero TTL can
   still switch in between.
 - Updates aren't automatic: "Check for Updates…" opens the latest GitHub
-  release in a tab, and the user downloads it. Releases aren't signed with a
-  Developer ID (roadmap 1), so a download is trusted as far as GitHub's HTTPS
-  and the `SHA256SUMS` beside it.
+  release in a tab, and the user downloads it. Releases are signed with the
+  owner's Apple Development certificate, not a notarized Developer ID
+  (roadmap 1), so a download is trusted as far as GitHub's HTTPS and the
+  `SHA256SUMS` beside it.
 - Web notifications aren't supported (denied), by choice.
 - The tracker list is updated by hand (`scripts/update-trackers.py`), not
   automatically. Updating automatically would mean the browser making network
@@ -231,13 +232,14 @@ entitlements.
 What would make the browser harder to attack, most valuable first. Each item
 says what it protects against and what it costs.
 
-1. **Developer ID signing and notarization.** Builds are signed ad hoc today,
-   so the code's identity changes with every build. That means Gatekeeper
-   blocks the first launch, users learn to click "Open Anyway" (which also
-   works for malware posing as an update), macOS asks again for camera and
-   screen access after each update, and Keychain items the browser saved
-   prompt again. A Developer ID (Apple Developer Program, paid) gives a
-   stable identity. Then: sign with `--options runtime --timestamp`, run
+1. **Developer ID signing and notarization.** Releases are signed with the
+   owner's free Apple Development certificate (release workflow, secrets
+   `SIGNING_P12` and `SIGNING_P12_PASSWORD`; ad hoc without them). That gives
+   a stable identity, so saved Keychain items and camera and screen access
+   survive updates. Gatekeeper still blocks the first launch, and users learn
+   to click "Open Anyway" (which also works for malware posing as an
+   update). A Developer ID (Apple Developer Program, paid) fixes that: sign
+   with `--options runtime --timestamp`, run
    `notarytool submit --wait` and `stapler staple` (both scripts support it
    now: `SIGN_IDENTITY`, `NOTARY_PROFILE`) in the release workflow,
    with the certificate in an encrypted GitHub secret behind a protected

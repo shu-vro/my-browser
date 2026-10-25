@@ -62,10 +62,10 @@ so the first import says so and offers to open System Settings:
    with **+** from Applications if it isn't listed).
 2. Quit my-browser (⌘Q) and open it again, then import.
 
-You can turn Full Disk Access off again once you've imported. Because
-releases aren't signed with an Apple Developer ID, macOS treats each new
-version as a different app: after updating, remove my-browser from the list
-(**−**) and add it again if you need to import again.
+You can turn Full Disk Access off again once you've imported. Releases from
+v0.5.14 on are all signed with the same certificate, so macOS keeps this
+permission after an update. With an older version, remove my-browser from
+the list (**−**) and add it again.
 
 ## Update
 
