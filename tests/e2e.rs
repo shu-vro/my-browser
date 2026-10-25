@@ -2163,7 +2163,10 @@ fn search_keywords_open_their_site() {
 fn spelling_is_checked_while_typing() {
     let mut b = launch();
     b.nav("go data:text/html,<textarea>helo wrld</textarea>");
-    assert_eq!(b.send("spell"), "SPELL continuous=1 grammar=1 correct=0");
+    // `correct` is the Mac's own "Correct spelling automatically" (Keyboard
+    // settings), which WebKit follows: off on the owner's Mac, on in CI.
+    let spell = b.send("spell");
+    assert!(spell.starts_with("SPELL continuous=1 grammar=1 correct="), "{spell}");
     assert!(b.send("menu Edit").contains("|Spelling and Grammar|"));
 }
 
