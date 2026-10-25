@@ -2209,12 +2209,14 @@ fn a_playing_video_goes_picture_in_picture_when_its_tab_is_left() {
               const d = ac.createMediaStreamDestination(); o.connect(gain).connect(d); o.start(); \
               const s = c.captureStream(25); s.addTrack(d.stream.getAudioTracks()[0]); v.srcObject = s; v.play(); return 1 }";
     b.nav(&format!("go {base}/script/{}", encode(js)));
+    // Other tests' floating windows can cover this one, and WebKit doesn't
+    // play media in a covered (hidden) page: wait until it's really visible.
+    let visible = b.until("eval document.visibilityState", |s| s == "EVAL visible");
+    assert_eq!(visible, "EVAL visible", "the window never became visible");
     assert_eq!(b.send("eval start()"), "EVAL 1");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !b.send("tabflags").contains("audio=1") {
-        assert!(Instant::now() < deadline, "never played");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let flags = b.until("tabflags", |s| s.contains("audio=1"));
+    let media = "eval JSON.stringify({seen: document.visibilityState, paused: v.paused, ready: v.readyState})";
+    assert!(flags.contains("audio=1"), "never played: {flags} {}", b.send(media));
     writeln!(b.stdin, "newtab").unwrap();
     b.wait_all(&["TABS", "AUTOPIP 1"]);
     b.send("switch 0");
