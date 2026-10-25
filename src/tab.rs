@@ -1086,7 +1086,15 @@ impl Tab {
             || self.playing_audio()
             || capturing
             || self.ivars().alert.borrow().is_some()
-            || self.window().occlusionState().contains(objc2_app_kit::NSWindowOcclusionState::Visible)
+            || self.on_screen()
+    }
+
+    /// Showing in a window of its own (a tab group's other tabs are ordered
+    /// out). The occlusion state alone lags: macOS updates it a moment after
+    /// a tab is switched away from, so a just-left tab could read as visible.
+    fn on_screen(&self) -> bool {
+        let w = self.window();
+        w.isVisible() && w.occlusionState().contains(objc2_app_kit::NSWindowOcclusionState::Visible)
     }
 
     pub fn is_pinned(&self) -> bool {
