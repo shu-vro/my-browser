@@ -14,7 +14,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool};
 use objc2::{MainThreadMarker, MainThreadOnly, msg_send, sel};
 use objc2_app_kit::{NSAutoresizingMaskOptions, NSButton, NSTextField, NSView};
-use objc2_foundation::{NSArray, NSData, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSArray, NSData, NSEdgeInsets, NSPoint, NSRect, NSSize, NSString};
 
 use crate::tab::Tab;
 
@@ -265,9 +265,14 @@ impl Viewer {
                 Command::ZoomIn => msg_send![v, zoomIn: none],
                 Command::FitWidth => msg_send![v, setAutoScales: Bool::YES],
                 Command::FitPage => {
-                    let fit: f64 = msg_send![v, scaleFactorForSizeToFit];
+                    let fit = self.fit_page_scale();
+                    let page: Option<Retained<AnyObject>> = msg_send![v, currentPage];
                     let _: () = msg_send![v, setAutoScales: Bool::NO];
                     let _: () = msg_send![v, setScaleFactor: fit];
+                    // The whole page in view, from its top.
+                    if let Some(page) = page {
+                        let _: () = msg_send![v, goToPage: &*page];
+                    }
                 }
                 Command::Rotate => {
                     for i in 0..self.pages() {
@@ -288,6 +293,37 @@ impl Viewer {
             }
         }
         self.update();
+    }
+
+    /// The scale that shows the whole current page (both, side by side) in
+    /// the view. PDFKit's `scaleFactorForSizeToFit` fits the width in the
+    /// continuous modes, so Fit page did the same as Fit width.
+    fn fit_page_scale(&self) -> f64 {
+        let v = &*self.view;
+        let page: Option<Retained<AnyObject>> = unsafe { msg_send![v, currentPage] };
+        let Some(page) = page else { return 1.0 };
+        // kPDFDisplayBoxCropBox, turned with the page.
+        let bounds: NSRect = unsafe { msg_send![&*page, boundsForBox: 1isize] };
+        let rotation: isize = unsafe { msg_send![&*page, rotation] };
+        let (mut w, h) = match rotation % 180 {
+            0 => (bounds.size.width, bounds.size.height),
+            _ => (bounds.size.height, bounds.size.width),
+        };
+        let mode: isize = unsafe { msg_send![v, displayMode] };
+        if mode == 3 {
+            w *= 2.0;
+        }
+        let room: NSRect = unsafe { msg_send![v, bounds] };
+        let m: NSEdgeInsets = unsafe { msg_send![v, pageBreakMargins] };
+        let fit_w = (room.size.width - m.left - m.right) / w.max(1.0);
+        let fit_h = (room.size.height - m.top - m.bottom) / h.max(1.0);
+        fit_w.min(fit_h)
+    }
+
+    /// `PDFZOOM fits=<0|1>`: whether the whole current page is in view.
+    pub fn zoom_state(&self) -> String {
+        let scale: f64 = unsafe { msg_send![&*self.view, scaleFactor] };
+        format!("PDFZOOM fits={}", (scale <= self.fit_page_scale() + 0.001) as u8)
     }
 
     /// The selected text gets a yellow highlight (kept by Save).

@@ -2490,6 +2490,11 @@ impl Tab {
         self.ivars().pdf.borrow().as_ref().map_or("PDF none".into(), |p| p.state())
     }
 
+    /// `PDFZOOM fits=<0|1>`, or `PDFZOOM none`.
+    pub fn pdf_zoom_state(&self) -> String {
+        self.ivars().pdf.borrow().as_ref().map_or("PDFZOOM none".into(), |p| p.zoom_state())
+    }
+
     /// A PDF toolbar button (bench: `pdfcmd <i>`).
     pub fn pdf_command(&self, i: usize) {
         use crate::pdf::Command;

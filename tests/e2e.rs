@@ -2671,6 +2671,11 @@ fn pdfs_open_in_the_pdf_viewer() {
     b.wait_all(&["LOADED", "PDFVIEW"]);
     assert_eq!(b.send("pdf"), "PDF pages=3 page=1 sidebar=0 twoup=0 rotation=0 highlights=0");
     assert_eq!(b.send("pdfcmd 2"), "PDF pages=3 page=2 sidebar=0 twoup=0 rotation=0 highlights=0", "next page");
+    // Fit page shows the whole page; Fit width (a portrait page in a wide window) doesn't.
+    b.send("pdfcmd 6");
+    assert_eq!(b.send("pdfzoom"), "PDFZOOM fits=1", "fit page");
+    b.send("pdfcmd 5");
+    assert_eq!(b.send("pdfzoom"), "PDFZOOM fits=0", "fit width");
     assert_eq!(b.send("pdfcmd 0"), "PDF pages=3 page=2 sidebar=1 twoup=0 rotation=0 highlights=0", "thumbnails");
     assert_eq!(b.send("pdfcmd 7"), "PDF pages=3 page=2 sidebar=1 twoup=0 rotation=90 highlights=0", "rotate");
     assert_eq!(b.send("pdfcmd 8"), "PDF pages=3 page=2 sidebar=1 twoup=1 rotation=90 highlights=0", "two pages");

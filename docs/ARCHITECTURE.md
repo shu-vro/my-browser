@@ -1070,8 +1070,11 @@ When WebKit has finished loading it, the tab asks for the file it loaded
 covers the page with `pdf::Viewer`: PDFKit's `PDFView` and
 `PDFThumbnailView` (the framework is loaded on the first PDF) under a
 toolbar: thumbnails, previous/next, page number field and count, zoom out/in
-with the percent, fit width (`autoScales`), fit page
-(`scaleFactorForSizeToFit`), rotate (every page +90°), two pages side by
+with the percent, fit width (`autoScales`), fit page (the smaller of the
+view's width and height over the current page's crop box, turned with the
+page, two pages wide side by side, less `pageBreakMargins`; PDFKit's
+`scaleFactorForSizeToFit` fits the width in continuous modes; bench
+`pdfzoom` → `PDFZOOM fits=<0|1>`), rotate (every page +90°), two pages side by
 side (`kPDFDisplayTwoUpContinuous`, as a book), highlight the selection
 (yellow `Highlight` annotations, line by line), read aloud
 (`NSSpeechSynthesizer`, the selection's text ranges or from this page on;

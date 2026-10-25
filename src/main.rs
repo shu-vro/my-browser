@@ -2604,6 +2604,8 @@ impl App {
             // The PDF viewer: `PDF pages= page= sidebar= twoup= rotation= highlights=`,
             // a toolbar button (`pdfcmd <i>`, pdf::BUTTONS), selecting a page's start.
             ("pdf", Some(t)) => say!("{}", t.pdf_state()),
+            // Whether the whole current page is in view: `PDFZOOM fits=<0|1>`.
+            ("pdfzoom", Some(t)) => say!("{}", t.pdf_zoom_state()),
             ("pdfcmd", Some(t)) => {
                 t.pdf_command(arg.parse().unwrap_or(usize::MAX));
                 say!("{}", t.pdf_state());
