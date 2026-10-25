@@ -124,6 +124,8 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
 - **Ad blocking** with EasyList's ad-server and pop-up lists (the network
   part of what Brave and uBlock Origin block): ad scripts never load, and
   click-hijacking pop-ups and pop-unders are stopped.
+- **YouTube ads removed** from videos (pre-roll and mid-roll), on youtube.com
+  and embedded players; goes with tracker blocking and Shields.
 - **Cookie banners hidden** (OneTrust, Cookiebot, Quantcast, Didomi and
   other common consent pop-ups), without consenting to anything; a setting
   in Privacy.

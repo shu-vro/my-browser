@@ -484,6 +484,7 @@ fn engine_and_privacy_settings_are_applied() {
         "trackers",
         "web_inspector",
         "web_process_id",
+        "youtube_ads",
     ];
     want.sort();
     assert_eq!(names, want);

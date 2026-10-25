@@ -218,6 +218,18 @@ Measured (2026-10-17): 4,042 → 53,196 rules; compiling takes 0.70 s → 1.39 s
 scriptlets (Brave's other layers) would need a script in every frame, which
 costs memory per frame; not done.
 
+### Why one scriptlet, for YouTube?
+
+YouTube's ads come from youtube.com in the same JSON as the video
+(`adPlacements`, `playerAds`, `adSlots` in the player response), so no network
+rule can stop them; Brave and uBlock Origin delete those fields with
+`json-prune` scriptlets. `resources/youtube.js` does the same and nothing
+else. Measured (2026-10-25, `dQw4w9WgXcQ`, throwaway profile): with
+`block_trackers` off the pre-roll ad played 2 of 2 loads; on, 0 of 2, though
+YouTube still sent the ad data. On other sites the script returns after one
+hostname test. YouTube changes its player often: if ads come back, check
+which field now carries them (uBlock Origin's `quick-fixes.txt` tracks it).
+
 ### Why is the rule list compressed, and why with libcompression?
 
 The JSON is 12.9 MB, because each Disconnect rule repeats its owner's site
@@ -253,7 +265,7 @@ Each has a counterpart here:
 
 | Brave | Here |
 |---|---|
-| Ad/tracker blocking | Disconnect list plus EasyList's ad-server and pop-up domains in WebKit's content blocker (network rules, not cosmetic hiding or scriptlets) |
+| Ad/tracker blocking | Disconnect list plus EasyList's ad-server and pop-up domains in WebKit's content blocker (network rules, not cosmetic hiding or scriptlets), plus one YouTube scriptlet |
 | HTTPS by default | WebKit's `preferredHTTPSNavigationPolicy`, automatic fallback |
 | Farbling | Safari's Advanced Tracking and Fingerprinting Protection, the same idea in WebKit |
 | Query filtering | Brave's default parameter list, plus WebKit's link decoration filtering |

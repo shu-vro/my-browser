@@ -101,6 +101,8 @@ pub struct AppIvars {
     /// The shared content blockers, in `SHIELD_SETTINGS` order: trackers,
     /// the local-network shield, cookie banners, the user's own filters.
     shields: RefCell<[Option<Retained<WKContentRuleList>>; 4]>,
+    /// The YouTube ad remover in use (resources/youtube.js), if on.
+    youtube: RefCell<Option<Retained<WKUserScript>>>,
     /// `Version/<n> Safari/605.1.15`, so the browser blends in with Safari.
     user_agent: OnceCell<Option<String>>,
     tabs: RefCell<Vec<Retained<Tab>>>,
@@ -1077,6 +1079,8 @@ impl App {
             report.push(line("local_network_shield", true, local));
             report.push(line("cookie_banners", true, banners));
             report.push(line("my_filters", true, filters));
+            let content = this.ivars().content.get().unwrap();
+            report.push(line("youtube_ads", true, responds(content, sel!(_removeUserScript:))));
             drop(report);
             this.ready();
         });
@@ -1285,6 +1289,34 @@ impl App {
                         content.addContentRuleList(&list);
                     }
                 }
+            }
+        }
+        // YouTube's in-video ads (resources/youtube.js) go with the tracker
+        // blocker, carrying the current Shields-down sites. Swapping it needs
+        // the private `_removeUserScript:` (`removeAllUserScripts` would take
+        // extensions' content scripts too); without it, the first one stays.
+        let mtm = self.mtm();
+        let mut youtube = self.ivars().youtube.borrow_mut();
+        if let Some(old) = &*youtube {
+            if !responds(content, sel!(_removeUserScript:)) {
+                return;
+            }
+            let _: () = unsafe { msg_send![content, _removeUserScript: &**old] };
+            *youtube = None;
+        }
+        if self.store().flag("block_trackers") {
+            let exempt = self.store().sites_with("shields", "off");
+            let sites = format!("[{}]", exempt.iter().map(|s| store::json_str(s)).collect::<Vec<_>>().join(","));
+            unsafe {
+                let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
+                    WKUserScript::alloc(mtm),
+                    &NSString::from_str(&YOUTUBE_JS.replace("EXEMPT_SITES", &sites)),
+                    WKUserScriptInjectionTime::AtDocumentStart,
+                    false,
+                    &WKContentWorld::pageWorld(mtm),
+                );
+                content.addUserScript(&script);
+                *youtube = Some(script);
             }
         }
     }
@@ -2716,6 +2748,7 @@ fn url_args() -> Vec<String> {
 const SHIELD_SETTINGS: [&str; 4] = ["block_trackers", "block_local_network", "hide_cookie_banners", ""];
 
 static PASSWORDS_JS: &str = include_str!("../resources/passwords.js");
+static YOUTUBE_JS: &str = include_str!("../resources/youtube.js");
 
 /// Schemes the browser opens for other apps.
 fn opens_externally(url: &str) -> bool {
