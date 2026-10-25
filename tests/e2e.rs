@@ -159,7 +159,8 @@ impl Browser {
 /// A tiny local web server for tests. Routes:
 /// `/page/<t>` (title t), `/setcookie`, `/echo` (title = Cookie header),
 /// `/file.txt` (a download), `/script/<js>` (runs the URL-decoded js),
-/// `/slow/<t>` (title t after 2 s), `/crx/<name>` (the test package).
+/// `/slow/<t>` (title t after 2 s), `/crx/<name>` (the test package),
+/// `/big.bin` (a 2 MB download sent over about 3 s).
 fn serve() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -187,6 +188,20 @@ fn handle(mut s: TcpStream) {
         .find_map(|l| l.strip_prefix("Cookie: ").or_else(|| l.strip_prefix("cookie: ")))
         .unwrap_or("none")
         .to_string();
+    if path == "/big.bin" {
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 2097152\r\n\
+            Content-Disposition: attachment; filename=\"big.bin\"\r\nConnection: close\r\n\r\n";
+        let chunk = [7u8; 32768];
+        if s.write_all(head.as_bytes()).is_ok() {
+            for _ in 0..64 {
+                if s.write_all(&chunk).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        return;
+    }
     let html = |body: String| ("text/html", String::new(), body.into_bytes());
     let (ctype, extra, body) = if let Some(t) = path.strip_prefix("/page/") {
         html(format!("<title>{t}</title><p>{t}</p>"))
@@ -1463,6 +1478,50 @@ fn downloads_go_to_the_chosen_folder() {
     let id = list.split("\"id\":").nth(1).unwrap().split(',').next().unwrap().to_string();
     assert!(b.send(&format!("bridge downloads.preview\t{id}")).starts_with("PREVIEW "));
     assert_eq!(b.next(), "BRIDGE ok true");
+}
+
+#[test]
+fn downloads_show_by_the_address_bar_and_cancel_without_leaving_a_file() {
+    let base = serve();
+    let dir = TempProfile::new("download-list");
+    let mut b = launch();
+    assert_eq!(b.bridge(&["settings.set", "downloads_dir", dir.path()]), "true");
+    assert_eq!(b.send("dlbutton"), "DLBUTTON shown=0 bar=-", "no button before a download");
+    writeln!(b.stdin, "go {base}/big.bin").unwrap();
+    // The page load that became a download reports FAILED (interrupted).
+    b.wait_for("FAILED ");
+    // A button with a bar appears, and the file is written under a
+    // temporary name until it's complete.
+    let shown = b.until("dlbutton", |l| l.starts_with("DLBUTTON shown=1 bar=") && !l.ends_with('-'));
+    assert!(shown.starts_with("DLBUTTON shown=1"), "{shown}");
+    assert!(b.send("dllist").starts_with("DLLIST big.bin active "));
+    assert!(dir.0.join("big.bin.download").exists());
+    assert!(!dir.0.join("big.bin").exists());
+    // Cancelling ends it, deletes the partial file and says so in both lists.
+    let list = b.bridge(&["downloads.list"]);
+    let id = list.split("\"id\":").nth(1).unwrap().split(',').next().unwrap().to_string();
+    writeln!(b.stdin, "bridge downloads.cancel\t{id}").unwrap();
+    let lines = b.wait_all(&["BRIDGE ", "DOWNLOAD "]);
+    assert_eq!(lines[0], "BRIDGE ok true");
+    let line = &lines[1];
+    assert_eq!(*line, format!("DOWNLOAD cancelled {}/big.bin", dir.path()));
+    assert!(!dir.0.join("big.bin.download").exists() && !dir.0.join("big.bin").exists());
+    assert!(b.bridge(&["downloads.list"]).contains("\"status\":\"cancelled\""));
+    assert_eq!(b.send("dllist"), "DLLIST big.bin cancelled Cancelled");
+    assert_eq!(b.send("dlbutton"), "DLBUTTON shown=1 bar=-", "nothing running: no bar");
+    // A finished one gets its real name and goes first in the list.
+    writeln!(b.stdin, "go {base}/file.txt").unwrap();
+    let line = b.wait_all(&["DOWNLOAD ", "FAILED "]).remove(0);
+    assert_eq!(line, format!("DOWNLOAD done {}/file.txt", dir.path()));
+    assert!(!dir.0.join("file.txt.download").exists());
+    assert_eq!(b.send("dllist"), "DLLIST file.txt done 14 bytes|big.bin cancelled Cancelled");
+    // Private windows don't show them; Clear empties the list and hides the button.
+    b.key("cmd+shift+n");
+    assert!(b.until("dlbutton", |l| l == "DLBUTTON shown=0 bar=-").ends_with("shown=0 bar=-"));
+    b.key("cmd+w");
+    assert!(b.until("dlbutton", |l| l.starts_with("DLBUTTON shown=1")).starts_with("DLBUTTON shown=1"));
+    assert_eq!(b.send("dlclear"), "DLBUTTON shown=0 bar=-");
+    assert!(dir.0.join("file.txt").exists(), "Clear keeps the files");
 }
 
 #[test]

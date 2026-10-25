@@ -10,6 +10,7 @@ macro_rules! say {
 mod autofill;
 mod crash;
 mod crx;
+mod downloads;
 mod extensions;
 mod extwindow;
 mod files;
@@ -67,9 +68,18 @@ use extwindow::ExtWindow;
 use store::Store;
 use tab::{INTERNAL, RELEASES, Tab};
 
-/// A download in flight: (downloads row, download, file). Private windows'
-/// downloads have no row (0).
-type Download = (i64, Retained<WKDownload>, String);
+/// A download in flight. Private windows' downloads and extension packages
+/// have no row (0).
+struct Download {
+    id: i64,
+    download: Retained<WKDownload>,
+    /// Where the file ends up; it's written to `downloads::part_path` of it.
+    path: String,
+    /// Its `downloads::Item` key on the toolbar's list, 0 when not listed
+    /// (an extension package). Not the WKDownload's pointer: a later
+    /// download can get the same address.
+    listed: usize,
+}
 
 #[derive(Default)]
 pub struct AppIvars {
@@ -109,9 +119,14 @@ pub struct AppIvars {
     active: RefCell<Option<Retained<Tab>>>,
     /// URLs of closed tabs, for Reopen Closed Tab.
     closed: RefCell<Vec<String>>,
-    /// In-flight downloads: WKDownload pointer -> (downloads row, download).
     /// In-flight downloads, by WKDownload pointer.
     downloads: RefCell<HashMap<usize, Download>>,
+    /// This session's downloads, oldest first: the toolbar's downloads list.
+    shelf: RefCell<Vec<downloads::Item>>,
+    /// The last `downloads::Item` key handed out.
+    shelf_keys: Cell<usize>,
+    /// Refreshes download progress every half second, only while one runs.
+    download_timer: RefCell<Option<Retained<NSTimer>>>,
     /// Cookies and site data of private windows: memory only, shared by
     /// every private window, dropped with the last private tab.
     private_store: RefCell<Option<Retained<WKWebsiteDataStore>>>,
@@ -303,11 +318,27 @@ define_class!(
             let private = unsafe { download.webView() }
                 .is_some_and(|w| self.is_private_store(&*unsafe { w.configuration().websiteDataStore() }));
             let id = if private || package.is_some() { 0 } else { self.store().add_download(&url, &path.to_string_lossy()) };
+            let listed = if package.is_none() { self.ivars().shelf_keys.get() + 1 } else { 0 };
             if let Some(entry) = self.ivars().downloads.borrow_mut().get_mut(&key(download)) {
-                entry.0 = id;
-                entry.2 = path.to_string_lossy().into_owned();
+                entry.id = id;
+                entry.path = path.to_string_lossy().into_owned();
+                entry.listed = listed;
             }
-            let dest = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+            if listed != 0 {
+                self.ivars().shelf_keys.set(listed);
+                self.ivars().shelf.borrow_mut().push(downloads::Item {
+                    key: listed,
+                    path: path.to_string_lossy().into_owned(),
+                    status: "active",
+                    bytes: 0,
+                    total: 0,
+                    private,
+                });
+                self.downloads_changed();
+            }
+            // Written under `<name>.download` until it finishes, as in Safari.
+            let part = downloads::part_path(&path);
+            let dest = NSURL::fileURLWithPath(&NSString::from_str(&part.to_string_lossy()));
             done.call((Retained::as_ptr(&dest) as *mut NSURL,));
         }
 
@@ -943,7 +974,10 @@ impl App {
         let lock = profile.as_ref().map(|dir| lock_profile(dir).unwrap_or_else(|e| fatal(mtm, &e)));
         let db = profile.as_ref().map(|d| d.join("browser.db"));
         let store = Store::open(db.as_deref()).unwrap_or_else(|e| fatal(mtm, &format!("Can't open the profile: {e}")));
-        store.fail_stale_downloads();
+        // A crash left these half written.
+        for path in store.fail_stale_downloads() {
+            let _ = std::fs::remove_file(downloads::part_path(Path::new(&path)));
+        }
         let _ = self.ivars()._lock.set(lock);
         let _ = self.ivars().profile.set(profile.clone());
         let _ = self.ivars().store.set(store);
@@ -1897,7 +1931,7 @@ impl App {
         self.open_internal(page);
     }
 
-    fn open_internal(&self, page: &str) {
+    pub fn open_internal(&self, page: &str) {
         let url = format!("{INTERNAL}://{page}");
         // Reuse an open settings tab.
         let prefix = format!("{INTERNAL}://settings");
@@ -2157,14 +2191,39 @@ impl App {
 
     pub fn start_download(&self, download: &WKDownload) {
         unsafe { download.setDelegate(Some(ProtocolObject::from_ref(self))) };
-        self.ivars().downloads.borrow_mut().insert(key(download), (0, download.retain(), String::new()));
+        let entry = Download { id: 0, download: download.retain(), path: String::new(), listed: 0 };
+        self.ivars().downloads.borrow_mut().insert(key(download), entry);
     }
 
-    fn end_download(&self, download: &WKDownload, status: &str) {
-        let Some((id, _, path)) = self.ivars().downloads.borrow_mut().remove(&key(download)) else { return };
-        let bytes = std::fs::metadata(&path).map_or(0, |m| m.len() as i64);
+    /// A download ended: a finished file gets its real name (another one if
+    /// that's been taken meanwhile), anything else's partial file is deleted.
+    fn end_download(&self, download: &WKDownload, status: &'static str) {
+        let Some(d) = self.ivars().downloads.borrow_mut().remove(&key(download)) else { return };
+        let (id, mut path) = (d.id, d.path);
+        let part = downloads::part_path(Path::new(&path));
+        if path.is_empty() {
+            // Ended before it had a destination: there's no file.
+        } else if status == "done" {
+            let target = Path::new(&path);
+            let target = match (target.exists(), target.parent(), target.file_name()) {
+                (true, Some(dir), Some(name)) => unique_path(dir, &name.to_string_lossy()),
+                _ => target.to_path_buf(),
+            };
+            if std::fs::rename(&part, &target).is_ok() {
+                path = target.to_string_lossy().into_owned();
+            }
+        } else {
+            let _ = std::fs::remove_file(&part);
+        }
+        let bytes = if status == "done" { std::fs::metadata(&path).map_or(0, |m| m.len() as i64) } else { 0 };
         if id != 0 {
-            self.store().finish_download(id, status, bytes);
+            self.store().finish_download(id, status, bytes, &path);
+        }
+        if let Some(item) = self.ivars().shelf.borrow_mut().iter_mut().find(|i| d.listed != 0 && i.key == d.listed) {
+            (item.status, item.bytes, item.path) = (status, bytes, path.clone());
+        }
+        if d.listed != 0 {
+            self.downloads_changed();
         }
         if self.is_bench() {
             say!("DOWNLOAD {status} {path}");
@@ -2221,21 +2280,84 @@ impl App {
             .downloads
             .borrow()
             .values()
-            .map(|(id, d, _)| {
-                // WKDownload.progress (NSProgress), via msg_send: the binding needs an extra feature.
-                let p: Retained<AnyObject> = unsafe { msg_send![&**d, progress] };
-                let done: i64 = unsafe { msg_send![&*p, completedUnitCount] };
-                let total: i64 = unsafe { msg_send![&*p, totalUnitCount] };
-                (*id, done, total)
+            .map(|d| {
+                let (done, total) = progress_of(&d.download);
+                (d.id, done, total)
             })
             .collect()
     }
 
+    /// Cancel the download of `downloads` row `id` (Settings → Downloads).
     pub fn cancel_download(&self, id: i64) {
         let found =
-            self.ivars().downloads.borrow().values().find(|(i, ..)| *i == id && id != 0).map(|(_, d, _)| d.clone());
+            self.ivars().downloads.borrow().values().find(|d| d.id == id && id != 0).map(|d| d.download.clone());
         if let Some(d) = found {
-            unsafe { d.cancel(None) };
+            self.cancel(&d);
+        }
+    }
+
+    /// Cancel the download listed under `key` (the toolbar's list).
+    pub fn cancel_download_key(&self, key: usize) {
+        let found =
+            self.ivars().downloads.borrow().values().find(|d| d.listed == key && key != 0).map(|d| d.download.clone());
+        if let Some(d) = found {
+            self.cancel(&d);
+        }
+    }
+
+    /// WebKit doesn't tell the delegate about a download it was asked to
+    /// cancel, so it ends here, once WebKit has let go of the file.
+    fn cancel(&self, download: &Retained<WKDownload>) {
+        let (this, d) = (self.retain(), download.clone());
+        let done = RcBlock::new(move |_resume: *mut NSData| this.end_download(&d, "cancelled"));
+        unsafe { download.cancel(Some(&done)) };
+    }
+
+    /// This session's downloads of a window's kind, newest first, with the
+    /// progress of those in flight.
+    pub fn shelf(&self, private: bool) -> Vec<downloads::Item> {
+        let flying = self.ivars().downloads.borrow();
+        let mut items: Vec<_> = self.ivars().shelf.borrow().iter().filter(|i| i.private == private).cloned().collect();
+        for item in items.iter_mut().filter(|i| i.status == "active") {
+            if let Some(d) = flying.values().find(|d| d.listed == item.key) {
+                (item.bytes, item.total) = progress_of(&d.download);
+            }
+        }
+        items.reverse();
+        items
+    }
+
+    /// The list's Clear: forget the downloads that ended.
+    pub fn clear_shelf(&self, private: bool) {
+        self.ivars().shelf.borrow_mut().retain(|i| i.private != private || i.status == "active");
+        self.downloads_changed();
+    }
+
+    /// A download started, ended or was cleared: the toolbars' buttons, the
+    /// list if it's open, and the progress tick (running only while a
+    /// download is).
+    fn downloads_changed(&self) {
+        for tab in self.all_tabs() {
+            self.refresh_extension_buttons_for(&tab);
+        }
+        downloads::Panel::refresh_open();
+        let active = self.ivars().shelf.borrow().iter().any(|i| i.status == "active");
+        let mut timer = self.ivars().download_timer.borrow_mut();
+        if active && timer.is_none() {
+            let ptr = self as *const Self;
+            let block = RcBlock::new(move |_t: std::ptr::NonNull<NSTimer>| {
+                // The app delegate lives until the process exits.
+                let app = unsafe { &*ptr };
+                for tab in app.all_tabs() {
+                    tab.refresh_download_progress();
+                }
+                downloads::Panel::refresh_open();
+            });
+            let t = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.5, true, &block) };
+            t.setTolerance(0.2);
+            *timer = Some(t);
+        } else if !active && let Some(t) = timer.take() {
+            t.invalidate();
         }
     }
 
@@ -2343,6 +2465,24 @@ impl App {
             }
             ("bartype", Some(t)) => say!("{}", t.bar_type(arg)),
             ("barkey", Some(t)) => say!("{}", t.bar_press(arg)),
+            // The toolbar's downloads button and its list, for the active tab's kind:
+            // `DLBUTTON shown=<0|1> bar=<percent|->`, `DLLIST <name> <status> <line>|…`.
+            ("dlbutton", Some(t)) => say!("{}", t.download_button_state()),
+            ("dllist", Some(t)) => {
+                let items: Vec<String> = self
+                    .shelf(t.is_private())
+                    .iter()
+                    .map(|i| {
+                        let name = Path::new(&i.path).file_name().map(|n| n.to_string_lossy().into_owned());
+                        format!("{} {} {}", name.unwrap_or_default(), i.status, downloads::status_text(i))
+                    })
+                    .collect();
+                say!("DLLIST {}", items.join("|"));
+            }
+            ("dlclear", Some(t)) => {
+                self.clear_shelf(t.is_private());
+                say!("{}", t.download_button_state());
+            }
             // The cursor into the new tab page's search: `HOMEFOCUS <0|1>`.
             ("homefocus", Some(t)) => say!("HOMEFOCUS {}", t.focus_home_search() as u8),
             ("barblur", Some(t)) => {
@@ -2766,6 +2906,15 @@ impl App {
     }
 }
 
+/// (completed, total) bytes of a download in flight; total 0 while unknown.
+fn progress_of(download: &WKDownload) -> (i64, i64) {
+    // WKDownload.progress (NSProgress), via msg_send: the binding needs an extra feature.
+    let p: Retained<AnyObject> = unsafe { msg_send![download, progress] };
+    let done: i64 = unsafe { msg_send![&*p, completedUnitCount] };
+    let total: i64 = unsafe { msg_send![&*p, totalUnitCount] };
+    (done, total.max(0))
+}
+
 fn key(download: &WKDownload) -> usize {
     download as *const WKDownload as usize
 }
@@ -2851,16 +3000,19 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 /// `dir/name`, or `dir/name (2).ext` etc. if taken.
+/// `name` in `dir`, or `name (2)`, `name (3)`… : one that's free, along
+/// with its partial download file.
 fn unique_path(dir: &Path, name: &str) -> PathBuf {
+    let free = |p: &PathBuf| !p.exists() && !downloads::part_path(p).exists();
     let candidate = dir.join(name);
-    if !candidate.exists() {
+    if free(&candidate) {
         return candidate;
     }
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
         _ => (name.to_string(), String::new()),
     };
-    (2..).map(|n| dir.join(format!("{stem} ({n}){ext}"))).find(|p| !p.exists()).unwrap()
+    (2..).map(|n| dir.join(format!("{stem} ({n}){ext}"))).find(free).unwrap()
 }
 
 /// One running browser per profile: two would write the same cookie and
@@ -3443,6 +3595,9 @@ mod tests {
         assert_eq!(unique_path(&dir, "f.zip"), dir.join("f (3).zip"));
         std::fs::write(dir.join("README"), b"").unwrap();
         assert_eq!(unique_path(&dir, "README"), dir.join("README (2)"));
+        // A download in progress holds its name: WebKit would cancel a second one there.
+        std::fs::write(dir.join("g.zip.download"), b"").unwrap();
+        assert_eq!(unique_path(&dir, "g.zip"), dir.join("g (2).zip"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

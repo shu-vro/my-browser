@@ -119,6 +119,9 @@ pub struct TabIvars {
     ext_buttons: RefCell<Vec<(Retained<NSButton>, bool)>>,
     /// Shown while a network request waits for an answer (netgate.rs).
     net_button: RefCell<Option<Retained<NSButton>>>,
+    /// This session's downloads (`downloads.rs`): the button and the track
+    /// and fill of its progress bar.
+    dl_button: RefCell<Option<DownloadButton>>,
     /// "Add to my-browser", on Chrome Web Store extension pages.
     store_button: RefCell<Option<Retained<NSButton>>>,
     /// Extensions clicked on in this tab: (extension id, site). They turn off
@@ -161,6 +164,8 @@ pub struct TabIvars {
 }
 
 /// The saved-passwords menu: (site, frame of the login form, usernames).
+/// The downloads button, and the track and fill of its bar.
+type DownloadButton = (Retained<NSButton>, Retained<Fill>, Retained<Fill>);
 type FillMenu = (String, Retained<WKFrameInfo>, Vec<String>);
 
 /// Permissions a site asks for: (kind, site menu label, what the prompt says it wants to do).
@@ -781,6 +786,15 @@ define_class!(
         #[unsafe(method(showNetworkSettings:))]
         fn show_network_settings(&self, _s: Option<&AnyObject>) {
             self.app().open_settings_page("settings#network");
+        }
+
+        /// The downloads button: this session's downloads under it. (Bench
+        /// reads them with `dllist`: the popover would take focus.)
+        #[unsafe(method(showDownloadList:))]
+        fn show_download_list(&self, sender: &NSButton) {
+            if !self.app_is_bench() {
+                crate::downloads::Panel::open(self.app(), self.is_private(), sender);
+            }
         }
 
         #[unsafe(method(toggleBookmark:))]
@@ -3421,8 +3435,34 @@ impl Tab {
             at_right(&b, n + waiting as u8 as f64 + 1.0);
             iv.store_button.replace(Some(b));
         }
+        // Left of those: this session's downloads, with a bar while one runs.
+        if let Some((b, track, fill)) = iv.dl_button.take() {
+            b.removeFromSuperview();
+            track.removeFromSuperview();
+            fill.removeFromSuperview();
+        }
+        let downloads = !self.app().shelf(self.is_private()).is_empty();
+        if downloads {
+            let b = tool_button("arrow.down.circle", "Downloads", Some(sel!(showDownloadList:)), self, 14.0, mtm);
+            b.setToolTip(Some(&NSString::from_str("Downloads")));
+            at_right(&b, n + waiting as u8 as f64 + store as u8 as f64 + 1.0);
+            let f = b.frame();
+            let bar = |width: f64, color: Retained<objc2_app_kit::NSColor>| {
+                let origin = NSPoint::new(f.origin.x + 7.0, f.origin.y + 1.0);
+                let v = Fill::new(NSRect::new(origin, NSSize::new(width, 3.0)), color, 1.5, mtm);
+                v.setAutoresizingMask(
+                    NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
+                );
+                content.addSubview(&v);
+                v
+            };
+            let track = bar(BUTTON_W - 14.0, objc2_app_kit::NSColor::quaternaryLabelColor());
+            let fill = bar(0.0, objc2_app_kit::NSColor::controlAccentColor());
+            iv.dl_button.replace(Some((b, track, fill)));
+            self.refresh_download_progress();
+        }
         // The pill ends where those buttons begin.
-        let right = n + waiting as u8 as f64 + store as u8 as f64;
+        let right = n + waiting as u8 as f64 + store as u8 as f64 + downloads as u8 as f64;
         let mut frame = pill.frame();
         frame.size.width = width - frame.origin.x - 8.0 - right * BUTTON_W - if right > 0.0 { 4.0 } else { 0.0 };
         pill.setFrame(frame);
@@ -3510,6 +3550,30 @@ impl Tab {
             menu.addItem(&manage);
             unsafe { b.setMenu(Some(&menu)) };
             iv.ext_buttons.borrow_mut().push((b, item.on));
+        }
+    }
+
+    /// The downloads button's bar: how far this window's kind of downloads
+    /// are, hidden with none running.
+    pub fn refresh_download_progress(&self) {
+        let Some((_, track, fill)) = &*self.ivars().dl_button.borrow() else { return };
+        let done = crate::downloads::overall(&self.app().shelf(self.is_private()));
+        track.setHidden(done.is_none());
+        fill.setHidden(done.is_none());
+        let mut frame = fill.frame();
+        frame.size.width = (track.frame().size.width * done.unwrap_or(0.0)).round();
+        fill.setFrame(frame);
+    }
+
+    /// `DLBUTTON shown=<0|1> bar=<percent|->`
+    pub fn download_button_state(&self) -> String {
+        match &*self.ivars().dl_button.borrow() {
+            None => "DLBUTTON shown=0 bar=-".into(),
+            Some((_, track, _)) if track.isHidden() => "DLBUTTON shown=1 bar=-".into(),
+            Some((_, track, fill)) => format!(
+                "DLBUTTON shown=1 bar={}",
+                (fill.frame().size.width / track.frame().size.width * 100.0).round() as i32
+            ),
         }
     }
 

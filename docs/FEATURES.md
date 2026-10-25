@@ -217,7 +217,10 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   address in the tooltip.
 - **Downloads** (⌥⌘L): to ~/Downloads or a chosen folder, unique and
   sanitized file names, a list with progress, open, **Quick Look** (or Space),
-  show in Finder, cancel and remove.
+  show in Finder, cancel and remove. A **downloads button** right of the
+  address bar (as in Safari) shows a bar while one runs and lists this
+  session's downloads (open, show in Finder, cancel, clear). A file is
+  written as `name.download` until it's complete; cancelling deletes it.
 - **Import** bookmarks, history and passwords from Chrome, Brave, Edge,
   Vivaldi, Arc, Chromium or Safari (Settings → Import), or a bookmarks file.
 

@@ -513,9 +513,12 @@ impl Store {
         self.db.last_insert_rowid()
     }
 
-    pub fn finish_download(&self, id: i64, status: &str, bytes: i64) {
-        let _ =
-            self.db.execute("UPDATE downloads SET status = ?2, bytes = ?3 WHERE id = ?1", params![id, status, bytes]);
+    /// A download ended; `path` is where the file ended up.
+    pub fn finish_download(&self, id: i64, status: &str, bytes: i64, path: &str) {
+        let _ = self.db.execute(
+            "UPDATE downloads SET status = ?2, bytes = ?3, path = ?4 WHERE id = ?1",
+            params![id, status, bytes, path],
+        );
     }
 
     pub fn downloads(&self) -> Vec<Download> {
@@ -551,8 +554,16 @@ impl Store {
     }
 
     /// Downloads still marked active belong to a previous run that ended mid-download.
-    pub fn fail_stale_downloads(&self) {
+    /// Downloads still active from a run that crashed fail; returns their
+    /// paths, so their partial files can go.
+    pub fn fail_stale_downloads(&self) -> Vec<String> {
+        let paths = self
+            .db
+            .prepare("SELECT path FROM downloads WHERE status = 'active'")
+            .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+            .unwrap_or_default();
         let _ = self.db.execute("UPDATE downloads SET status = 'failed' WHERE status = 'active'", []);
+        paths
     }
 
     // ---- extensions
@@ -948,16 +959,17 @@ mod tests {
         let s = Store::open(None).unwrap();
         let id = s.add_download("https://x/f.zip", "/tmp/f.zip");
         assert_eq!(s.download(id).unwrap().status, "active");
-        s.fail_stale_downloads();
+        assert_eq!(s.fail_stale_downloads(), ["/tmp/f.zip"]);
         assert_eq!(s.download(id).unwrap().status, "failed");
-        s.finish_download(id, "done", 42);
+        assert!(s.fail_stale_downloads().is_empty());
+        s.finish_download(id, "done", 42, "/tmp/f (2).zip");
         let d = s.download(id).unwrap();
-        assert_eq!((d.status.as_str(), d.bytes), ("done", 42));
+        assert_eq!((d.status.as_str(), d.bytes, d.path.as_str()), ("done", 42, "/tmp/f (2).zip"));
         s.remove_download(id);
         assert!(s.downloads().is_empty());
         let active = s.add_download("https://x/a", "/tmp/a");
         let done = s.add_download("https://x/b", "/tmp/b");
-        s.finish_download(done, "done", 1);
+        s.finish_download(done, "done", 1, "/tmp/b");
         s.clear_downloads();
         let left: Vec<i64> = s.downloads().iter().map(|d| d.id).collect();
         assert_eq!(left, vec![active], "only the in-flight download stays");

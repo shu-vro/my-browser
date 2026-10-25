@@ -1150,7 +1150,26 @@ PDF, PDFKit finds instead. Test: `find_counts_matches_and_marks_the_current_one`
 - **Tracking:** in flight in `App.downloads` (WKDownload → row id), recorded
   in the `downloads` table, and finished as done, failed or cancelled with the
   size on disk.
-- **After a crash:** rows still marked active at launch are marked failed.
+- **Partial files:** WebKit writes to `<name>.download`
+  (`downloads::part_path`); it's renamed when done (another free name if the
+  real one was taken meanwhile; the row's path follows) and deleted when
+  cancelled or failed. `unique_path` treats a name whose `.download` exists
+  as taken (WebKit cancels a download whose file exists).
+- **Cancel:** WebKit doesn't call the delegate for a download it's asked to
+  cancel, so `App::cancel` ends it from `cancel:`'s completion handler.
+- **After a crash:** rows still marked active at launch are marked failed
+  and their `.download` files deleted.
+- **Toolbar button and list** (`src/downloads.rs`): `App.shelf` holds this
+  session's downloads (not extension packages); the button shows right of
+  the address pill in windows of their kind (private ones only in private
+  windows) with a 3 pt bar of the running ones' total. A half-second timer
+  (0.2 s tolerance) runs only while a download does: it moves the bars and
+  the open list. The list is an `NSPopover` (transient) built on click and
+  freed when it closes: name (opens the file when done), status line, bar,
+  cancel or show in Finder, Show All Downloads, Clear. Bench mode doesn't
+  open it (it could take focus): `dlbutton` → `DLBUTTON shown=<0|1>
+  bar=<percent|->`, `dllist` → `DLLIST <name> <status> <line>|…`, `dlclear`.
+  Test: `downloads_show_by_the_address_bar_and_cancel_without_leaving_a_file`.
 
 **Quick Look** (a download's button, or Space on its row): the app delegate
 is Quick Look's panel controller (`acceptsPreviewPanelControl:` and its data
