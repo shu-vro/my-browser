@@ -496,6 +496,7 @@ fn engine_and_privacy_settings_are_applied() {
         "proccache",
         "screen_capture",
         "suspend",
+        "tab_menu",
         "tab_mute",
         "theme_backdrop",
         "third_party_cookies_blocked",
@@ -717,6 +718,47 @@ fn tabs_mute_and_show_when_they_play_sound() {
     assert!(b.send("tabflags").contains("muted=1 page_muted=1"));
     b.send("menu Window/Unmute Tab");
     assert!(b.send("tabflags").contains("muted=0 page_muted=0"));
+}
+
+#[test]
+fn tab_bar_menu_acts_on_the_clicked_tab() {
+    let base = serve();
+    let mut b = launch_with(&["--on-top"]);
+    b.nav(&format!("go {base}/page/one"));
+    b.nav(&format!("newtab {base}/page/two"));
+    b.nav(&format!("newtab {base}/page/one"));
+    // A right-click on a tab's button in the tab bar opens our menu for that
+    // tab (through the private `-[NSTabButton associatedWindow]`).
+    assert_eq!(
+        b.send("tabclick 1"),
+        "TABMENU New Tab to the Right|Move Tab to New Window|Move Tab to Split View|-|Reload|Duplicate|Pin|\
+         Mute Tab|Mute Site|-|Add Tab to Reading List|-|Close|Close Duplicate Tabs|Close Other Tabs|\
+         Close Tabs to the Right|-|(Reopen Closed Tab)|Bookmark All Tabs"
+    );
+    assert_eq!(b.next(), "TABCLICK 1");
+    b.send("tabmenu 1 Close Duplicate Tabs");
+    assert!(b.until("tabs", |s| s.starts_with("TABS count=2")).starts_with("TABS count=2"), "the second one closed");
+    b.send("tabmenu 0 New Tab to the Right");
+    assert!(b.tabs().starts_with("TABS count=3 active=1"), "opened next to the tab clicked, not the active one");
+    b.send("tabmenu 0 Close Tabs to the Right");
+    assert!(b.until("tabs", |s| s.starts_with("TABS count=1")).starts_with("TABS count=1"));
+    // Mute Site mutes the site's tabs, and its tabs opened later.
+    b.send("tabmenu 0 Mute Site");
+    assert!(b.send("tabflags").contains("muted=0 page_muted=1"), "the site, not the tab");
+    b.nav(&format!("newtab {base}/page/three"));
+    assert!(b.send("tabflags").contains("muted=0 page_muted=1"));
+    assert!(b.send("tabmenu 1").contains("|Unmute Site|"));
+    b.send("tabmenu 1 Unmute Site");
+    assert!(b.send("tabflags").contains("page_muted=0"));
+    // Reading list and Bookmark All Tabs are bookmark folders.
+    b.send("tabmenu 0 Add Tab to Reading List");
+    b.send("tabmenu 0 Bookmark All Tabs");
+    let marks = b.bridge(&["bookmarks.list"]);
+    assert!(marks.contains(&format!(r#""url":"{base}/page/one","title":"one","folder":"Reading List""#)), "{marks}");
+    assert_eq!(marks.matches(r#""folder":"Tabs, "#).count(), 2, "{marks}");
+    b.send("tabmenu 1 Move Tab to Split View");
+    assert!(b.tabs().ends_with("windows=2"));
+    b.quit();
 }
 
 #[test]

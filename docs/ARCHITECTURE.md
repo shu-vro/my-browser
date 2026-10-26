@@ -238,6 +238,24 @@ Tabs moved to another window (by menu or by dragging) are reported to
 extensions with `didMoveTab:fromIndex:inWindow:` (`App::sync_ext_windows`,
 on each activation), and a window left empty with `didCloseWindow:`. 
 
+**Tab menu** (right-click a tab): AppKit's tab bar has no public hook for
+its menu, so a local event monitor (`App::watch_tab_menu`) looks at right-
+and control-clicks: it hit-tests the window's frame view and walks up to a
+view answering the private `associatedWindow` (`NSTabButton`; `TUNE
+tab_menu`), and pops up `App::tab_menu` for that window's tab instead of
+AppKit's menu. Without the selector the click goes through and AppKit's own
+menu shows. Items carry the clicked tab as `representedObject`; one action
+(`tabMenu:`, tag = `TabCmd`) runs `App::tab_command`, which Close Other Tabs
+(⌥⌘W) also uses. Split view is two windows tiled on the screen's visible
+frame: AppKit's tab bar holds one page per tab. Mute Site is the `sound`
+site permission (`deny` = muted), applied in `apply_mute` with the tab's own
+mute and on every commit. Reading List and Bookmark All Tabs are bookmark
+folders. Bench: `tabmenu <i>[ <title>]` → `TABMENU <title>|…` (`-`
+separator, `(title)` disabled); `tabclick <i>` sends a synthetic right-click
+to tab i's button and prints the menu instead of showing it (`TABCLICK
+<0|1>`; needs `--on-top`, hidden windows have no tab bar). Test:
+`tab_bar_menu_acts_on_the_clicked_tab`.
+
 **Pinned tabs** (Window → Pin Tab): AppKit's tab bar can't pin, so a
 pinned tab is an ordinary tab with three rules: it moves to the front of its
 window, after the tabs pinned before it (`NSWindowTabGroup` remove + insert
@@ -1406,6 +1424,8 @@ active tab.
 | `tabsearch <query>` | `TABSEARCH <title>\|…`: the launcher opened with that query, the matching tabs as listed; answer with `dialog` |
 | `launcher <query>` | `LAUNCHER <kind>:<title> [shortcut]\|…` (kind: tab, command, bookmark, history): the launcher with that query, every row as listed; answer with `dialog` |
 | `tabflags` | `TABFLAGS pinned=<0\|1> muted=<0\|1> page_muted=<0\|1> audio=<0\|1> swipe=<0\|1> pinch=<0\|1>` for the active tab |
+| `tabmenu <i>[ <title>]` | `TABMENU <title>\|…`: tab i's right-click menu (`-` separator, `(title)` disabled); with a title, picks that item |
+| `tabclick <i>` | A synthetic right-click on tab i's button: `TABMENU …` then `TABCLICK <0\|1>` (needs `--on-top`) |
 | `zoom` | `ZOOM <level> button=<label>`: the active tab's page zoom and the zoom button's label |
 | `bartype <text>` / `barkey up\|down\|enter\|esc` | `SUGGEST [*]search:<text>\|[*]page:<url>\|…`: the address bar's suggestion list after typing or a key (`*` = chosen; empty when closed) |
 | `savesearch <text>` | `SAVEDSEARCH`: save a search as Return in the bar would, without loading it |

@@ -146,7 +146,7 @@ pub struct Extension {
 /// default: ask (camera, microphone, location, more than one download per
 /// page), blocked (local network),
 /// protections on (shields), allowed (JavaScript).
-pub const PERMISSIONS: [(&str, [&str; 2]); 9] = [
+pub const PERMISSIONS: [(&str, [&str; 2]); 10] = [
     ("camera", ["allow", "deny"]),
     // deny = the site's own scripts don't run.
     ("javascript", ["allow", "deny"]),
@@ -158,6 +158,8 @@ pub const PERMISSIONS: [(&str, [&str; 2]); 9] = [
     ("location", ["allow", "deny"]),
     ("local_network", ["allow", "deny"]),
     ("shields", ["on", "off"]),
+    // deny = muted (Mute Site, the tab bar's menu).
+    ("sound", ["allow", "deny"]),
 ];
 
 /// A site as permissions see it: the lowercase host name of an address.

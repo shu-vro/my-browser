@@ -118,6 +118,14 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   tabs, move to new window, merge windows.
 - **Pinned tabs** (Window → Pin Tab): first in their window, never put to
   sleep, kept by Close Other Tabs and by session restore.
+- **Tab menu**: right-click (or control-click) a tab: New Tab to the Right,
+  Move Tab to New Window, Move Tab to Split View (the tab and the one shown
+  side by side, each filling half the screen), Reload, Duplicate,
+  Pin/Unpin, Mute Tab, Mute Site (every tab on the site, now and later;
+  undo it there or in Settings → Site settings → Sound), Add Tab to Reading
+  List (a "Reading List" bookmark folder), Close, Close Duplicate Tabs,
+  Close Other Tabs, Close Tabs to the Right, Reopen Closed Tab, Bookmark All
+  Tabs (a "Tabs, <date>" folder).
 - **Mute a tab** (Window → Mute Tab, or click the speaker in the tab); tabs
   playing sound show a speaker.
 - **Launcher** (⇧⌘A, Window → Search Tabs and More…): one field finds open

@@ -296,6 +296,7 @@ define_class!(
             let saved = crate::store::site_of(&url).and_then(|site| self.app().store().zoom(&site));
             unsafe { web.setPageZoom(saved.unwrap_or(self.app().default_zoom())) };
             self.refresh_zoom_button();
+            self.refresh_mute();
             self.ivars().visit.set(None);
             self.ivars().reader.set(self.ivars().reader_loading.replace(false));
             self.ivars().translated.set(false);
@@ -1138,6 +1139,17 @@ impl Tab {
 
     pub fn set_muted(&self, on: bool) {
         self.ivars().muted.set(on);
+        self.refresh_mute();
+    }
+
+    /// Its site was muted from the tab menu (Mute Site): every tab on it is.
+    fn site_muted(&self) -> bool {
+        crate::store::site_of(&self.url())
+            .is_some_and(|site| self.app().store().permission(&site, "sound").as_deref() == Some("deny"))
+    }
+
+    /// Mute or unmute the page as the tab and its site say.
+    pub fn refresh_mute(&self) {
         self.apply_mute();
         self.refresh_badges();
     }
@@ -1146,7 +1158,7 @@ impl Tab {
     fn apply_mute(&self) {
         let Some(web) = self.web() else { return };
         if responds(&web, sel!(_setPageMuted:)) {
-            let state: usize = if self.is_muted() { 1 } else { 0 };
+            let state: usize = if self.is_muted() || self.site_muted() { 1 } else { 0 };
             let _: () = unsafe { msg_send![&*web, _setPageMuted: state] };
         }
     }
@@ -1185,6 +1197,8 @@ impl Tab {
         }
         if self.is_muted() {
             badges.push(("speaker.slash.fill", "Muted. Click to turn sound on".into(), Some(sel!(toggleMute:))));
+        } else if self.site_muted() {
+            badges.push(("speaker.slash.fill", "Site muted (Unmute Site in the tab's menu)".into(), None));
         } else if self.playing_audio() {
             badges.push(("speaker.wave.2.fill", "Playing sound. Click to mute".into(), Some(sel!(toggleMute:))));
         }

@@ -529,6 +529,7 @@ const PERMS = [
   ["javascript", "JavaScript", { allow: "Allowed", deny: "Blocked" }],
   ["local_network", "Local network", { allow: "Allowed", deny: "Blocked" }],
   ["shields", "Protections", { on: "On", off: "Off" }],
+  ["sound", "Sound", { allow: "Allowed", deny: "Muted" }],
 ];
 async function loadPermissions() {
   const rows = await call("perm.list");

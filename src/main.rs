@@ -49,8 +49,8 @@ use objc2_app_kit::{
     NSEventType, NSMenu, NSMenuDelegate, NSMenuItem, NSWindow, NSWindowOcclusionState, NSWindowOrderingMode,
 };
 use objc2_foundation::{
-    NSArray, NSData, NSError, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSString, NSTimer, NSURL,
-    NSURLResponse, NSUUID,
+    NSArray, NSData, NSDate, NSDateFormatter, NSDateFormatterStyle, NSError, NSNotification, NSObject,
+    NSObjectProtocol, NSPoint, NSString, NSTimer, NSURL, NSURLResponse, NSUUID,
 };
 #[allow(deprecated)]
 use objc2_web_kit::WKProcessPool;
@@ -151,6 +151,8 @@ pub struct AppIvars {
     pending_update: RefCell<Option<(i64, internal::Reply)>>,
     /// ⌘ + scroll zoom's event monitor.
     scroll_monitor: OnceCell<Option<Retained<AnyObject>>>,
+    /// The tab bar's right-click monitor (`watch_tab_menu`).
+    tab_menu_monitor: OnceCell<Option<Retained<AnyObject>>>,
     /// Translate Page's helper process and its requests (translate.rs).
     translate: RefCell<translate::State>,
 }
@@ -611,10 +613,7 @@ define_class!(
 
         #[unsafe(method(reopenClosedTab:))]
         fn reopen_closed_tab_action(&self, _s: Option<&AnyObject>) {
-            let last = self.ivars().closed.borrow_mut().pop();
-            if let Some(url) = last {
-                self.open_tab(&url, false);
-            }
+            self.reopen_closed_tab();
         }
 
         #[unsafe(method(closeTab:))]
@@ -658,8 +657,16 @@ define_class!(
 
         #[unsafe(method(closeOtherTabs:))]
         fn close_other_tabs_action(&self, _s: Option<&AnyObject>) {
-            for t in self.ordered_tabs().iter().filter(|t| !self.is_active(t) && !t.is_pinned()) {
-                t.window().performClose(None);
+            self.with_active(|t| self.tab_command(t, TabCmd::CloseOthers));
+        }
+
+        /// The tab bar's right-click menu: tag = `TabCmd`, the tab clicked
+        /// is the item's `representedObject`.
+        #[unsafe(method(tabMenu:))]
+        fn tab_menu_action(&self, sender: &NSMenuItem) {
+            let Some(tab) = sender.representedObject().and_then(|o| o.downcast::<Tab>().ok()) else { return };
+            if let Some(cmd) = TAB_CMDS.get(sender.tag() as usize) {
+                self.tab_command(&tab, *cmd);
             }
         }
 
@@ -1022,6 +1029,12 @@ impl App {
         // Per-tab mute and the sound badge.
         report.push(line("tab_mute", true, WKWebView::class().responds_to(sel!(_setPageMuted:))));
         report.push(line("playing_audio", true, WKWebView::class().responds_to(sel!(_isPlayingAudio))));
+        // The tab bar's right-click menu finds the tab clicked.
+        report.push(line(
+            "tab_menu",
+            true,
+            AnyClass::get(c"NSTabButton").is_some_and(|c| c.responds_to(sel!(associatedWindow))),
+        ));
         // Settings → Tabs and the heavy-tab badge read each page's process.
         report.push(line("web_process_id", true, WKWebView::class().responds_to(sel!(_webProcessIdentifier))));
         // The PDF viewer gets the PDF WebKit loaded.
@@ -1106,6 +1119,7 @@ impl App {
 
         self.start_extensions();
         self.watch_scroll_zoom();
+        self.watch_tab_menu();
 
         self.load_shields(move |this, [trackers, local, banners, filters]| {
             let mut report = this.ivars().report.borrow_mut();
@@ -1539,6 +1553,13 @@ impl App {
         self.store().setting("homepage")
     }
 
+    fn reopen_closed_tab(&self) {
+        let last = self.ivars().closed.borrow_mut().pop();
+        if let Some(url) = last {
+            self.open_tab(&url, false);
+        }
+    }
+
     /// Open `url` in a new tab next to the active one (private if it is).
     pub fn open_tab(&self, url: &str, background: bool) -> Retained<Tab> {
         let private = self.active().is_some_and(|t| t.is_private());
@@ -1908,10 +1929,237 @@ impl App {
 
     pub fn ordered_tabs(&self) -> Vec<Retained<Tab>> {
         let Some(active) = self.active() else { return self.ivars().tabs.borrow().clone() };
-        match active.window().tabbedWindows() {
+        self.window_tabs(&active)
+    }
+
+    /// The tabs of `tab`'s window, in tab-bar order.
+    fn window_tabs(&self, tab: &Tab) -> Vec<Retained<Tab>> {
+        match tab.window().tabbedWindows() {
             Some(windows) => windows.iter().filter_map(|w| self.tab_for_window(&w)).collect(),
-            None => vec![active],
+            None => vec![tab.retain()],
         }
+    }
+
+    /// The other tabs of `tab`'s window that show an address already open
+    /// in it (the first one, or `tab` itself, stays). Pinned tabs stay.
+    fn duplicate_tabs(&self, tab: &Tab) -> Vec<Retained<Tab>> {
+        let mut seen = vec![tab.url()];
+        let mut out = Vec::new();
+        for t in self.window_tabs(tab).into_iter().filter(|t| !std::ptr::eq(&**t, tab)) {
+            let url = t.url();
+            if !seen.contains(&url) {
+                seen.push(url);
+            } else if !t.is_pinned() {
+                out.push(t);
+            }
+        }
+        out
+    }
+
+    /// The tab bar's right-click menu for `tab`, in Chrome's order. Items
+    /// act on that tab, which needn't be the active one.
+    fn tab_menu(&self, tab: &Tab) -> Retained<NSMenu> {
+        let mtm = self.mtm();
+        let tabs = self.window_tabs(tab);
+        let at = tabs.iter().position(|t| std::ptr::eq(&**t, tab)).unwrap_or(0);
+        let site = store::site_of(&tab.url());
+        let site_muted =
+            site.as_deref().is_some_and(|s| self.store().permission(s, "sound").as_deref() == Some("deny"));
+        let unpinned = |t: &Retained<Tab>| !t.is_pinned();
+        let menu = NSMenu::new(mtm);
+        menu.setAutoenablesItems(false);
+        for cmd in TAB_CMDS {
+            let (title, enabled) = match cmd {
+                TabCmd::NewToRight => ("New Tab to the Right", true),
+                TabCmd::MoveToNewWindow => ("Move Tab to New Window", tabs.len() > 1),
+                TabCmd::SplitView => ("Move Tab to Split View", tabs.len() > 1),
+                TabCmd::Reload => ("Reload", true),
+                TabCmd::Duplicate => ("Duplicate", true),
+                TabCmd::Pin => (if tab.is_pinned() { "Unpin" } else { "Pin" }, true),
+                TabCmd::Mute => (if tab.is_muted() { "Unmute Tab" } else { "Mute Tab" }, true),
+                // Private tabs leave no site behind.
+                TabCmd::MuteSite => {
+                    (if site_muted { "Unmute Site" } else { "Mute Site" }, site.is_some() && !tab.is_private())
+                }
+                TabCmd::ReadingList => ("Add Tab to Reading List", !tab.url().is_empty()),
+                TabCmd::Close => ("Close", true),
+                TabCmd::CloseDuplicates => ("Close Duplicate Tabs", !self.duplicate_tabs(tab).is_empty()),
+                TabCmd::CloseOthers => {
+                    ("Close Other Tabs", tabs.iter().enumerate().any(|(i, t)| i != at && unpinned(t)))
+                }
+                TabCmd::CloseToRight => ("Close Tabs to the Right", tabs[at + 1..].iter().any(unpinned)),
+                TabCmd::Reopen => ("Reopen Closed Tab", !self.ivars().closed.borrow().is_empty()),
+                TabCmd::BookmarkAll => ("Bookmark All Tabs", true),
+            };
+            if matches!(cmd, TabCmd::Reload | TabCmd::ReadingList | TabCmd::Close | TabCmd::Reopen) {
+                menu.addItem(&NSMenuItem::separatorItem(mtm));
+            }
+            let item = menu_item(mtm, title, sel!(tabMenu:), "", NSEventModifierFlags::empty());
+            unsafe { item.setTarget(Some(self)) };
+            item.setTag(cmd as isize);
+            unsafe { item.setRepresentedObject(Some(tab)) };
+            item.setEnabled(enabled);
+            menu.addItem(&item);
+        }
+        menu
+    }
+
+    /// Open the tab menu if `event` is a right-click on one of our tabs
+    /// (in bench mode, print it: `TABMENU …`, as `tabmenu` does).
+    fn tab_menu_event(&self, event: &NSEvent) -> bool {
+        let right = event.r#type() == NSEventType::RightMouseDown
+            || event.modifierFlags().contains(NSEventModifierFlags::Control);
+        let frame = event.window(self.mtm()).and_then(|w| w.contentView()).and_then(|v| unsafe { v.superview() });
+        let mut view = frame.filter(|_| right).and_then(|f| f.hitTest(event.locationInWindow()));
+        while let Some(v) = view {
+            if responds(&v, sel!(associatedWindow)) {
+                let window: Option<Retained<NSWindow>> = unsafe { msg_send![&*v, associatedWindow] };
+                let Some(tab) = window.and_then(|w| self.tab_for_window(&w)) else { return false };
+                let menu = self.tab_menu(&tab);
+                if self.is_bench() {
+                    say!("TABMENU {}", menu_titles(&menu));
+                } else {
+                    NSMenu::popUpContextMenu_withEvent_forView(&menu, event, &v);
+                }
+                return true;
+            }
+            view = unsafe { v.superview() };
+        }
+        false
+    }
+
+    /// A right-click in the middle of tab `i`'s button in the tab bar:
+    /// `TABCLICK <0|1>`, whether the tab menu took it.
+    fn tab_click(&self, i: usize) {
+        let Some(tab) = self.ordered_tabs().get(i).cloned() else { return say!("TABCLICK 0") };
+        // The tab bar is drawn in the window of the tab shown.
+        let shown = tab.window().tabGroup().and_then(|g| g.selectedWindow());
+        let shown = shown.unwrap_or_else(|| tab.window().retain());
+        let Some(frame) = shown.contentView().and_then(|v| unsafe { v.superview() }) else { return say!("TABCLICK 0") };
+        // The tab's button, depth first.
+        let mut stack = vec![frame];
+        while let Some(v) = stack.pop() {
+            let window: Option<Retained<NSWindow>> =
+                if responds(&v, sel!(associatedWindow)) { unsafe { msg_send![&*v, associatedWindow] } } else { None };
+            if window.is_some_and(|w| std::ptr::eq(&*w, tab.window())) {
+                let b = v.bounds();
+                let point =
+                    v.convertPoint_toView(NSPoint::new(b.origin.x + b.size.width / 2.0, b.origin.y + 4.0), None);
+                let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                    NSEventType::RightMouseDown,
+                    point,
+                    NSEventModifierFlags::empty(),
+                    0.0,
+                    shown.windowNumber(),
+                    None,
+                    0,
+                    1,
+                    1.0,
+                );
+                return say!("TABCLICK {}", event.is_some_and(|e| self.tab_menu_event(&e)) as u8);
+            }
+            stack.extend(v.subviews().iter());
+        }
+        say!("TABCLICK 0")
+    }
+
+    /// Run a tab menu command on `tab`.
+    fn tab_command(&self, tab: &Tab, cmd: TabCmd) {
+        let tabs = self.window_tabs(tab);
+        let at = tabs.iter().position(|t| std::ptr::eq(&**t, tab)).unwrap_or(0);
+        let close = |ts: &[Retained<Tab>]| {
+            for t in ts.iter().filter(|t| !t.is_pinned()) {
+                t.window().performClose(None);
+            }
+        };
+        match cmd {
+            TabCmd::NewToRight | TabCmd::Duplicate => {
+                let url = if cmd == TabCmd::Duplicate { tab.url() } else { self.new_tab_url() };
+                let new = Tab::create(self, None, &url, "", false, tab.is_private());
+                self.add_tab(&new, Some(tab), true);
+                if url.is_empty() {
+                    new.focus_address_bar();
+                }
+            }
+            TabCmd::MoveToNewWindow => {
+                tab.window().moveTabToNewWindow(None);
+                self.sync_ext_windows();
+            }
+            // ponytail: two windows side by side, not one window with two
+            // pages; AppKit's tab bar holds one page per tab.
+            TabCmd::SplitView => {
+                // The tab on the left: the one shown now, else the last one used.
+                let shown =
+                    self.active().filter(|a| !std::ptr::eq(&**a, tab) && tabs.iter().any(|t| std::ptr::eq(&**t, &**a)));
+                let Some(left) = shown.or_else(|| self.previous_tab(tab)) else { return };
+                let Some(screen) = tab.window().screen() else { return };
+                tab.window().moveTabToNewWindow(None);
+                self.sync_ext_windows();
+                let mut frame = screen.visibleFrame();
+                frame.size.width /= 2.0;
+                self.select(&left);
+                left.window().setFrame_display(frame, true);
+                frame.origin.x += frame.size.width;
+                self.select(tab);
+                tab.window().setFrame_display(frame, true);
+            }
+            TabCmd::Reload => tab.reload(),
+            TabCmd::Pin => tab.set_pinned(!tab.is_pinned(), false),
+            TabCmd::Mute => tab.set_muted(!tab.is_muted()),
+            TabCmd::MuteSite => {
+                let Some(site) = store::site_of(&tab.url()) else { return };
+                let muted = self.store().permission(&site, "sound").as_deref() == Some("deny");
+                let _ = self.store().set_permission(&site, "sound", if muted { "ask" } else { "deny" });
+                for t in self.ivars().tabs.borrow().iter() {
+                    if store::site_of(&t.url()).as_deref() == Some(&*site) {
+                        t.refresh_mute();
+                    }
+                }
+            }
+            TabCmd::ReadingList => {
+                self.store().add_bookmark(&tab.url(), &tab.title(), "Reading List");
+                self.refresh_toolbars();
+            }
+            TabCmd::Close => {
+                tab.window().performClose(None);
+            }
+            TabCmd::CloseDuplicates => close(&self.duplicate_tabs(tab)),
+            TabCmd::CloseOthers => {
+                close(&tabs[..at]);
+                close(&tabs[at + 1..]);
+            }
+            TabCmd::CloseToRight => close(&tabs[at + 1..]),
+            TabCmd::Reopen => self.reopen_closed_tab(),
+            TabCmd::BookmarkAll => {
+                let when = NSDateFormatter::localizedStringFromDate_dateStyle_timeStyle(
+                    &NSDate::now(),
+                    NSDateFormatterStyle::MediumStyle,
+                    NSDateFormatterStyle::ShortStyle,
+                );
+                // A "/" would make a subfolder.
+                let folder = format!("Tabs, {when}").replace('/', "-");
+                for t in tabs.iter().filter(|t| !t.url().is_empty()) {
+                    self.store().add_bookmark(&t.url(), &t.title(), &folder);
+                }
+                self.refresh_toolbars();
+            }
+        }
+    }
+
+    /// A right-click (or control-click) on a tab in the native tab bar
+    /// opens `tab_menu` instead of AppKit's own. The tab is found through
+    /// the private `-[NSTabButton associatedWindow]` (`TUNE tab_menu`);
+    /// without it AppKit's menu stays.
+    fn watch_tab_menu(&self) {
+        let ptr = self as *const App as usize;
+        let block = RcBlock::new(move |e: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+            // The delegate lives until the process exits.
+            let app = unsafe { &*(ptr as *const App) };
+            if app.tab_menu_event(unsafe { e.as_ref() }) { std::ptr::null_mut() } else { e.as_ptr() }
+        });
+        let mask = objc2_app_kit::NSEventMask::RightMouseDown | objc2_app_kit::NSEventMask::LeftMouseDown;
+        let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
+        let _ = self.ivars().tab_menu_monitor.set(monitor);
     }
 
     fn select_index(&self, i: usize) {
@@ -2684,6 +2932,26 @@ impl App {
                     .collect();
                 say!("MENU {}", titles.join("|"));
             }
+            // The tab bar's right-click menu for tab i of the active window
+            // (`tabmenu <i>[ <title>]`, picking that item after):
+            // `TABMENU <title>|…`, `-` a separator, a disabled item in ().
+            ("tabmenu", _) => {
+                let (i, pick) = arg.split_once(' ').map_or((arg, None), |(i, p)| (i, Some(p)));
+                let Some(tab) = i.parse().ok().and_then(|i: usize| self.ordered_tabs().get(i).cloned()) else {
+                    return say!("ERR no tab {i}");
+                };
+                let menu = self.tab_menu(&tab);
+                let titles = menu_titles(&menu);
+                if let Some(title) = pick {
+                    let index = menu.indexOfItemWithTitle(&NSString::from_str(title));
+                    if index < 0 {
+                        return say!("ERR no item {title}");
+                    }
+                    menu.performActionForItemAtIndex(index);
+                }
+                say!("TABMENU {titles}");
+            }
+            ("tabclick", _) => self.tab_click(arg.parse().unwrap_or(usize::MAX)),
             ("private", Some(t)) => say!("{}", t.private_state()),
             // `PROFILE <name> <address bar placeholder>`.
             ("profile", Some(t)) => say!("PROFILE {} {}", self.profile_name().unwrap_or_default(), t.placeholder()),
@@ -3261,6 +3529,58 @@ fn engine_tuning(
     let pool = cfg.map(|cfg| unsafe { msg_send![WKProcessPool::alloc(mtm), _initWithConfiguration: &*cfg] });
     (pool, report)
 }
+
+/// A menu's items for bench lines: `-` a separator, a disabled item in ().
+fn menu_titles(menu: &NSMenu) -> String {
+    let titles: Vec<String> = menu
+        .itemArray()
+        .iter()
+        .map(|i| match (i.isSeparatorItem(), i.isEnabled()) {
+            (true, _) => "-".into(),
+            (_, true) => i.title().to_string(),
+            _ => format!("({})", i.title()),
+        })
+        .collect();
+    titles.join("|")
+}
+
+/// The tab bar's right-click menu, in order (`App::tab_menu`).
+#[derive(Clone, Copy, PartialEq)]
+enum TabCmd {
+    NewToRight,
+    MoveToNewWindow,
+    SplitView,
+    Reload,
+    Duplicate,
+    Pin,
+    Mute,
+    MuteSite,
+    ReadingList,
+    Close,
+    CloseDuplicates,
+    CloseOthers,
+    CloseToRight,
+    Reopen,
+    BookmarkAll,
+}
+
+const TAB_CMDS: [TabCmd; 15] = [
+    TabCmd::NewToRight,
+    TabCmd::MoveToNewWindow,
+    TabCmd::SplitView,
+    TabCmd::Reload,
+    TabCmd::Duplicate,
+    TabCmd::Pin,
+    TabCmd::Mute,
+    TabCmd::MuteSite,
+    TabCmd::ReadingList,
+    TabCmd::Close,
+    TabCmd::CloseDuplicates,
+    TabCmd::CloseOthers,
+    TabCmd::CloseToRight,
+    TabCmd::Reopen,
+    TabCmd::BookmarkAll,
+];
 
 fn menu_item(
     mtm: MainThreadMarker,
