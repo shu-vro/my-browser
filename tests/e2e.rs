@@ -2738,3 +2738,126 @@ fn pdfs_open_in_the_pdf_viewer() {
     b.nav("go about:blank");
     assert_eq!(b.send("pdf"), "PDF none", "leaving the PDF closes the viewer");
 }
+
+/// `LOOK` fields as (name, value) pairs.
+fn look(b: &mut Browser) -> std::collections::HashMap<String, String> {
+    let line = b.send("look");
+    assert!(line.starts_with("LOOK "), "{line}");
+    line.split(' ').skip(1).filter_map(|f| f.split_once('=')).map(|(k, v)| (k.into(), v.into())).collect()
+}
+
+#[test]
+fn the_page_sits_in_a_rounded_card_that_follows_the_window() {
+    let mut b = launch_with(&["--on-top"]);
+    let card = |l: &std::collections::HashMap<String, String>, i: usize| -> f64 {
+        l["card"].split(',').nth(i).unwrap().parse().unwrap()
+    };
+    let home = look(&mut b);
+    assert_eq!(
+        (home["radius"].as_str(), home["pill"].as_str(), home["tint"].as_str(), home["fills"].as_str()),
+        ("10", "14", "1", "1"),
+        "new tab page: {home:?}"
+    );
+    assert!(home["card"].starts_with("6,6,"), "inset card: {home:?}");
+
+    // A page, then the find bar: the card makes room and the page follows it.
+    b.nav("go about:blank");
+    let before = look(&mut b);
+    assert_eq!(before["fills"], "1", "{before:?}");
+    b.key("cmd+f");
+    let open = look(&mut b);
+    assert_eq!(card(&before, 3) - card(&open, 3), 34.0, "{open:?}");
+    assert_eq!(open["fills"], "1");
+    let animated: usize = open["animated"].parse().unwrap();
+    assert!(animated > 0, "the find bar fades in: {open:?}");
+    assert_eq!(b.send("find zzz"), "FIND found=0", "find still works");
+    assert!(b.send("findesc").starts_with("FINDBAR open=0"));
+    let closed = look(&mut b);
+    assert_eq!((card(&closed, 3), closed["fills"].as_str()), (card(&before, 3), "1"), "{closed:?}");
+
+    // A new tab, and a resized window (split view: half the screen each), keep the margins.
+    b.key("cmd+t");
+    let fresh = look(&mut b);
+    assert_eq!((fresh["tint"].as_str(), fresh["fills"].as_str()), ("1", "1"), "{fresh:?}");
+    b.send("tabmenu 1 Move Tab to Split View");
+    assert!(b.tabs().ends_with("windows=2"));
+    let split = look(&mut b);
+    assert!(split["card"].starts_with("6,6,") && card(&split, 2) != card(&fresh, 2), "{split:?}");
+    assert_eq!(split["fills"], "1", "{split:?}");
+    b.quit();
+}
+
+/// Every button in `BUTTONS` is reached by a click at its middle.
+fn all_reached(b: &mut Browser, where_: &str) {
+    let line = b.send("buttons");
+    let missed: Vec<&str> = line.trim_start_matches("BUTTONS ").split('|').filter(|i| !i.ends_with("=1")).collect();
+    assert!(missed.is_empty(), "{where_}: covered or clipped: {missed:?} in {line}");
+}
+
+#[test]
+fn every_button_is_reachable_and_does_its_job() {
+    let base = serve();
+    let dir = TempProfile::new("buttons");
+    let pdf = dir.0.join("doc.pdf");
+    let mut b = launch_with(&["--on-top"]);
+    b.nav("go data:text/html,<p style=break-after:page>alpha</p><p style=break-after:page>beta</p><p>gamma</p>");
+    assert_eq!(b.send(&format!("printpdf {}", pdf.display())), "PRINTED 1");
+    // Twice: the star adds the bookmark, then removes it.
+    for round in ["first", "second"] {
+        b.key("cmd+t");
+        assert!(b.send("home").starts_with("HOME shown=1"), "{round}");
+        all_reached(&mut b, &format!("{round}: new tab page"));
+
+        // Toolbar.
+        b.nav(&format!("go {base}/page/site"));
+        b.nav(&format!("go {base}/page/other"));
+        all_reached(&mut b, &format!("{round}: page"));
+        assert_eq!(b.send("press Back"), "PRESS 1");
+        b.state_until(|s| s.contains("/page/site"));
+        assert_eq!(b.send("press Forward"), "PRESS 1");
+        b.state_until(|s| s.contains("/page/other"));
+        assert_eq!(b.send("eval document.title = 'changed', 1"), "EVAL 1");
+        assert_eq!(b.send("press Reload"), "PRESS 1");
+        assert!(!b.state_until(|s| !s.ends_with("title=changed")).ends_with("title=changed"), "{round}: reloaded");
+        let (label, after) =
+            if round == "first" { ("Bookmark (⌘D)", "STAR on=1") } else { ("Remove bookmark (⌘D)", "STAR on=0") };
+        assert_eq!(b.send(&format!("press {label}")), "PRESS 1");
+        assert_eq!(b.send("star"), after, "{round}: the star");
+
+        // Find bar.
+        b.key("cmd+f");
+        all_reached(&mut b, &format!("{round}: find bar"));
+        assert_eq!(b.send("press Done"), "PRESS 1");
+        assert!(b.send("findbar").starts_with("FINDBAR open=0"), "{round}: Done closes the find bar");
+
+        // PDF viewer.
+        writeln!(b.stdin, "go file://{}", pdf.display()).unwrap();
+        b.wait_all(&["LOADED", "PDFVIEW"]);
+        all_reached(&mut b, &format!("{round}: PDF viewer"));
+        let pdf_after = |b: &mut Browser, label: &str| -> String {
+            assert_eq!(b.send(&format!("press {label}")), "PRESS 1", "{label}");
+            b.send("pdf")
+        };
+        assert!(pdf_after(&mut b, "Next page").contains(" page=2 "), "{round}: next page");
+        assert!(pdf_after(&mut b, "Previous page").contains(" page=1 "), "{round}: previous page");
+        assert_eq!(b.send("press Fit page"), "PRESS 1");
+        assert_eq!(b.send("pdfzoom"), "PDFZOOM fits=1", "{round}: fit page");
+        assert_eq!(b.send("press Fit width"), "PRESS 1");
+        assert_eq!(b.send("pdfzoom"), "PDFZOOM fits=0", "{round}: fit width");
+        assert_eq!(b.send("press Zoom in (⌘+)"), "PRESS 1");
+        assert_eq!(b.send("press Zoom out (⌘-)"), "PRESS 1");
+        assert!(pdf_after(&mut b, "Page thumbnails").contains(" sidebar=1 "), "{round}: thumbnails");
+        all_reached(&mut b, &format!("{round}: PDF with thumbnails"));
+        assert!(pdf_after(&mut b, "Rotate").contains(" rotation=90 "), "{round}: rotate");
+        assert!(pdf_after(&mut b, "Two pages side by side").contains(" twoup=1 "), "{round}: two pages");
+        assert_eq!(b.send("press Find (⌘F)"), "PRESS 1");
+        assert!(b.send("findbar").starts_with("FINDBAR open=1"), "{round}: PDF find");
+        all_reached(&mut b, &format!("{round}: PDF with find bar"));
+        assert_eq!(b.send("press Done"), "PRESS 1");
+
+        // Home, last: it drops the page.
+        assert_eq!(b.send("press Home"), "PRESS 1");
+        assert!(b.send("home").starts_with("HOME shown=1"), "{round}: home");
+    }
+    b.quit();
+}

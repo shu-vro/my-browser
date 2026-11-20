@@ -142,6 +142,27 @@ button, "Show All Tabs", accessibility and full-screen behavior. Writing all
 that ourselves would be thousands of lines and more memory. Each tab is an
 `NSWindow`, which costs little.
 
+### Why the rounded card and tinted window, and why not a choice?
+
+The owner liked Dia's look (page in a rounded card on a tinted window).
+It was first built behind a setting, with the plain window ("lean") as the
+default, in case it cost memory. Measured, it didn't: three alternating
+rounds of `--only startup,pages --page anim,canvas,images,text --runs 3`,
+medians plain vs card: browser process 31.16 / 31.08 MB, idle 74.27 /
+73.75 MB, anim CPU 0.82 / 0.75 ms/s, anim wakeups 8.0 / 7.2 per second,
+text 165.44 / 165.14 MB, canvas 381.38 / 381.11 MB (images swung 189-219
+MB in both). So the setting offered a trade that didn't exist, and two
+styles meant testing every UI change twice: the card is the only look.
+
+It's cheap because it's properties, not drawing: radius, border,
+clipping, the window's color. The page is clipped by a container (the
+card), not by rounding the web view itself. The fades are Core Animation,
+run by the window server, so they don't wake the app per frame, and
+they're skipped when macOS is set to reduce motion. The card costs 12 pt
+of width and 6 pt of height. Not taken from Dia: our own tab strip
+(native tabs, above), vertical tabs (the owner said no) and its AI
+features.
+
 ### Why is the active tab tracked by hand instead of using the key window?
 
 When the app isn't frontmost, there's no key window, and shortcuts sent

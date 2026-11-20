@@ -41,8 +41,13 @@ How each one works: [ARCHITECTURE.md](ARCHITECTURE.md). Why:
   (can't be spoofed by a slow navigation); Return on the current address only
   focuses the page. A rounded field with the site button, zoom and star
   inside it, in a toolbar that shares one surface with the title bar; flat
-  buttons that highlight on hover; a thin **loading line** under the toolbar
-  while a page loads.
+  buttons that highlight on hover; a thin **loading line** at the
+  toolbar's foot while a page loads.
+- **Window look**: the page sits in a rounded card with a hairline edge on
+  a softly tinted window (light and dark), the address bar is a capsule,
+  and the new tab page, the find bar and the launcher fade in (no fades
+  when macOS is set to reduce motion). Costs nothing measurable in memory
+  or wakeups.
 - **Local addresses** (`localhost:3000`, `192.168.1.1`, `printer.local`)
   open over plain HTTP as typed, never upgraded to HTTPS first; the site
   button shows a computer and says the page is local.

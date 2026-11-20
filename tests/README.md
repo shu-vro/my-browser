@@ -37,6 +37,10 @@ The end-to-end tests (53) cover:
 - **Reader mode:** the article alone, at the page's address, with no scripts, and back
 - **Chrome extensions:** `.crx` and `.zip` packages install into the profile; junk is refused
 - **Passwords:** the page can't reach the handler, sign-in offers to save, focus offers the account, picking fills it, "Never" sticks, CSV import
+- **Window look:** the page fills the inset rounded card (with the find
+  bar, in a new tab, in split view), and the find bar fades in; every
+  toolbar, find bar and PDF viewer button is reached by a click and does
+  its job (Fit page fits)
 - **Import:** bookmarks and history from a made-up Brave profile and Safari's files (in a fake home folder), and a bookmarks file
 
 Every test uses a throwaway profile, or a temporary one that's deleted

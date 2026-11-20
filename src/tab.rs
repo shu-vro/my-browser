@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use block2::{DynBlock, RcBlock};
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Bool, ProtocolObject};
+use objc2::runtime::{AnyClass, AnyObject, Bool, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAlert, NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSControl,
@@ -38,9 +38,54 @@ const TOOLBAR_H: f64 = 40.0;
 /// Height of toolbar buttons and the address pill, centered in the row.
 const CONTROL_H: f64 = 28.0;
 /// The pill's corner radius.
-const PILL_R: f64 = 8.0;
+const PILL_R: f64 = CONTROL_H / 2.0;
 /// Height of the find bar under the toolbar, while it's open.
 const FIND_H: f64 = 34.0;
+/// The page card: corner radius, and its margin from the window's edges.
+const CARD_R: f64 = 10.0;
+const CARD_INSET: f64 = 6.0;
+/// Animations started (bench `look`).
+static ANIMATED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The window's color: a cool tint, one for light and one for dark
+/// (resolved by AppKit whenever the appearance changes).
+fn tinted_background() -> Retained<objc2_app_kit::NSColor> {
+    use objc2_app_kit::{NSAppearance, NSColor};
+    thread_local! {
+        static TINT: Retained<NSColor> = {
+            let light = NSColor::colorWithSRGBRed_green_blue_alpha(0.905, 0.918, 0.950, 1.0);
+            let dark = NSColor::colorWithSRGBRed_green_blue_alpha(0.140, 0.150, 0.185, 1.0);
+            let provider = RcBlock::new(move |a: NonNull<NSAppearance>| {
+                let dark_mode = unsafe { a.as_ref() }.name().to_string().contains("Dark");
+                // Both colors live as long as the block, which lives as long as TINT.
+                NonNull::from(if dark_mode { &*dark } else { &*light })
+            });
+            unsafe { NSColor::colorWithName_dynamicProvider(None, &provider) }
+        };
+    }
+    TINT.with(Clone::clone)
+}
+
+/// Fade `view` in, unless the Mac is set to reduce motion. Core Animation
+/// runs it in the window server: the app doesn't wake for frames, and
+/// nothing is left running afterwards.
+pub fn fade_in(view: &NSView) {
+    if objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion() {
+        return;
+    }
+    view.setWantsLayer(true);
+    let (Some(layer), Some(class)) = (view.layer(), AnyClass::get(c"CABasicAnimation")) else { return };
+    unsafe {
+        let anim: *mut AnyObject = msg_send![class, animationWithKeyPath: &*NSString::from_str("opacity")];
+        let from = objc2_foundation::NSNumber::new_f64(0.0);
+        let to = objc2_foundation::NSNumber::new_f64(1.0);
+        let _: () = msg_send![anim, setFromValue: &*from];
+        let _: () = msg_send![anim, setToValue: &*to];
+        let _: () = msg_send![anim, setDuration: 0.18f64];
+        let _: () = msg_send![&*layer, addAnimation: anim, forKey: &*NSString::from_str("myb.fade")];
+    }
+    ANIMATED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
 const BUTTON_W: f64 = 30.0;
 /// WKWebView properties whose changes refresh the toolbar (`estimatedProgress`
 /// only moves the loading line).
@@ -60,6 +105,9 @@ pub struct TabIvars {
     pill: OnceCell<Retained<Fill>>,
     /// The thin loading line under the toolbar, hidden when not loading.
     progress: OnceCell<Retained<Fill>>,
+    /// Holds the page (web view, new tab page, PDF viewer, screenshot
+    /// picker, HUD): an inset rounded card under the toolbar.
+    card: OnceCell<Retained<Fill>>,
     back: OnceCell<Retained<NSButton>>,
     forward: OnceCell<Retained<NSButton>>,
     reload: OnceCell<Retained<NSButton>>,
@@ -1269,7 +1317,23 @@ impl Tab {
         // One surface: the title bar shows the window's background, like the
         // toolbar row under it (and the tab bar between them, when shown).
         window.setTitlebarAppearsTransparent(true);
+        // The title bar is transparent, so the window's tint shows under it too.
+        window.setBackgroundColor(Some(&tinted_background()));
         let content = window.contentView().unwrap();
+        // Under the toolbar: the page card, clipped to its rounded corners.
+        let card = Fill::new(
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(w, h - TOOLBAR_H)),
+            objc2_app_kit::NSColor::clearColor(),
+            CARD_R,
+            mtm,
+        );
+        card.ivars().border.set(true);
+        card.ivars().clip.set(true);
+        card.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        content.addSubview(&card);
+        let _ = self.ivars().card.set(card);
 
         // Toolbar row: back, forward, reload/stop, home, then the address
         // pill (site button, address, zoom, star), then extension buttons.
@@ -1345,21 +1409,134 @@ impl Tab {
         pill.addSubview(&star);
         let _ = self.ivars().star.set(star);
         let _ = self.ivars().pill.set(pill);
-        // A hairline between the toolbar and the page, and over it the
-        // loading line (`refresh_progress`): plain layer colors, nothing
-        // drawn, nothing animated.
-        let edge = |height: f64, color: Retained<objc2_app_kit::NSColor>| {
-            let f = Fill::new(NSRect::new(NSPoint::new(0.0, h - TOOLBAR_H), NSSize::new(w, height)), color, 0.0, mtm);
-            f.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | pin_top);
-            content.addSubview(&f);
-            f
-        };
-        edge(1.0, objc2_app_kit::NSColor::separatorColor());
-        let progress = edge(2.0, objc2_app_kit::NSColor::controlAccentColor());
+        // The loading line (`refresh_progress`) at the toolbar's foot: a plain
+        // layer color, nothing drawn, nothing animated.
+        let progress = Fill::new(
+            NSRect::new(NSPoint::new(0.0, h - TOOLBAR_H), NSSize::new(w, 2.0)),
+            objc2_app_kit::NSColor::controlAccentColor(),
+            0.0,
+            mtm,
+        );
+        progress.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | pin_top);
         progress.setHidden(true);
+        content.addSubview(&progress);
         let _ = self.ivars().progress.set(progress);
         let _ = self.ivars().window.set(window);
         self.set_extension_buttons(&self.app().extension_buttons(self));
+        self.layout_card();
+    }
+
+    /// Size the card to the page area, inset: below the toolbar and the
+    /// find bar. The page views inside follow it.
+    fn layout_card(&self) {
+        let Some(card) = self.ivars().card.get() else { return };
+        let size = self.window().contentView().unwrap().frame().size;
+        let top = TOOLBAR_H + if self.ivars().find_open.get() { FIND_H } else { 0.0 };
+        let frame = NSRect::new(
+            NSPoint::new(CARD_INSET, CARD_INSET),
+            NSSize::new(size.width - 2.0 * CARD_INSET, size.height - top - CARD_INSET),
+        );
+        card.setFrame(frame);
+        for view in card.subviews() {
+            view.setFrame(card.bounds());
+        }
+    }
+
+    /// `LOOK card=<x>,<y>,<w>,<h> radius= pill= tint=<0|1> fills=<0|1> animated=<n>`:
+    /// `fills` is whether every page view covers the card.
+    pub fn look_state(&self) -> String {
+        let iv = self.ivars();
+        let (Some(card), Some(pill)) = (iv.card.get(), iv.pill.get()) else { return "LOOK none".into() };
+        let f = card.frame();
+        let b = card.bounds();
+        let fills = card.subviews().iter().all(|v| {
+            let r = v.frame();
+            r.origin.x == b.origin.x
+                && r.origin.y == b.origin.y
+                && r.size.width == b.size.width
+                && r.size.height == b.size.height
+        });
+        format!(
+            "LOOK card={},{},{},{} radius={} pill={} tint={} fills={} animated={}",
+            f.origin.x,
+            f.origin.y,
+            f.size.width,
+            f.size.height,
+            card.radius(),
+            pill.radius(),
+            self.window().backgroundColor().isEqual(Some(&tinted_background())) as u8,
+            fills as u8,
+            ANIMATED.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// Every button shown in this tab's window (toolbar, find bar, PDF
+    /// viewer, new tab page): its label, its middle in window coordinates,
+    /// and whether a click there reaches it (nothing covers or clips it).
+    fn shown_buttons(&self) -> Vec<(String, NSPoint, bool)> {
+        let content = self.window().contentView().unwrap();
+        let frame = unsafe { content.superview() }.unwrap_or_else(|| content.clone());
+        let mut out = Vec::new();
+        let mut stack = vec![content];
+        while let Some(v) = stack.pop() {
+            // (A search field's own buttons are parts of the field, which takes the click.)
+            let any = &*v as &AnyObject;
+            if v.isHiddenOrHasHiddenAncestor()
+                || any.downcast_ref::<WKWebView>().is_some()
+                || any.downcast_ref::<NSTextField>().is_some()
+            {
+                continue;
+            }
+            if let Some(b) = any.downcast_ref::<NSButton>() {
+                let label = b
+                    .toolTip()
+                    .or_else(|| b.image().and_then(|i| i.accessibilityDescription()))
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| b.title().to_string());
+                let r = b.bounds();
+                let mid = b.convertPoint_toView(
+                    NSPoint::new(r.origin.x + r.size.width / 2.0, r.origin.y + r.size.height / 2.0),
+                    None,
+                );
+                let reached = std::iter::successors(frame.hitTest(mid), |h| unsafe { h.superview() })
+                    .any(|h| std::ptr::eq(&*h, &**b as &NSView));
+                out.push((label, mid, reached));
+            }
+            stack.extend(v.subviews().iter());
+        }
+        out
+    }
+
+    /// `BUTTONS <label>=<reached 0|1>|…`
+    pub fn buttons_state(&self) -> String {
+        let items: Vec<String> =
+            self.shown_buttons().iter().map(|(l, _, ok)| format!("{}={}", l.replace('|', "/"), *ok as u8)).collect();
+        format!("BUTTONS {}", items.join("|"))
+    }
+
+    /// Click the button labelled `label` the way the mouse would: whatever
+    /// view is at its middle gets the click. `PRESS <0|1>`.
+    pub fn press(&self, label: &str) -> String {
+        let Some((_, mid, _)) = self.shown_buttons().into_iter().find(|(l, _, _)| l == label) else {
+            return "PRESS 0".into();
+        };
+        let content = self.window().contentView().unwrap();
+        let frame = unsafe { content.superview() }.unwrap_or(content);
+        let hit = std::iter::successors(frame.hitTest(mid), |h| unsafe { h.superview() })
+            .find_map(|h| (&*h as &AnyObject).downcast_ref::<NSButton>().map(|b| b.retain()));
+        match hit {
+            Some(b) => {
+                unsafe { b.performClick(None) };
+                "PRESS 1".into()
+            }
+            None => "PRESS 0".into(),
+        }
+    }
+
+    /// The view the page lives in.
+    fn card(&self) -> &Retained<Fill> {
+        self.ivars().card.get().unwrap()
     }
 
     /// The native new tab page, filling the page area.
@@ -1382,7 +1559,8 @@ impl Tab {
         view.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
         );
-        self.window().contentView().unwrap().addSubview(&view);
+        self.card().addSubview(&view);
+        fade_in(&view);
         if let Some(old) = self.ivars().home.replace(Some(view)) {
             old.removeFromSuperview();
         }
@@ -1402,7 +1580,6 @@ impl Tab {
         if let Some(home) = self.ivars().home.take() {
             home.removeFromSuperview();
         }
-        let content = self.window().contentView().unwrap();
         let web =
             unsafe { WKWebView::initWithFrame_configuration(WKWebView::alloc(self.mtm()), self.web_frame(), config) };
         web.setAutoresizingMask(
@@ -1433,7 +1610,7 @@ impl Tab {
                 let _: () = msg_send![&*web, _setObservedRenderingProgressEvents: 1usize << 1];
             }
         }
-        content.addSubview(&web);
+        self.card().addSubview(&web);
         for key in observed(&web) {
             unsafe {
                 web.addObserver_forKeyPath_options_context(
@@ -1451,9 +1628,7 @@ impl Tab {
 
     /// The page area: below the toolbar, and below the find bar while it's open.
     fn web_frame(&self) -> NSRect {
-        let size = self.window().contentView().unwrap().frame().size;
-        let top = TOOLBAR_H + if self.ivars().find_open.get() { FIND_H } else { 0.0 };
-        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(size.width, size.height - top))
+        self.card().bounds()
     }
 
     /// Open the find bar (Cmd+F) and focus its field.
@@ -1471,12 +1646,8 @@ impl Tab {
                 NSSize::new(size.width, FIND_H),
             ));
             content.addSubview(row);
-            if let Some(web) = self.web() {
-                web.setFrame(self.web_frame());
-            }
-            if let Some(pdf) = self.ivars().pdf.borrow().as_ref() {
-                pdf.root.setFrame(self.web_frame());
-            }
+            fade_in(row);
+            self.layout_card();
         }
         let field = iv.find_field.get().unwrap();
         self.window().makeFirstResponder(Some(field));
@@ -1495,10 +1666,9 @@ impl Tab {
         self.find_js("__mybFind.clear()", None, |_| {});
         if let Some(pdf) = self.ivars().pdf.borrow_mut().as_mut() {
             pdf.clear_find();
-            pdf.root.setFrame(self.web_frame());
         }
+        self.layout_card();
         if let Some(web) = self.web() {
-            web.setFrame(self.web_frame());
             self.window().makeFirstResponder(Some(&web));
         }
         iv.find_last.replace(String::new());
@@ -2485,7 +2655,7 @@ impl Tab {
                 .unwrap_or_else(|| "document.pdf".into());
             let Some(viewer) = crate::pdf::Viewer::new(&this, data, this.web_frame(), name, this.mtm()) else { return };
             this.close_pdf();
-            this.window().contentView().unwrap().addSubview(&viewer.root);
+            this.card().addSubview(&viewer.root);
             this.ivars().pdf.replace(Some(viewer));
             this.bench_line("PDFVIEW");
         });
@@ -2720,9 +2890,8 @@ impl Tab {
             (Shot::Area, Some(r)) => self.capture(Some(r), to),
             (Shot::Area, None) => {
                 let this = self.retain();
-                let content = self.window().contentView().unwrap();
                 let picker = AreaPicker::show(
-                    &content,
+                    self.card(),
                     self.web_frame(),
                     move |r| {
                         this.ivars().area_picker.replace(None);
@@ -2833,7 +3002,7 @@ impl Tab {
         if let Some(layer) = label.layer() {
             let _: () = unsafe { msg_send![&*layer, setCornerRadius: 8.0f64] };
         }
-        self.window().contentView().unwrap().addSubview(&label);
+        self.card().addSubview(&label);
         let fade = label.clone();
         let timer = RcBlock::new(move |_t: NonNull<objc2_foundation::NSTimer>| {
             let gone = fade.clone();
@@ -4005,6 +4174,10 @@ fn tool_button(
 pub struct FillIvars {
     color: Retained<objc2_app_kit::NSColor>,
     radius: f64,
+    /// A hairline border in the separator color (the page card).
+    border: Cell<bool>,
+    /// Clip subviews to the rounded shape (the page card).
+    clip: Cell<bool>,
 }
 
 define_class!(
@@ -4031,6 +4204,13 @@ define_class!(
                 let _: () = msg_send![&*layer, setBackgroundColor: &*cg];
                 let _: () = msg_send![&*layer, setCornerRadius: self.ivars().radius];
                 let _: () = msg_send![&*layer, setCornerCurve: &*NSString::from_str("continuous")];
+                let _: () = msg_send![&*layer, setMasksToBounds: self.ivars().clip.get()];
+                let border = self.ivars().border.get();
+                let _: () = msg_send![&*layer, setBorderWidth: if border { 1.0f64 } else { 0.0 }];
+                if border {
+                    let edge = objc2_app_kit::NSColor::separatorColor().CGColor();
+                    let _: () = msg_send![&*layer, setBorderColor: &*edge];
+                }
             }
         }
     }
@@ -4043,10 +4223,15 @@ impl Fill {
         radius: f64,
         mtm: MainThreadMarker,
     ) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(FillIvars { color, radius });
+        let this =
+            Self::alloc(mtm).set_ivars(FillIvars { color, radius, border: Cell::new(false), clip: Cell::new(false) });
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         this.setWantsLayer(true);
         this
+    }
+
+    pub fn radius(&self) -> f64 {
+        self.ivars().radius
     }
 }
 

@@ -415,6 +415,23 @@ zoom of the tab under the pointer, a trackpad's small deltas adding up to
 → `ZOOM <level> button=<label>`, `tabflags` shows `swipe=` and `pinch=`.
 Test: `zoom_is_remembered_per_site`.
 
+### Window look and the page card
+
+Every page view (web view, new tab page, PDF viewer, screenshot picker,
+HUD) lives in the **card**, a `Fill` under the toolbar that `layout_card`
+sizes to the page area, inset 6 pt (below the find bar when it's open);
+the page views fill it, so `web_frame()` is the card's bounds. The card has
+a 10 pt radius, clips (`masksToBounds`) and has a separator-colored border.
+The pill is a capsule (`PILL_R` = half the control height). The window's
+background is a dynamic tinted color (`tinted_background`), which the
+transparent title bar shows too. `fade_in` adds a 0.18 s Core Animation
+opacity animation (new tab page, find bar, launcher) unless Reduce motion
+is on: it runs in the window server, so the app doesn't wake per frame.
+Bench `look`. Measured against the plain window it replaced (back to
+back, medians of three alternating rounds): browser process 31.16 vs
+31.08 MB, animation page CPU 0.82 vs 0.75 ms/s and wakeups 8.0 vs 7.2 per
+second, page footprints within noise.
+
 ### Address bar
 
 What's typed becomes an address in `App::normalize`, in order: a path
@@ -1425,6 +1442,9 @@ active tab.
 | `launcher <query>` | `LAUNCHER <kind>:<title> [shortcut]\|…` (kind: tab, command, bookmark, history): the launcher with that query, every row as listed; answer with `dialog` |
 | `tabflags` | `TABFLAGS pinned=<0\|1> muted=<0\|1> page_muted=<0\|1> audio=<0\|1> swipe=<0\|1> pinch=<0\|1>` for the active tab |
 | `tabmenu <i>[ <title>]` | `TABMENU <title>\|…`: tab i's right-click menu (`-` separator, `(title)` disabled); with a title, picks that item |
+| `look` | `LOOK card=<x>,<y>,<w>,<h> radius= pill= tint=<0\|1> fills=<0\|1> animated=<n>`: the active tab's page card (`fills`: every page view covers the card; `animated`: fades started since launch) |
+| `buttons` | `BUTTONS <label>=<0\|1>\|…`: every button shown in the active tab's window (toolbar, find bar, PDF viewer, new tab page; not inside text fields) and whether a click at its middle reaches it |
+| `press <label>` | `PRESS <0\|1>`: clicks the button with that label (tooltip, else image description, else title) through hit-testing, as the mouse would |
 | `tabclick <i>` | A synthetic right-click on tab i's button: `TABMENU …` then `TABCLICK <0\|1>` (needs `--on-top`) |
 | `zoom` | `ZOOM <level> button=<label>`: the active tab's page zoom and the zoom button's label |
 | `bartype <text>` / `barkey up\|down\|enter\|esc` | `SUGGEST [*]search:<text>\|[*]page:<url>\|…`: the address bar's suggestion list after typing or a key (`*` = chosen; empty when closed) |

@@ -337,6 +337,9 @@ impl TabSearch {
             frame.origin.y + (frame.size.height - h - 110.0).max(0.0),
         ));
         panel.setLevel(window.level());
+        if let Some(view) = panel.contentView() {
+            crate::tab::fade_in(&view);
+        }
         unsafe { window.addChildWindow_ordered(&panel, NSWindowOrderingMode::Above) };
         panel.makeFirstResponder(Some(&field));
         OPEN.with(|o| o.replace(Some(this.clone())));

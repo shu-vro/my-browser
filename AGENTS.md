@@ -38,7 +38,7 @@ WebKit's own devtools (a setting); extensions yes. Full vision and rules:
 
 ```sh
 cargo build --release                  # always test release builds
-cargo test --release                   # 170 tests, ~25 s, opens windows (needs GUI session; needs Xcode's swiftc for build.rs)
+cargo test --release                   # 172 tests, ~25 s, opens windows (needs GUI session; needs Xcode's swiftc for build.rs)
 git config core.hooksPath .githooks    # once per clone: fmt, clippy, tests before every commit
 ./target/release/bench --runs 1        # ~2 min quick benchmark (floating window)
 ./target/release/bench --only startup  # ~20 s: idle CPU, wakeups, footprint only
@@ -120,6 +120,10 @@ commands:
   every run. Bench `crash` exits after the panic hook (`crash::REQUESTED`).
 - **Toggling WebKit's spelling menu items in a test** writes to the app's
   real defaults domain; read the state with `spell` instead.
+
+- **Page views go in the card** (`Tab::card()`), not the window's content
+  view. New buttons are checked by `buttons`/`press` (a click reaches
+  them); assert what a button does, not only that it ran.
 
 ## Commits
 

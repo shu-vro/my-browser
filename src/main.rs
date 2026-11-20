@@ -2828,6 +2828,11 @@ impl App {
             }
             ("findbar", Some(t)) => say!("{}", t.find_state()),
             ("home", Some(t)) => say!("{}", t.home_state()),
+            ("look", Some(t)) => say!("{}", t.look_state()),
+            // Buttons in the active tab's window and whether clicks reach them;
+            // `press <label>` clicks one through hit-testing.
+            ("buttons", Some(t)) => say!("{}", t.buttons_state()),
+            ("press", Some(t)) => say!("{}", t.press(arg)),
             ("netbutton", Some(t)) => say!("NETBUTTON {}", t.net_button_shown() as u8),
             ("storebutton", Some(t)) => say!("STOREBUTTON {}", t.store_button_shown() as u8),
             // Press the Web Store button.
