@@ -2768,8 +2768,13 @@ fn the_page_sits_in_a_rounded_card_that_follows_the_window() {
     let open = look(&mut b);
     assert_eq!(card(&before, 3) - card(&open, 3), 34.0, "{open:?}");
     assert_eq!(open["fills"], "1");
+    // The find bar fades in, unless macOS is set to reduce motion (as on CI runners, it seems).
     let animated: usize = open["animated"].parse().unwrap();
-    assert!(animated > 0, "the find bar fades in: {open:?}");
+    if open["motion"] == "1" {
+        assert!(animated > 0, "the find bar fades in: {open:?}");
+    } else {
+        assert_eq!(animated, 0, "no fades with Reduce motion: {open:?}");
+    }
     assert_eq!(b.send("find zzz"), "FIND found=0", "find still works");
     assert!(b.send("findesc").starts_with("FINDBAR open=0"));
     let closed = look(&mut b);

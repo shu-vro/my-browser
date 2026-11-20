@@ -66,11 +66,16 @@ fn tinted_background() -> Retained<objc2_app_kit::NSColor> {
     TINT.with(Clone::clone)
 }
 
+/// System Settings → Accessibility → Display → Reduce motion.
+fn reduce_motion() -> bool {
+    objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+
 /// Fade `view` in, unless the Mac is set to reduce motion. Core Animation
 /// runs it in the window server: the app doesn't wake for frames, and
 /// nothing is left running afterwards.
 pub fn fade_in(view: &NSView) {
-    if objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion() {
+    if reduce_motion() {
         return;
     }
     view.setWantsLayer(true);
@@ -1442,8 +1447,9 @@ impl Tab {
         }
     }
 
-    /// `LOOK card=<x>,<y>,<w>,<h> radius= pill= tint=<0|1> fills=<0|1> animated=<n>`:
-    /// `fills` is whether every page view covers the card.
+    /// `LOOK card=<x>,<y>,<w>,<h> radius= pill= tint=<0|1> fills=<0|1> motion=<0|1> animated=<n>`:
+    /// `fills` is whether every page view covers the card; `motion=0` when
+    /// macOS is set to reduce motion (no fades).
     pub fn look_state(&self) -> String {
         let iv = self.ivars();
         let (Some(card), Some(pill)) = (iv.card.get(), iv.pill.get()) else { return "LOOK none".into() };
@@ -1457,7 +1463,7 @@ impl Tab {
                 && r.size.height == b.size.height
         });
         format!(
-            "LOOK card={},{},{},{} radius={} pill={} tint={} fills={} animated={}",
+            "LOOK card={},{},{},{} radius={} pill={} tint={} fills={} motion={} animated={}",
             f.origin.x,
             f.origin.y,
             f.size.width,
@@ -1466,6 +1472,7 @@ impl Tab {
             pill.radius(),
             self.window().backgroundColor().isEqual(Some(&tinted_background())) as u8,
             fills as u8,
+            !reduce_motion() as u8,
             ANIMATED.load(std::sync::atomic::Ordering::Relaxed),
         )
     }
