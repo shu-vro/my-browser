@@ -9,8 +9,13 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=helpers/translate.swift");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    // OUT_DIR is target/[<triple>/]<profile>/build/<package>-<hash>/out.
-    let Some(dir) = out.ancestors().nth(3) else { return };
+    // OUT_DIR is target/[<triple>/]<profile>/build/<package>-<hash>/out, or
+    // build/<package>/<hash>/out in Cargo's newer layout: the helper goes
+    // next to the binary, in the folder holding `build`.
+    let Some(dir) = out.ancestors().find(|p| p.file_name().is_some_and(|n| n == "build")).and_then(|b| b.parent())
+    else {
+        return;
+    };
     let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         Ok("x86_64") => "x86_64",
         _ => "arm64",
